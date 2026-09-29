@@ -1,0 +1,73 @@
+import { db } from '@/lib/db';
+import { NextRequest } from 'next/server';
+import crypto from 'crypto';
+
+const SESSION_COOKIE = 'bstudio_session';
+const SESSION_DAYS = 30;
+
+// ─── Пароли ──────────────────────────────────────────────────────────────────
+
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+export function verifyPassword(password: string, stored: string): boolean {
+  const [salt, hash] = stored.split(':');
+  if (!salt || !hash) return false;
+  const test = crypto.scryptSync(password, salt, 64).toString('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(test, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+// ─── Сессии ──────────────────────────────────────────────────────────────────
+
+export async function createSession(userId: string): Promise<{ id: string; expiresAt: Date }> {
+  const id = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 3600 * 1000);
+  await db.session.create({ data: { id, userId, expiresAt } });
+  return { id, expiresAt };
+}
+
+export interface SessionUser {
+  id: string;
+  username: string;
+  name: string | null;
+}
+
+export async function getSessionUser(req: NextRequest): Promise<SessionUser | null> {
+  const token = req.cookies.get(SESSION_COOKIE)?.value;
+  if (!token) return null;
+  const session = await db.session.findUnique({
+    where: { id: token },
+    include: { user: true },
+  });
+  if (!session) return null;
+  if (session.expiresAt < new Date()) {
+    await db.session.delete({ where: { id: session.id } }).catch(() => {});
+    return null;
+  }
+  return { id: session.user.id, username: session.user.username, name: session.user.name };
+}
+
+export async function destroySession(req: NextRequest): Promise<void> {
+  const token = req.cookies.get(SESSION_COOKIE)?.value;
+  if (token) {
+    await db.session.delete({ where: { id: token } }).catch(() => {});
+  }
+}
+
+export function sessionCookieOptions(expiresAt: Date) {
+  return {
+    httpOnly: true as const,
+    sameSite: 'lax' as const,
+    path: '/',
+    expires: expiresAt,
+  };
+}
+
+export { SESSION_COOKIE };

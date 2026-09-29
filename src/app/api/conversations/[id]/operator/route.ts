@@ -1,0 +1,38 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@/lib/db';
+import { getSessionUser } from '@/lib/auth';
+
+type Params = { params: Promise<{ id: string }> };
+
+/** Ответ оператора в диалог (виден пользователю как сообщение бота/поддержки) */
+export async function POST(req: NextRequest, { params }: Params) {
+  const { id } = await params;
+  const user = await getSessionUser(req);
+  if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });
+
+  const conversation = await db.conversation.findUnique({ where: { id }, include: { bot: true } });
+  if (!conversation || conversation.bot.userId !== user.id) {
+    return NextResponse.json({ error: 'Диалог не найден' }, { status: 404 });
+  }
+
+  try {
+    const body = await req.json();
+    const text = String(body.text ?? '').trim().slice(0, 2000);
+    if (!text) return NextResponse.json({ error: 'Пустое сообщение' }, { status: 400 });
+
+    const message = await db.message.create({
+      data: { conversationId: conversation.id, role: 'bot', text, nodeId: '__operator' },
+    });
+    await db.conversation.update({
+      where: { id: conversation.id },
+      data: { updatedAt: new Date() },
+    });
+
+    return NextResponse.json({
+      message: { id: message.id, role: message.role, text: message.text, createdAt: message.createdAt },
+    });
+  } catch (err) {
+    console.error('[operator reply]', err);
+    return NextResponse.json({ error: 'Не удалось отправить' }, { status: 500 });
+  }
+}
