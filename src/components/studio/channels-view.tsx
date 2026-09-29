@@ -186,7 +186,7 @@ export default function ChannelsView({
   const webhookUrl = (ch: ChannelItem) => `${origin}/api/webhook/${ch.type}/${ch.secret}`;
 
   return (
-    <div className="flex-1 space-y-6 p-4 sm:p-6 lg:p-8">
+    <div className="flex-1 min-h-0 overflow-y-auto space-y-6 p-4 sm:p-6 lg:p-8">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">

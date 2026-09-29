@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Loader2, RotateCcw, Send, X } from 'lucide-react';
+import { Bot, Headset, Loader2, RotateCcw, Send, X } from 'lucide-react';
 import { api } from '@/lib/client-api';
 import type { EngineMessage, EngineState, FlowButton } from '@/lib/flow-types';
 import { Button } from '@/components/ui/button';
@@ -9,23 +9,39 @@ import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
 interface ChatItem {
+  id?: string;
   role: 'user' | 'bot';
   text: string;
   buttons?: FlowButton[];
+  operator?: boolean;
+}
+
+interface SimulateResponse {
+  messages: EngineMessage[];
+  state: EngineState;
+  needsOperator?: boolean;
+  conversationId?: string;
 }
 
 export default function TestChat({
   botId,
   onClose,
+  onOpenInbox,
 }: {
   botId: string;
   onClose: () => void;
+  onOpenInbox?: () => void;
 }) {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState('');
   const [typing, setTyping] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [convClosed, setConvClosed] = useState(false);
   const stateRef = useRef<EngineState | null>(null);
+  const convRef = useRef<string | null>(null);
+  const seenIdsRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const storageKey = `botstudio_test_conv_${botId}`;
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -37,11 +53,24 @@ export default function TestChat({
     async (input: string | null) => {
       setTyping(true);
       try {
-        const res = await api<{ messages: EngineMessage[]; state: EngineState }>(
-          `/api/bots/${botId}/simulate`,
-          { method: 'POST', body: JSON.stringify({ input, state: stateRef.current }) }
-        );
+        const res = await api<SimulateResponse>(`/api/bots/${botId}/simulate`, {
+          method: 'POST',
+          body: JSON.stringify({
+            input,
+            state: stateRef.current,
+            conversationId: convRef.current,
+          }),
+        });
         stateRef.current = res.state;
+        if (res.conversationId) {
+          convRef.current = res.conversationId;
+          setConversationId(res.conversationId);
+          try {
+            window.localStorage.setItem(storageKey, res.conversationId);
+          } catch {
+            /* ignore */
+          }
+        }
         for (const m of res.messages) {
           setItems((prev) => [...prev, { role: 'bot', text: m.text, buttons: m.buttons }]);
           await new Promise((r) => setTimeout(r, 250));
@@ -59,12 +88,109 @@ export default function TestChat({
     [botId]
   );
 
-  // Старт диалога при открытии
+  // Старт диалога при открытии; если диалог уже передан оператору — восстанавливаем его
   useEffect(() => {
+    let cancelled = false;
+    const saved = (() => {
+      try {
+        return window.localStorage.getItem(storageKey);
+      } catch {
+        return null;
+      }
+    })();
+
+    const startFresh = () => {
+      stateRef.current = null;
+      seenIdsRef.current = new Set();
+      run(null);
+    };
+
+    if (saved) {
+      api<{
+        conversation: { status: string };
+        messages: { id: string; role: string; text: string; nodeId?: string | null }[];
+      }>(`/api/conversations/${saved}`)
+        .then((d) => {
+          if (cancelled) return;
+          convRef.current = saved;
+          setConversationId(saved);
+          setConvClosed(d.conversation.status === 'closed');
+          for (const m of d.messages) {
+            seenIdsRef.current.add(m.id);
+            setItems((prev) => [
+              ...prev,
+              { id: m.id, role: m.role === 'user' ? 'user' : 'bot', text: m.text, operator: m.nodeId === '__operator' },
+            ]);
+          }
+        })
+        .catch(() => {
+          if (cancelled) return;
+          try {
+            window.localStorage.removeItem(storageKey);
+          } catch {
+            /* ignore */
+          }
+          startFresh();
+        });
+    } else {
+      startFresh();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [botId]);
+
+  // Проверка новых сообщений оператора (после передачи диалога)
+  const poll = useCallback(async () => {
+    if (!convRef.current) return;
+    try {
+      const d = await api<{
+        conversation: { needsOperator: boolean; status: string };
+        messages: { id: string; role: string; text: string; nodeId?: string | null }[];
+      }>(`/api/conversations/${convRef.current}`);
+      let changed = false;
+      for (const m of d.messages) {
+        if (seenIdsRef.current.has(m.id)) continue;
+        seenIdsRef.current.add(m.id);
+        // Свои сообщения уже показаны локально; добавляем только реплики бота/оператора
+        if (m.role === 'bot') {
+          setItems((prev) => [
+            ...prev,
+            { id: m.id, role: 'bot', text: m.text, operator: m.nodeId === '__operator' },
+          ]);
+          changed = true;
+        }
+      }
+      if (d.conversation.status === 'closed') setConvClosed((prev) => prev || true);
+      if (changed) scrollToBottom();
+    } catch {
+      /* ignore polling errors */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    // Помечаем уже существующие сообщения диалога как показанные
+    poll();
+    const t = setInterval(poll, 2500);
+    return () => clearInterval(t);
+  }, [conversationId, poll]);
+
+  const reset = () => {
     stateRef.current = null;
+    convRef.current = null;
+    seenIdsRef.current = new Set();
+    setConversationId(null);
+    setConvClosed(false);
     setItems([]);
+    try {
+      window.localStorage.removeItem(storageKey);
+    } catch {
+      /* ignore */
+    }
     run(null);
-  }, [run]);
+  };
 
   const send = (text: string) => {
     const t = text.trim();
@@ -86,7 +212,11 @@ export default function TestChat({
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold leading-tight">Тестовый чат</div>
           <div className="text-[11px] text-muted-foreground">
-            {typing ? 'бот печатает…' : 'сценарий выполняется как в живом боте'}
+            {conversationId
+              ? 'диалог ведёт оператор'
+              : typing
+                ? 'бот печатает…'
+                : 'сценарий выполняется как в живом боте'}
           </div>
         </div>
         <Button
@@ -95,11 +225,7 @@ export default function TestChat({
           className="h-8 w-8"
           title="Сбросить диалог"
           aria-label="Сбросить диалог"
-          onClick={() => {
-            stateRef.current = null;
-            setItems([]);
-            run(null);
-          }}
+          onClick={reset}
         >
           <RotateCcw className="h-4 w-4" />
         </Button>
@@ -108,9 +234,30 @@ export default function TestChat({
         </Button>
       </div>
 
+      {conversationId && (
+        <div className="border-b bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <div className="flex items-start gap-2">
+            <Headset className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              {convClosed
+                ? 'Оператор закрыл обращение — бот снова отвечает сам. Нажмите «Сбросить», чтобы начать новый тест.'
+                : 'Диалог передан оператору — он появился во «Входящих». Ответы оператора появятся здесь.'}
+            </div>
+            {onOpenInbox && !convClosed && (
+              <button
+                onClick={onOpenInbox}
+                className="shrink-0 font-semibold underline underline-offset-2"
+              >
+                Открыть
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <div ref={scrollRef} className="flex-1 space-y-2.5 overflow-y-auto bg-muted/30 p-3">
         {items.map((m, i) => (
-          <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
+          <div key={m.id ?? `local-${i}`} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
             <div
               className={cn(
                 'max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm leading-snug',
@@ -119,6 +266,11 @@ export default function TestChat({
                   : 'rounded-bl-md border bg-card'
               )}
             >
+              {m.operator && (
+                <div className="mb-0.5 flex items-center gap-1 text-[10px] font-medium text-amber-700">
+                  <Headset className="h-3 w-3" /> оператор
+                </div>
+              )}
               {m.text}
             </div>
           </div>
@@ -162,7 +314,7 @@ export default function TestChat({
         }}
       >
         <Input
-          placeholder="Введите сообщение…"
+          placeholder={conversationId ? 'Сообщение оператору…' : 'Введите сообщение…'}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           disabled={typing}

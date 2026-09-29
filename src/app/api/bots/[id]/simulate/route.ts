@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { runEngine } from '@/lib/flow-engine';
@@ -6,9 +7,19 @@ import type { EngineState, Flow } from '@/lib/flow-types';
 
 type Params = { params: Promise<{ id: string }> };
 
+interface SimulateMessage {
+  text: string;
+  nodeId?: string | null;
+  buttons?: { id: string; text: string }[];
+  id?: string;
+}
+
 /**
- * Симулятор чата: выполняет сценарий бота без сохранения в БД.
- * Состояние (память) диалога передаётся туда-обратно клиенту.
+ * Симулятор чата: выполняет сценарий бота.
+ * Обычный режим — stateless (состояние передаётся туда-обратно клиенту).
+ * Как только сценарий доходит до узла «Оператор» — создаём настоящий диалог
+ * в БД со всей историей: он появляется в инбоксе, оператор может отвечать,
+ * а тест-чат переходит в режим реального диалога (параметр conversationId).
  */
 export async function POST(req: NextRequest, { params }: Params) {
   const { id } = await params;
@@ -24,6 +35,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const body = await req.json();
     const input: string | null = body.input ? String(body.input).slice(0, 2000) : null;
     const state: EngineState | null = body.state ?? null;
+    const conversationId: string | null = body.conversationId ?? null;
 
     let flow: Flow = { nodes: [], edges: [] };
     try {
@@ -32,7 +44,83 @@ export async function POST(req: NextRequest, { params }: Params) {
       flow = { nodes: [], edges: [] };
     }
 
+    // ── Режим реального диалога (после передачи оператору) ──
+    if (conversationId) {
+      const conversation = await db.conversation.findFirst({
+        where: { id: conversationId, botId: bot.id },
+      });
+      if (!conversation) {
+        return NextResponse.json({ error: 'Диалог не найден' }, { status: 404 });
+      }
+
+      if (input) {
+        await db.message.create({
+          data: { conversationId: conversation.id, role: 'user', text: input },
+        });
+      }
+
+      let convState: EngineState | null = null;
+      try {
+        convState = conversation.state ? (JSON.parse(conversation.state) as EngineState) : null;
+      } catch {
+        convState = null;
+      }
+
+      const result = await runEngine(flow, input, convState);
+
+      const messages: SimulateMessage[] = [];
+      for (const m of result.messages) {
+        const saved = await db.message.create({
+          data: { conversationId: conversation.id, role: 'bot', text: m.text, nodeId: m.nodeId ?? null },
+        });
+        messages.push({ ...m, id: saved.id });
+      }
+
+      await db.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          state: JSON.stringify(result.state),
+          needsOperator: result.needsOperator ? true : conversation.needsOperator,
+          updatedAt: new Date(),
+        },
+      });
+
+      return NextResponse.json({
+        messages,
+        state: result.state,
+        needsOperator: result.needsOperator,
+        conversationId: conversation.id,
+      });
+    }
+
+    // ── Обычный stateless-режим симулятора ──
     const result = await runEngine(flow, input, state);
+
+    if (result.needsOperator) {
+      // Материализуем диалог: оператор должен увидеть его в инбоксе
+      const conversation = await db.conversation.create({
+        data: {
+          botId: bot.id,
+          source: 'simulator',
+          externalId: `sim_${crypto.randomBytes(10).toString('hex')}`,
+          contact: 'Тест-чат',
+          state: JSON.stringify(result.state),
+          needsOperator: true,
+        },
+      });
+      for (const h of result.state.history) {
+        await db.message.create({
+          data: { conversationId: conversation.id, role: h.role, text: h.text },
+        });
+      }
+      return NextResponse.json({
+        messages: result.messages,
+        state: result.state,
+        needsOperator: true,
+        conversationId: conversation.id,
+      });
+    }
+
     return NextResponse.json(result);
   } catch (err) {
     console.error('[simulate]', err);

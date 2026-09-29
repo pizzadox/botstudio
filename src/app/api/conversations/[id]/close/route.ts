@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import type { EngineState } from '@/lib/flow-types';
 
 type Params = { params: Promise<{ id: string }> };
 
-/** Закрыть обращение (снять флаг «нужен оператор») */
+/** Закрыть обращение: снять флаг «нужен оператор» и вернуть управление боту */
 export async function POST(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const user = await getSessionUser(req);
@@ -15,9 +16,24 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Диалог не найден' }, { status: 404 });
   }
 
+  // Очищаем режим оператора — бот снова ведёт диалог с начала сценария
+  let state: EngineState | null = null;
+  try {
+    state = conversation.state ? (JSON.parse(conversation.state) as EngineState) : null;
+  } catch {
+    state = null;
+  }
+  let nextState: string | null = conversation.state;
+  if (state) {
+    delete state.vars['__operator'];
+    state.currentNodeId = null;
+    state.waiting = 'none';
+    nextState = JSON.stringify(state);
+  }
+
   await db.conversation.update({
     where: { id: conversation.id },
-    data: { status: 'closed', needsOperator: false },
+    data: { status: 'closed', needsOperator: false, state: nextState },
   });
   return NextResponse.json({ ok: true });
 }

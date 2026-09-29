@@ -202,6 +202,10 @@ export async function runEngine(
     if (input) {
       state.history.push({ role: 'user', text: input });
     }
+    // Диалог уже передан оператору — бот молчит, пишет только человек-оператор
+    if (needsOperator) {
+      return { messages, state, needsOperator };
+    }
     current = findStart(flow);
     if (current && current.type === 'start') {
       current = nextNode(flow, current.id);

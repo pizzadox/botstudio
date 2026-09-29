@@ -35,9 +35,9 @@ export default function Shell({
   children: ReactNode;
 }) {
   return (
-    <div className="min-h-screen flex flex-col bg-muted/40">
+    <div className="h-dvh overflow-hidden flex flex-col bg-muted/40">
       {/* Мобильный хедер */}
-      <header className="md:hidden sticky top-0 z-40 flex items-center justify-between border-b bg-background px-4 py-2">
+      <header className="md:hidden flex items-center justify-between border-b bg-background px-4 py-2">
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Bot className="h-4 w-4" />
@@ -52,7 +52,7 @@ export default function Shell({
               title={n.label}
               onClick={() => onViewChange(n.key)}
               className={cn(
-                'flex h-9 w-9 items-center justify-center rounded-lg transition-colors',
+                'flex h-10 w-10 items-center justify-center rounded-lg transition-colors',
                 view === n.key
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-muted'
@@ -65,16 +65,16 @@ export default function Shell({
             aria-label="Выйти"
             title="Выйти"
             onClick={onLogout}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"
           >
             <LogOut className="h-4 w-4" />
           </button>
         </nav>
       </header>
 
-      <div className="flex flex-1">
+      <div className="flex flex-1 min-h-0">
         {/* Десктопный сайдбар */}
-        <aside className="hidden md:flex sticky top-0 h-screen w-60 shrink-0 flex-col border-r bg-background">
+        <aside className="hidden md:flex h-full w-60 shrink-0 flex-col border-r bg-background">
           <div className="flex items-center gap-3 px-5 py-5">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-emerald-600/20">
               <Bot className="h-5 w-5" />
@@ -131,7 +131,7 @@ export default function Shell({
           </div>
         </aside>
 
-        <main className="flex-1 min-w-0 flex flex-col">{children}</main>
+        <main className="flex-1 min-w-0 min-h-0 flex flex-col">{children}</main>
       </div>
     </div>
   );

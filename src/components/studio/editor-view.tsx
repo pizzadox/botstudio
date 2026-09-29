@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { DragEvent, MouseEvent } from 'react';
+import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 import {
   ChevronLeft,
   Loader2,
@@ -40,7 +41,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Sheet, SheetContent } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
@@ -98,10 +99,12 @@ function EditorInner({
   bot,
   onBack,
   onRenamed,
+  onOpenInbox,
 }: {
   bot: { id: string; name: string; status: string };
   onBack: () => void;
   onRenamed: (name: string, status: string) => void;
+  onOpenInbox?: () => void;
 }) {
   const { toast } = useToast();
   const { screenToFlowPosition, fitView } = useReactFlow();
@@ -372,7 +375,7 @@ function EditorInner({
           onChange={(e) => setName(e.target.value)}
           onBlur={saveName}
           onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-          className="h-9 w-40 border-transparent bg-transparent font-semibold shadow-none hover:border-input sm:w-56"
+          className="h-9 w-28 border-transparent bg-transparent font-semibold shadow-none hover:border-input sm:w-56"
         />
         <Badge variant={status === 'published' ? 'default' : 'secondary'}>
           {status === 'published' ? 'Опубликован' : 'Черновик'}
@@ -495,7 +498,7 @@ function EditorInner({
         {/* Тест-чат (десктоп) */}
         {isDesktop && testOpen && (
           <div className="w-80 shrink-0 border-l xl:w-96">
-            <TestChat botId={bot.id} onClose={() => setTestOpen(false)} />
+            <TestChat botId={bot.id} onClose={() => setTestOpen(false)} onOpenInbox={onOpenInbox} />
           </div>
         )}
       </div>
@@ -503,6 +506,10 @@ function EditorInner({
       {/* Инспектор (мобильные/узкие) */}
       <Sheet open={!isWide && !!selectedNode} onOpenChange={(o) => !o && setSelectedId(null)}>
         <SheetContent side="bottom" className="h-[75dvh] p-0">
+          <VisuallyHidden>
+            <SheetTitle>Свойства блока</SheetTitle>
+            <SheetDescription>Редактирование параметров выбранного блока сценария</SheetDescription>
+          </VisuallyHidden>
           {selectedNode && (
             <NodeInspector
               node={selectedNode}
@@ -516,8 +523,15 @@ function EditorInner({
 
       {/* Тест-чат (мобильные) */}
       <Sheet open={!isDesktop && testOpen} onOpenChange={setTestOpen}>
-        <SheetContent side="right" className={cn('w-full p-0 sm:max-w-sm')}>
-          <TestChat botId={bot.id} onClose={() => setTestOpen(false)} />
+        <SheetContent
+          side="right"
+          className={cn('w-full p-0 sm:max-w-sm', "[&>[data-slot=sheet-close]]:hidden")}
+        >
+          <VisuallyHidden>
+            <SheetTitle>Тестовый чат</SheetTitle>
+            <SheetDescription>Проверка сценария бота в режиме реального диалога</SheetDescription>
+          </VisuallyHidden>
+          <TestChat botId={bot.id} onClose={() => setTestOpen(false)} onOpenInbox={onOpenInbox} />
         </SheetContent>
       </Sheet>
 

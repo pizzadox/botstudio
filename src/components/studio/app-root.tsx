@@ -86,6 +86,7 @@ export default function AppRoot() {
         <EditorView
           bot={{ id: currentBot.id, name: currentBot.name, status: currentBot.status }}
           onBack={() => setView('dashboard')}
+          onOpenInbox={() => setView('inbox')}
           onRenamed={(name, status) =>
             setCurrentBot((b) => (b ? { ...b, name, status } : b))
           }
