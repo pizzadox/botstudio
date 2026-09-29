@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Bot, Headset, Loader2, LockKeyhole, MessageSquareText, Sparkles, Workflow } from 'lucide-react';
-import { api } from '@/lib/client-api';
+import { api, setAuthToken } from '@/lib/client-api';
 import type { SessionUser } from '@/lib/studio-types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -45,10 +45,11 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
     try {
       const url = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
       const payload = mode === 'login' ? { username: login, password } : { username: login, password, name };
-      const d = await api<{ user: SessionUser }>(url, {
+      const d = await api<{ user: SessionUser; token?: string }>(url, {
         method: 'POST',
         body: JSON.stringify(payload),
       });
+      if (d.token) setAuthToken(d.token);
       onLogin(d.user);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Что-то пошло не так');

@@ -39,8 +39,22 @@ export interface SessionUser {
   name: string | null;
 }
 
+/**
+ * Достаём токен сессии: сначала из заголовка Authorization: Bearer <token>,
+ * затем из cookie. Заголовок нужен, когда cookie недоступны
+ * (например, приложение открыто в iframe — браузеры блокируют сторонние cookie).
+ */
+export function getTokenFromRequest(req: NextRequest): string | null {
+  const auth = req.headers.get('authorization');
+  if (auth && auth.toLowerCase().startsWith('bearer ')) {
+    const t = auth.slice(7).trim();
+    if (t) return t;
+  }
+  return req.cookies.get(SESSION_COOKIE)?.value ?? null;
+}
+
 export async function getSessionUser(req: NextRequest): Promise<SessionUser | null> {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
+  const token = getTokenFromRequest(req);
   if (!token) return null;
   const session = await db.session.findUnique({
     where: { id: token },
@@ -55,7 +69,7 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
 }
 
 export async function destroySession(req: NextRequest): Promise<void> {
-  const token = req.cookies.get(SESSION_COOKIE)?.value;
+  const token = getTokenFromRequest(req);
   if (token) {
     await db.session.delete({ where: { id: token } }).catch(() => {});
   }

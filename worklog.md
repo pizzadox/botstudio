@@ -67,3 +67,23 @@ Work Log:
 
 Stage Summary:
 - Все ключевые сценарии проверены в реальном браузере: авторизация, конструктор, симулятор, ИИ, публикация, каналы, демо-чат, инбокс оператора.
+
+---
+Task ID: 4
+Agent: main
+Task: Исправление аутентификации: «требуется авторизация» при создании бота, потеря сессии после перезагрузки
+
+Work Log:
+- Диагноз: приложение открывается в iframe предпросмотра — браузер блокирует сторонние cookie (SameSite=Lax), поэтому cookie bstudio_session не сохранялся/не отправлялся; сессии при этом корректно создавались в БД.
+- Решение — двойная схема auth: cookie + Bearer-токен в localStorage.
+- src/lib/auth.ts: getTokenFromRequest() — токен из заголовка Authorization: Bearer (приоритет) или cookie; getSessionUser/destroySession обновлены.
+- /api/auth/login и /api/auth/register теперь возвращают token сессии в ответе.
+- src/lib/client-api.ts: getAuthToken/setAuthToken/clearAuthToken (localStorage), каждый запрос шлёт Authorization; при 401 вне форм входа — сброс токена + событие bstudio:unauthorized.
+- app-root.tsx: слушатель bstudio:unauthorized → экран входа; logout очищает localStorage. login-view.tsx: сохранение токена после входа/регистрации.
+- Создан демо-аккаунт: логин demo, пароль demo123 (сброс через seed-скрипт при повторном запуске).
+- Проверено curl: login → token, /api/auth/me с Bearer → 200, POST /api/bots с Bearer → 200.
+- Проверено agent-browser: вход demo/demo123 → создание бота «Демо-бот поддержки» → перезагрузка страницы → сессия сохранена, бот на дашборде, ошибок в консоли нет.
+
+Stage Summary:
+- Аутентификация устойчива к блокировке cookie (iframe): работает через Bearer-токен в localStorage, cookie сохранён как fallback.
+- Аккаунты в БД: alex, pizzadox (пароли хешированы, восстановлению не подлежат), demo / demo123.

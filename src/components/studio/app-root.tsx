@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Bot, Loader2 } from 'lucide-react';
-import { api } from '@/lib/client-api';
+import { api, clearAuthToken } from '@/lib/client-api';
 import type { SessionUser, BotListItem, ViewKey } from '@/lib/studio-types';
 import LoginView from './login-view';
 import Shell from './shell';
@@ -25,6 +25,15 @@ export default function AppRoot() {
       .then((d) => setUser(d.user))
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
+
+    // Если какой-то запрос вернул 401 (истёк токен и т.п.) — показываем вход
+    const onUnauthorized = () => {
+      setUser(null);
+      setCurrentBot(null);
+      setView('dashboard');
+    };
+    window.addEventListener('bstudio:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('bstudio:unauthorized', onUnauthorized);
   }, []);
 
   const openBot = useCallback(
@@ -60,6 +69,7 @@ export default function AppRoot() {
       currentBot={currentBot}
       onLogout={async () => {
         await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+        clearAuthToken();
         setUser(null);
         setCurrentBot(null);
         setView('dashboard');

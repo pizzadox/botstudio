@@ -32,7 +32,10 @@ export async function POST(req: NextRequest) {
     });
 
     const session = await createSession(user.id);
-    const res = NextResponse.json({ user: { id: user.id, username: user.username, name: user.name } });
+    const res = NextResponse.json({
+      user: { id: user.id, username: user.username, name: user.name },
+      token: session.id,
+    });
     res.cookies.set(SESSION_COOKIE, session.id, sessionCookieOptions(session.expiresAt));
     return res;
   } catch (err) {
