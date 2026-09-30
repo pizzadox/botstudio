@@ -47,7 +47,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const defaults: Record<string, string> = {
       telegram: 'Telegram-бот',
       whatsapp: 'WhatsApp',
-      max: 'MAX',
+      max: 'MAX-бот',
       web: 'Демо-чат сайта',
     };
 

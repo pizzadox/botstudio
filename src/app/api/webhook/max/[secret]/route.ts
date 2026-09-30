@@ -1,13 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { processInbound } from '@/lib/webhook';
+import { maxSendText } from '@/lib/max-api';
 
 type Params = { params: Promise<{ secret: string }> };
 
 /**
  * Вебхук для мессенджера MAX (бот API).
- * Принимает обновления вида {update_type:"message_created", message:{sender, recipient:{chat_id}, body:{text}}}
- * и простой формат {chat_id, text}.
+ *
+ * MAX присылает POST c объектом Update:
+ *   { update_type: "message_created", payload: { message: { sender, recipient: { chat_id }, body: { text } } } }
+ * Поддерживаем также упрощённые форматы { chat_id, text } и { message: {...} }.
+ *
+ * Обычно вебхук не нужен — сообщения принимает встроенный long-polling
+ * воркер (src/lib/max-poller.ts). Этот роут полезен, если вы вручную
+ * зарегистрировали подписку через POST /subscriptions.
  */
 export async function POST(req: NextRequest, { params }: Params) {
   const { secret } = await params;
@@ -19,31 +26,32 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     const body = await req.json();
 
-    const msg = body?.message;
-    const text: string | undefined =
-      msg?.body?.text ?? body?.text ?? msg?.text;
-    const chatId: string | undefined = String(
-      msg?.recipient?.chat_id ?? msg?.sender?.user_id ?? body?.chat_id ?? ''
-    );
-    const contact: string | undefined =
-      msg?.sender?.name ?? msg?.sender?.username ?? undefined;
+    // Официальный формат: update.payload.message; запасные: body.message / body.text
+    const upd = body?.update_type ? body : null;
+    const msg = upd?.payload?.message ?? body?.message;
+    const sender = msg?.sender ?? {};
 
-    if (chatId && text) {
+    const text: string | undefined = msg?.body?.text ?? body?.text ?? msg?.text;
+    const chatId: string | undefined = String(
+      msg?.recipient?.chat_id ?? msg?.recipient?.user_id ?? sender.user_id ?? body?.chat_id ?? ''
+    );
+    const contact: string | undefined = sender.name ?? sender.first_name ?? sender.username ?? undefined;
+
+    // Не отвечаем на собственные сообщения бота
+    const isOwn = sender.is_bot === true;
+
+    if (chatId && text && !isOwn) {
       const result = await processInbound(channel.id, {
         externalId: chatId,
         text: text.slice(0, 2000),
         contact,
       });
 
-      // Отправка через Bot API MAX
+      // Отправка ответов через Bot API MAX (токен — только в заголовке Authorization)
       if (result.ok && channel.token) {
         for (const reply of result.replies) {
-          await fetch(`https://botapi.max.ru/messages?access_token=${channel.token}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, text: reply }),
-            signal: AbortSignal.timeout(8000),
-          }).catch((e) => console.error('[max send]', e));
+          const sent = await maxSendText(channel.token, chatId, reply);
+          if (!sent.ok) console.error('[max webhook] send:', sent.error);
         }
       }
     }
@@ -51,5 +59,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     console.error('[max webhook]', err);
   }
 
+  return NextResponse.json({ ok: true });
+}
+
+/** MAX проверяет URL подписки GET-запросом — подтверждаем, что роут жив. */
+export async function GET() {
   return NextResponse.json({ ok: true });
 }

@@ -73,7 +73,7 @@ const CHANNEL_META: Record<
     label: 'MAX',
     icon: MessageSquare,
     color: 'bg-violet-100 text-violet-600',
-    hint: '1. В мессенджере MAX найдите бота для создания ботов и получите токен\n2. Вставьте токен здесь\n3. Скопируйте URL вебхука и укажите его в настройках бота MAX',
+    hint: 'Как получить токен:\n1. Откройте мессенджер MAX и найдите бота «MAX для бизнеса» (или откройте max.ru → Чат-боты)\n2. Создайте бота и скопируйте токен: раздел Чат-боты → выберите бота → ⋮ → Настройки → значок копирования\n3. Вставьте токен здесь и нажмите «Подключить»\n\nВебхук настраивать не нужно — студия сама принимает и отправляет сообщения в MAX.',
     tokenLabel: 'Bot token MAX',
   },
   web: {
@@ -266,20 +266,28 @@ export default function ChannelsView({
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-2">
-                    <code className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-                      {webhookUrl(ch)}
-                    </code>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0"
-                      onClick={() => copy(webhookUrl(ch))}
-                      aria-label="Скопировать URL вебхука"
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+                  {ch.type === 'max' ? (
+                    <div className="rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
+                      <span className="font-medium text-foreground">Вебхук не нужен.</span> Сообщения из MAX
+                      принимаются автоматически (long polling). Нажмите «Проверить» — студия свяжется с MAX и
+                      покажет имя бота.
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-2">
+                      <code className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                        {webhookUrl(ch)}
+                      </code>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 shrink-0"
+                        onClick={() => copy(webhookUrl(ch))}
+                        aria-label="Скопировать URL вебхука"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  )}
                   {ch.type === 'web' && (
                     <Button variant="outline" className="w-full" onClick={() => setDemoChannel(ch)}>
                       <Bot className="h-4 w-4" /> Открыть демо-чат
