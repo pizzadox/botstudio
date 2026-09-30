@@ -260,6 +260,21 @@ export default function NodeInspector({
                   onCheckedChange={(v) => onChange({ useMemory: v })}
                 />
               </div>
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div>
+                  <Label htmlFor="insp-bot-kb" className="text-sm">
+                    База знаний ассистента
+                  </Label>
+                  <p className="text-[11px] text-muted-foreground">
+                    Дополнить ответ записями из раздела «ИИ-ассистент»
+                  </p>
+                </div>
+                <Switch
+                  id="insp-bot-kb"
+                  checked={d.useBotKnowledge !== false}
+                  onCheckedChange={(v) => onChange({ useBotKnowledge: v })}
+                />
+              </div>
             </>
           )}
 

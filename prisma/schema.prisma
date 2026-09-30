@@ -27,17 +27,20 @@ model Session {
 }
 
 model Bot {
-  id            String         @id @default(cuid())
+  id            String          @id @default(cuid())
   userId        String
-  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   name          String
   description   String?
-  status        String         @default("draft")
-  flow          String         @default("{}")
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  status        String          @default("draft")
+  flow          String          @default("{}")
+  /// Настройки ИИ-ассистента: { enabled, prompt, reaskMenu }
+  aiConfig      String          @default("{}")
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
   channels      Channel[]
   conversations Conversation[]
+  knowledge     KnowledgeItem[]
 }
 
 model Channel {
@@ -90,4 +93,17 @@ model Message {
   createdAt      DateTime     @default(now())
 
   @@unique([conversationId, externalKey])
+}
+
+/// Запись базы знаний ИИ-ассистента бота
+model KnowledgeItem {
+  id        String   @id @default(cuid())
+  botId     String
+  bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([botId])
 }

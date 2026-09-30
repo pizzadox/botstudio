@@ -11,6 +11,29 @@ import type {
 const MAX_STEPS = 30;
 const MEMORY_TAIL = 12;
 
+/**
+ * Конфигурация ИИ-ассистента на уровне бота (Bot.aiConfig + база знаний).
+ * Ассистент отвечает на свободные вопросы пользователя, когда сценарий
+ * не может их обработать (текст вместо кнопки, сообщение вне сценария).
+ */
+export interface AiAssistantConfig {
+  enabled: boolean;
+  /** Личность и тон ассистента */
+  prompt?: string;
+  /** База знаний (склеенные записи бота) */
+  knowledge?: string;
+  /** Показывать меню повторно после ответа ассистента */
+  reaskMenu?: boolean;
+}
+
+const ASSISTANT_SYSTEM_RULES = [
+  'Ты — ИИ-ассистент внутри бота техподдержки.',
+  'Отвечай на вопросы пользователя кратко, вежливо и на языке пользователя.',
+  'Опирайся на базу знаний; если ответа там нет — честно скажи об этом и предложи переформулировать вопрос или позвать оператора.',
+  'Не выдумывай факты, которых нет в базе знаний.',
+  'Если пользователь явно просит живого человека/оператора или вопрос требует участия человека — ответь ровно одной строкой: OPERATOR_REQUEST',
+].join(' ');
+
 // ─── Вспомогательные функции ─────────────────────────────────────────────────
 
 export function emptyState(): EngineState {
@@ -51,6 +74,14 @@ function nextNode(flow: Flow, nodeId: string, handle?: string | null): FlowNode 
   return edge ? findNode(flow, edge.target) : null;
 }
 
+function findMenuNode(flow: Flow, lastMenuId?: string): FlowNode | null {
+  if (lastMenuId) {
+    const n = findNode(flow, lastMenuId);
+    if (n?.type === 'buttons') return n;
+  }
+  return flow.nodes.find((n) => n.type === 'buttons') ?? null;
+}
+
 function evalCondition(
   cond: FlowNode['data']['condition'],
   vars: Record<string, string>
@@ -87,19 +118,28 @@ function evalCondition(
 
 // ─── ИИ-навык: ответ нейросети с памятью диалога ─────────────────────────────
 
+interface AiAskData {
+  prompt?: string;
+  knowledge?: string;
+  useMemory?: boolean;
+}
+
 async function runAI(
-  node: FlowNode,
+  data: AiAskData,
   state: EngineState,
-  lastInput: string
+  lastInput: string,
+  extraSystem?: string
 ): Promise<string> {
   const zai = await ZAI.create();
-  const data = node.data;
 
   const sysParts: string[] = [];
   sysParts.push(
     data.prompt?.trim() ||
       'Ты — вежливый бот техподдержки. Отвечай кратко, по делу и на языке пользователя.'
   );
+  if (extraSystem?.trim()) {
+    sysParts.push(extraSystem.trim());
+  }
   if (data.knowledge?.trim()) {
     sysParts.push(`База знаний компании:\n${data.knowledge.trim()}`);
   }
@@ -143,7 +183,8 @@ async function runAI(
 export async function runEngine(
   flow: Flow,
   input: string | null,
-  prevState: EngineState | null
+  prevState: EngineState | null,
+  assistant?: AiAssistantConfig
 ): Promise<EngineResult> {
   const state: EngineState = prevState
     ? {
@@ -158,6 +199,73 @@ export async function runEngine(
   let needsOperator = state.vars['__operator'] === 'true';
   let lastInput = input ?? '';
   let current: FlowNode | null = null;
+
+  const assistantEnabled = assistant?.enabled === true;
+
+  /**
+   * Ответ ИИ-ассистента на свободный вопрос (вне сценария).
+   * После ответа возвращает пользователя в меню, чтобы навигация
+   * по сценарию продолжала работать.
+   */
+  const assistantFallback = async (userText: string, menuNode?: FlowNode): Promise<void> => {
+    let answer: string | null = null;
+    try {
+      const raw = await runAI(
+        { prompt: assistant?.prompt, knowledge: assistant?.knowledge, useMemory: true },
+        state,
+        userText,
+        ASSISTANT_SYSTEM_RULES
+      );
+      answer = raw && raw.trim().length > 0 ? raw : null;
+    } catch (err) {
+      console.error('[flow-engine] AI assistant error:', err);
+    }
+
+    // ИИ недоступен — вежливо сообщаем, пользователь может повторить вопрос
+    if (!answer) {
+      const errText =
+        'Извините, сервис ИИ временно недоступен. Попробуйте задать вопрос ещё раз через минуту.';
+      messages.push({ text: errText, nodeId: 'assistant' });
+      state.history.push({ role: 'bot', text: errText });
+      state.waiting = 'none';
+      state.currentNodeId = null;
+      return;
+    }
+
+    // Пользователь просит живого оператора — передаём диалог
+    if (answer.toUpperCase().includes('OPERATOR_REQUEST')) {
+      state.vars['__operator'] = 'true';
+      needsOperator = true;
+      const text = 'Соединяю вас с живым оператором, оставайтесь на линии 🙌';
+      messages.push({ text, nodeId: 'assistant' });
+      state.history.push({ role: 'bot', text });
+      state.waiting = 'none';
+      state.currentNodeId = null;
+      return;
+    }
+
+    messages.push({ text: answer, nodeId: 'assistant' });
+    state.history.push({ role: 'bot', text: answer });
+
+    // Возвращаем меню, чтобы можно было продолжить навигацию по сценарию
+    const menu = menuNode ?? findMenuNode(flow, state.vars['__last_menu']);
+    if (menu) {
+      if (assistant?.reaskMenu !== false) {
+        const menuText = interpolate(menu.data.text, state.vars) || 'Выберите вариант:';
+        messages.push({
+          text: menuText,
+          nodeId: menu.id,
+          buttons: menu.data.buttons ?? [],
+        });
+        state.history.push({ role: 'bot', text: menuText });
+      }
+      state.waiting = 'buttons';
+      state.currentNodeId = menu.id;
+    } else {
+      state.waiting = 'none';
+      state.currentNodeId = null;
+    }
+  };
 
   // 1. Возобновление: если движок ждал ввода/кнопки
   if (input && state.waiting !== 'none' && state.currentNodeId) {
@@ -178,6 +286,11 @@ export async function runEngine(
       lastInput = '';
       if (btn) {
         current = nextNode(flow, node.id, btn.id);
+      } else if (assistantEnabled) {
+        // Свободный текст вместо кнопки — отвечает ИИ-ассистент,
+        // затем пользователю снова показывается это же меню
+        await assistantFallback(input, node);
+        return { messages, state, needsOperator };
       } else {
         // Нет совпадения — переспрашиваем
         const text = interpolate(node.data.text, state.vars) || 'Выберите вариант:';
@@ -204,6 +317,11 @@ export async function runEngine(
     }
     // Диалог уже передан оператору — бот молчит, пишет только человек-оператор
     if (needsOperator) {
+      return { messages, state, needsOperator };
+    }
+    // ИИ-ассистент: свободный вопрос пользователя (в т.ч. первое сообщение)
+    if (assistantEnabled && input) {
+      await assistantFallback(input);
       return { messages, state, needsOperator };
     }
     current = findStart(flow);
@@ -253,6 +371,8 @@ export async function runEngine(
           });
           state.history.push({ role: 'bot', text });
         }
+        // Запоминаем последнее меню — ассистент вернёт к нему после ответа
+        state.vars['__last_menu'] = node.id;
         state.waiting = 'buttons';
         state.currentNodeId = node.id;
         current = null;
@@ -265,7 +385,14 @@ export async function runEngine(
       }
       case 'ai': {
         try {
-          const raw = await runAI(node, state, lastInput);
+          // AI-узел дополняется общей базой знаний ассистента бота
+          const d = { ...node.data };
+          if (assistantEnabled && d.useBotKnowledge !== false && assistant?.knowledge?.trim()) {
+            d.knowledge = d.knowledge?.trim()
+              ? `${d.knowledge.trim()}\n\n${assistant.knowledge.trim()}`
+              : assistant.knowledge;
+          }
+          const raw = await runAI(d, state, lastInput);
           const text = interpolate(raw, state.vars);
           messages.push({ text, nodeId: node.id });
           state.history.push({ role: 'bot', text });

@@ -8,6 +8,7 @@ import {
   LogOut,
   Workflow,
   Plug,
+  Sparkles,
 } from 'lucide-react';
 import type { SessionUser, ViewKey } from '@/lib/studio-types';
 import { cn } from '@/lib/utils';
@@ -15,6 +16,7 @@ import { cn } from '@/lib/utils';
 const NAV: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
   { key: 'editor', label: 'Конструктор', icon: Workflow },
+  { key: 'ai', label: 'ИИ-ассистент', icon: Sparkles },
   { key: 'channels', label: 'Каналы', icon: Plug },
   { key: 'inbox', label: 'Входящие', icon: Inbox },
 ];
@@ -38,11 +40,11 @@ export default function Shell({
     <div className="h-dvh overflow-hidden flex flex-col bg-muted/40">
       {/* Мобильный хедер */}
       <header className="md:hidden flex items-center justify-between border-b bg-background px-4 py-2">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Bot className="h-4 w-4" />
           </div>
-          <span className="font-bold">BotStudio</span>
+          <span className="hidden font-bold sm:inline">BotStudio</span>
         </div>
         <nav className="flex items-center gap-1">
           {NAV.map((n) => (

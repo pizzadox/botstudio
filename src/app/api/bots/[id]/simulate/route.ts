@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { runEngine } from '@/lib/flow-engine';
+import { loadAssistantConfig } from '@/lib/ai-assistant';
 import type { EngineState, Flow } from '@/lib/flow-types';
 
 type Params = { params: Promise<{ id: string }> };
@@ -66,7 +67,8 @@ export async function POST(req: NextRequest, { params }: Params) {
         convState = null;
       }
 
-      const result = await runEngine(flow, input, convState);
+      const assistant = await loadAssistantConfig(bot.id, bot.aiConfig);
+      const result = await runEngine(flow, input, convState, assistant);
 
       const messages: SimulateMessage[] = [];
       for (const m of result.messages) {
@@ -94,7 +96,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
 
     // ── Обычный stateless-режим симулятора ──
-    const result = await runEngine(flow, input, state);
+    const assistant = await loadAssistantConfig(bot.id, bot.aiConfig);
+    const result = await runEngine(flow, input, state, assistant);
 
     if (result.needsOperator) {
       // Материализуем диалог: оператор должен увидеть его в инбоксе

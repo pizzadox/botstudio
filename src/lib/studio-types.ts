@@ -67,7 +67,22 @@ export interface ChatMessage {
   createdAt: string;
 }
 
-export type ViewKey = 'dashboard' | 'editor' | 'channels' | 'inbox';
+export type ViewKey = 'dashboard' | 'editor' | 'ai' | 'channels' | 'inbox';
+
+export interface AiConfig {
+  enabled: boolean;
+  prompt: string;
+  reaskMenu: boolean;
+}
+
+export interface KnowledgeItemDto {
+  id: string;
+  botId: string;
+  title: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export const SOURCE_LABELS: Record<string, string> = {
   telegram: 'Telegram',

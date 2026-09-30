@@ -174,3 +174,24 @@ Stage Summary:
 - Дубли устранены по всем источникам: заглушки «…» заменены silent-ack/запиской «передал оператору» (троттлинг), гонки состояний закрыты мьютексом на диалог, дедупликация mid/callback_id на месте.
 - Ответы оператора и закрытие обращения теперь ДОСТАВЛЯЮТСЯ в MAX (и Telegram); ошибки отправки видны в статусе канала.
 - Артефакты: prisma/schema.prisma (+externalUserId), src/lib/{webhook,max-inbound,max-api,max-poller,deliver}.ts, routes (operator, close, webhook/max, webhook/demo), channels-view.tsx; скрипты download/{merge-dup-convs,e2e-max-unified,e2e-deliver,diag-conv}.ts.
+
+---
+Task ID: 8
+Agent: main
+Task: «Разверни возможности использования ИИ-ассистента, чтобы можно было задавать ему вопросы и получать ответы»
+
+Work Log:
+- ДО: ИИ работал только внутри отдельных AI-узлов сценария; свободный текст пользователя (мимо кнопок меню или вне сценария) движок игнорировал — просто переспрашивал меню. Задавать вопросы боту было нельзя.
+- Схема: Bot.aiConfig (JSON: enabled/prompt/reaskMenu) + новая модель KnowledgeItem (botId, title, content) — база знаний на уровне бота; db:push. Грабли: dev-сервер держит старый Prisma Client после генерации — нужен полный рестарт процесса (lsof в песочнице отсутствует, kill по PID).
+- flow-engine.ts: экспорт AiAssistantConfig; runEngine(flow, input, prevState, assistant?); замыкание assistantFallback — три сценария: (1) свободное сообщение при waiting='none' (включая первое) → ИИ-ответ; (2) текст вместо кнопки → ИИ-ответ + повторное меню; (3) ответ ИИ='OPERATOR_REQUEST' → handoff (needsOperator, vars.__operator). После ИИ-ответа пользователь возвращается в меню (__last_menu — id последнего buttons-узла; reaskMenu=false — меню не дублируется, но клики остаются активными). runAI(data, state, lastInput, extraSystem?) — ASSISTANT_SYSTEM_RULES (опора на базу знаний, OPERATOR_REQUEST-маркер); AI-узлы дополняются общей базой знаний бота (useBotKnowledge!==false).
+- src/lib/ai-assistant.ts: parseAiConfig (безопасный разбор) + loadAssistantConfig (enabled + склейка записей KnowledgeItem → knowledge-текст).
+- Подключение: webhook.ts (processInbound — общий путь MAX/Telegram/WhatsApp/web) и simulate/route.ts (оба runEngine-вызова) передают ассистента.
+- API: GET/PUT /api/bots/[id]/ai (настройки), GET/POST /api/bots/[id]/knowledge, PUT/DELETE /api/knowledge/[id] (проверка владения через bot.userId).
+- UI: новый раздел «ИИ-ассистент» (ViewKey 'ai', иконка Sparkles в навигации): master-switch, личность/тон (шаблон по кнопке), «Показывать меню после ответа», CRUD базы знаний (inline-форма, max-h-96 список), тест-чат по реальному simulate (кнопки-чипы, подсказки из базы знаний, «ИИ печатает…», баннер «Диалог передан оператору» → Входящие, сброс). node-inspector: переключатель «База знаний ассистента» в AI-узле. shell.tsx: скрытие wordmark на узких экранах (6 иконок не влезали в 390px).
+- Включён ассистент для ботов реальных пользователей («Поддержка TechCorp»/alex, «Й»/pizzadox) с дефолтной личностью.
+- Верификация: lint 0 ошибок; e2e download/e2e-ai.ts — 13/13 ✅ (включение/сохранение, KB CRUD, вопрос «график» → ИИ-ответ «18:00» из KB, возврат меню, клик кнопки после ИИ, свободный вопрос вместо кнопки → «14 дней», просьба оператора → needsOperator=true, выключенный ассистент = прежнее поведение); e2e download/e2e-ai-inbound.ts — 8/8 ✅ через реальный вебхук демо-чата (processInbound: ИИ-ответ, тот же диалог для повторных вопросов, одно обращение в инбоксе, кнопки работают после ИИ); браузер (agent-browser): вход demo → раздел ИИ-ассистент → вкл/сохранить → запись KB → вопрос в тест-чате → ответ из KB + меню → клик «❓ Частый вопрос» → сценарий → «Хочу живого человека» → баннер оператора; скриншоты 1280/390px; dev.log чистый.
+
+Stage Summary:
+- Бот теперь отвечает на ЛЮБЫЕ свободные вопросы клиентов нейросетью с опорой на редактируемую базу знаний и памятью диалога — во всех каналах (MAX, Telegram, WhatsApp, сайт) и в симуляторе; после ИИ-ответа меню возвращается, просьба живого человека автоматически уходит оператору.
+- База знаний ведётся в новом разделе «ИИ-ассистент» и одновременно обогащает AI-узлы конструктора.
+- Артефакты: prisma/schema.prisma (+aiConfig, KnowledgeItem), src/lib/{flow-engine,ai-assistant,flow-types,webhook}.ts, src/app/api/{bots/[id]/ai,bots/[id]/knowledge,knowledge/[id]}/route.ts, src/components/studio/{ai-assistant-view,shell,node-inspector,app-root}.tsx, studio-types.ts; e2e download/{e2e-ai,e2e-ai-inbound}.ts.

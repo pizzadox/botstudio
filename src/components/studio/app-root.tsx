@@ -8,6 +8,7 @@ import LoginView from './login-view';
 import Shell from './shell';
 import Dashboard from './dashboard';
 import EditorView from './editor-view';
+import AiAssistantView from './ai-assistant-view';
 import ChannelsView from './channels-view';
 import InboxView from './inbox-view';
 
@@ -90,6 +91,13 @@ export default function AppRoot() {
           onRenamed={(name, status) =>
             setCurrentBot((b) => (b ? { ...b, name, status } : b))
           }
+        />
+      )}
+      {view === 'ai' && currentBot && (
+        <AiAssistantView
+          bot={{ id: currentBot.id, name: currentBot.name, status: currentBot.status }}
+          onBack={() => setView('dashboard')}
+          onOpenInbox={() => setView('inbox')}
         />
       )}
       {view === 'channels' && currentBot && (

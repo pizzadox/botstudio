@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { runEngine } from '@/lib/flow-engine';
+import { loadAssistantConfig } from '@/lib/ai-assistant';
 import type { EngineState, Flow } from '@/lib/flow-types';
 
 export interface InboundMessage {
@@ -221,7 +222,9 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
       flow = { nodes: [], edges: [] };
     }
 
-    const result = await runEngine(flow, msg.text, state);
+    // ИИ-ассистент бота: отвечает на свободные вопросы, если включён
+    const assistant = await loadAssistantConfig(channel.botId, channel.bot.aiConfig);
+    const result = await runEngine(flow, msg.text, state, assistant);
 
     const replies: string[] = [];
     const messages: OutboundMessage[] = [];

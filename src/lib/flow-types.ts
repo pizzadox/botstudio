@@ -40,6 +40,8 @@ export interface FlowNodeData {
   prompt?: string;
   knowledge?: string;
   useMemory?: boolean;
+  /** Дополнять базу знаний узла общей базой знаний ИИ-ассистента бота */
+  useBotKnowledge?: boolean;
   url?: string;
   method?: string;
   body?: string;
