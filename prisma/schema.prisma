@@ -81,5 +81,9 @@ model Message {
   role           String
   text           String
   nodeId         String?
+  /// Ключ входящего сообщения мессенджера (mid / callback_id) — защита от повторной обработки
+  externalKey    String?
   createdAt      DateTime     @default(now())
+
+  @@unique([conversationId, externalKey])
 }

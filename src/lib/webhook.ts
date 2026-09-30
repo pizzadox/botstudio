@@ -8,10 +8,28 @@ export interface InboundMessage {
   conversationId?: string;
   text: string;
   contact?: string;
+  /**
+   * Уникальный ключ входящего сообщения мессенджера (mid / callback_id).
+   * Если сообщение с таким ключом уже обработано — повтор не приводит
+   * к новому ответу бота (защита от дублей).
+   */
+  externalKey?: string;
+}
+
+export interface OutboundMessage {
+  text: string;
+  buttons?: { id: string; text: string }[];
 }
 
 export type InboundResult =
-  | { ok: true; replies: string[]; conversationId: string }
+  | {
+      ok: true;
+      replies: string[];
+      /** Сообщения с кнопками — для мессенджеров с inline-клавиатурой */
+      messages: OutboundMessage[];
+      conversationId: string;
+      duplicate?: boolean;
+    }
   | { ok: false; error: string };
 
 /**
@@ -63,9 +81,34 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
 
   if (!conversation) return { ok: false, error: 'no_conversation' };
 
-  await db.message.create({
-    data: { conversationId: conversation.id, role: 'user', text: msg.text },
-  });
+  try {
+    await db.message.create({
+      data: {
+        conversationId: conversation.id,
+        role: 'user',
+        text: msg.text,
+        externalKey: msg.externalKey ?? null,
+      },
+    });
+  } catch (e) {
+    // Нарушение уникальности (conversationId + externalKey) — это дубликат,
+    // мессенджер прислал то же сообщение повторно. Отвечать не нужно.
+    if (
+      e &&
+      typeof e === 'object' &&
+      'code' in e &&
+      (e as { code?: string }).code === 'P2002'
+    ) {
+      return {
+        ok: true,
+        replies: [],
+        messages: [],
+        conversationId: conversation.id,
+        duplicate: true,
+      };
+    }
+    throw e;
+  }
 
   let state: EngineState | null = null;
   try {
@@ -84,11 +127,13 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
   const result = await runEngine(flow, msg.text, state);
 
   const replies: string[] = [];
+  const messages: OutboundMessage[] = [];
   for (const m of result.messages) {
     await db.message.create({
       data: { conversationId: conversation.id, role: 'bot', text: m.text, nodeId: m.nodeId },
     });
     replies.push(m.text);
+    messages.push({ text: m.text, buttons: m.buttons });
   }
 
   await db.conversation.update({
@@ -101,5 +146,5 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
     },
   });
 
-  return { ok: true, replies, conversationId: conversation.id };
+  return { ok: true, replies, messages, conversationId: conversation.id };
 }

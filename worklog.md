@@ -132,3 +132,22 @@ Stage Summary:
 - Подключение MAX теперь требует ТОЛЬКО токен: студия сама принимает сообщения (long polling) и отправляет ответы. Вебхук и публичный URL не нужны.
 - Пользовательский канал «Тест» (бот «Й») уже подключён и слушает MAX.
 - Артефакты: src/lib/max-api.ts, src/lib/max-poller.ts, src/instrumentation.ts; обновлены test/webhook роуты и channels-view.
+
+---
+Task ID: 6
+Agent: main
+Task: Дубли сообщений бота в MAX + неработающие кнопки («сообщения дублируются… нет кнопок управления… не выбрать»)
+
+Work Log:
+- Диагностика: в БД дублей нет; «дубли» — переспрашивание узла меню при непопадании текста (кнопок в MAX не было, пользователь был вынужден писать текст) + потенциальные повторы при рестарте/ретраях/двойной доставке (webhook+polling) без дедупликации. Подписок вебхуков у бота нет (GET /subscriptions пуст), но защита нужна.
+- Кнопки: processInbound терял кнопки (возвращал только replies: string[]). Теперь возвращает messages: {text, buttons}[]; poller/вебхук отправляют их как inline_keyboard (callback-кнопки, payload = текст кнопки — по нему движок матчит выбор).
+- Callback: обработка update_type=message_callback — payload/button.text подаётся в processInbound как выбор пользователя; первый ответ доставляется через POST /answers?callback_id (снимает «крутилку»), остальные через POST /messages.
+- Дедупликация: (1) in-memory claimInboundKey (src/lib/inbound-dedupe.ts, TTL 10 мин) для mid/callback_id; (2) БД-бэкстоп — поле Message.externalKey + @@unique([conversationId, externalKey]), P2002 → duplicate:true без ответа. Защищает от повторов при рестарте, ретраях long polling и двойной доставке.
+- Одиночная доставка: poller при старте цикла отписывает бот от всех вебхук-подписок (GET/DELETE /subscriptions) — MAX доставляет и так, и так, если подписка осталась.
+- max-api.ts: maxSendMessage (inline_keyboard), maxAnswerCallback, maxListSubscriptions, maxDeleteSubscription.
+- Верификация: lint чисто; e2e — повторное сообщение с тем же mid не создаёт дубля; callback «❓ Частый вопрос» → движок → n_ai → n_more; повтор callback с тем же callback_id задублирован; демо-чат (NULL externalKey) работает по unique-индексу; poller подключён к каналу пользователя.
+
+Stage Summary:
+- В MAX теперь приходят кликабельные кнопки сценария; нажатие обрабатывается движком (выбор по тексту кнопки).
+- Дубли устранены на трёх уровнях: in-memory, БД (unique), отписка вебхуков.
+- Артефакты: src/lib/inbound-dedupe.ts; обновлены webhook.ts, max-api.ts, max-poller.ts, webhook/max route, prisma schema (Message.externalKey).
