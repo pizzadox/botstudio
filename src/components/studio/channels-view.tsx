@@ -430,8 +430,28 @@ function DemoChat({ secret }: { secret: string }) {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const convRef = useRef<string | null>(null);
+  const visitorRef = useRef<string>('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const storageKey = `botstudio_demo_conv_${secret}`;
+  const visitorKey = 'botstudio_visitor';
+
+  // Стабильный id посетителя: один гость = одно обращение,
+  // даже если conversationId был потерян
+  useEffect(() => {
+    try {
+      let v = window.localStorage.getItem(visitorKey);
+      if (!v) {
+        v =
+          typeof crypto !== 'undefined' && 'randomUUID' in crypto
+            ? crypto.randomUUID().replace(/-/g, '')
+            : Math.random().toString(36).slice(2) + Date.now().toString(36);
+        window.localStorage.setItem(visitorKey, v);
+      }
+      visitorRef.current = v;
+    } catch {
+      visitorRef.current = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    }
+  }, [visitorKey]);
 
   // Восстановить диалог посетителя (как реальный виджет сайта)
   useEffect(() => {
@@ -491,7 +511,7 @@ function DemoChat({ secret }: { secret: string }) {
         messages: { id: string; role: string; text: string; buttons?: { id: string; text: string }[] }[];
       }>(`/api/webhook/demo/${secret}`, {
         method: 'POST',
-        body: JSON.stringify({ text: t, conversationId: convRef.current }),
+        body: JSON.stringify({ text: t, conversationId: convRef.current, visitorId: visitorRef.current || undefined }),
       });
       convRef.current = d.conversationId;
       try {

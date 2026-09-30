@@ -154,23 +154,31 @@ export async function maxSendText(
 
 /**
  * POST /answers — ответ на нажатие кнопки (снимает «крутилку» с кнопки
- * и может сразу доставить сообщение). Используем, чтобы передать первый
- * ответ бота прямо в ответ на callback.
+ * и может сразу доставить сообщение).
+ *  - с текстом → сообщение доставляется в чат;
+ *  - без текста (silent) → только останавливаем «крутилку», без сообщения
+ *    (иначе MAX получит заглушку — выглядело как «дубли одинаковых сообщений»).
  */
 export async function maxAnswerCallback(
   token: string,
   callbackId: string,
-  text?: string,
-  buttons?: MaxButton[]
+  opts?: { text?: string; buttons?: MaxButton[]; silent?: boolean }
 ): Promise<{ ok: boolean; error?: string }> {
   if (!callbackId) return { ok: false, error: 'callback_id не передан' };
-  const message: Record<string, unknown> = { text: text ?? '…' };
-  const attachments = keyboardAttachment(buttons);
-  if (attachments) message.attachments = attachments;
+  const text = opts?.text;
+  const body: Record<string, unknown> =
+    text && text.trim()
+      ? (() => {
+          const message: Record<string, unknown> = { text };
+          const attachments = keyboardAttachment(opts?.buttons);
+          if (attachments) message.attachments = attachments;
+          return { message };
+        })()
+      : { silent: true };
 
   const res = await apiFetch(`/answers?callback_id=${encodeURIComponent(callbackId)}`, token, {
     method: 'POST',
-    body: { message },
+    body,
     timeoutMs: 10000,
   });
   if (res.ok) return { ok: true };

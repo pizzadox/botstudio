@@ -1,18 +1,15 @@
 import { db } from '@/lib/db';
-import { processInbound } from '@/lib/webhook';
-import { claimInboundKey } from '@/lib/inbound-dedupe';
+import { handleMaxUpdate } from '@/lib/max-inbound';
 import {
-  maxAnswerCallback,
   maxDeleteSubscription,
   maxGetMe,
   maxGetUpdates,
   maxListSubscriptions,
-  maxSendMessage,
   type MaxUpdate,
 } from '@/lib/max-api';
 
 /**
- * Фоновый приёмщик сообщений MAX (Long Polling, GET /updates).
+ * Фоновый приёмник сообщений MAX (Long Polling, GET /updates).
  *
  * Запускается один раз на процесс сервера (см. src/instrumentation.ts).
  * Для каждого активного MAX-канала с токеном держит собственный цикл
@@ -154,7 +151,7 @@ async function channelLoop(channelId: string, loop: ChannelLoop): Promise<void> 
         loop.marker = res.marker;
         const fresh = res.updates.filter((u) => (u.timestamp ?? 0) > Date.now() - STALE_MS);
         for (const upd of fresh) {
-          await handleUpdate(channelId, token, loop, upd);
+          await handleMaxUpdate(channelId, token, upd, { botUserId: loop.botUserId });
         }
         await markConnected(channelId);
         continue;
@@ -162,7 +159,7 @@ async function channelLoop(channelId: string, loop: ChannelLoop): Promise<void> 
 
       loop.marker = res.marker ?? loop.marker;
       for (const upd of res.updates) {
-        await handleUpdate(channelId, token, loop, upd);
+        await handleMaxUpdate(channelId, token, upd, { botUserId: loop.botUserId });
       }
     } catch (e) {
       console.error('[max-poller] канал', channelId, '— непредвиденная ошибка:', e);
@@ -181,132 +178,4 @@ async function markConnected(channelId: string): Promise<void> {
     .catch(() => {});
 }
 
-async function handleUpdate(channelId: string, token: string, loop: ChannelLoop, upd: MaxUpdate): Promise<void> {
-  if (upd?.update_type === 'message_created') {
-    await handleMessageCreated(channelId, token, loop, upd);
-    return;
-  }
-  if (upd?.update_type === 'message_callback') {
-    await handleMessageCallback(channelId, token, loop, upd);
-  }
-}
-
-/** Обычное текстовое сообщение от пользователя. */
-async function handleMessageCreated(
-  channelId: string,
-  token: string,
-  loop: ChannelLoop,
-  upd: MaxUpdate
-): Promise<void> {
-  const msg = upd.payload?.message ?? upd.message;
-  if (!msg) return;
-
-  const sender = msg.sender ?? {};
-  if (sender.is_bot === true || (loop.botUserId !== undefined && sender.user_id === loop.botUserId)) return;
-
-  const text = String(msg.body?.text ?? '').trim();
-  if (!text) return; // сообщения только с вложениями не обрабатываем
-
-  const chatId = String(msg.recipient?.chat_id ?? sender.user_id ?? '');
-  if (!chatId) return;
-
-  // Защита от дублей: MAX может доставить сообщение и через long polling,
-  // и через вебхук, плюс ретраи после таймаутов
-  const mid = msg.body?.mid;
-  if (mid && !claimInboundKey(`${channelId}:${mid}`)) return;
-
-  const contact = sender.name ?? sender.first_name ?? sender.username ?? undefined;
-
-  const result = await processInbound(channelId, {
-    externalId: chatId,
-    text: text.slice(0, 2000),
-    contact,
-    externalKey: mid,
-  });
-
-  if (!result.ok) {
-    if (result.error === 'bot_not_published') {
-      await db.channel
-        .update({ where: { id: channelId }, data: { lastStatus: 'Опубликуйте бота в конструкторе' } })
-        .catch(() => {});
-    }
-    console.warn('[max-poller] сообщение пропущено:', result.error);
-    return;
-  }
-  if (result.duplicate) return; // уже отвечали на это сообщение
-
-  await sendReplies(token, chatId, result.messages);
-}
-
-/** Нажатие inline-кнопки: трактуем payload как текст выбора пользователя. */
-async function handleMessageCallback(
-  channelId: string,
-  token: string,
-  loop: ChannelLoop,
-  upd: MaxUpdate
-): Promise<void> {
-  const cb = upd.payload?.callback ?? upd.callback;
-  if (!cb) return;
-
-  const callbackId = cb.callback_id ?? '';
-  const choice = String(cb.button?.text ?? cb.payload ?? '').trim();
-  if (!choice) {
-    if (callbackId) await maxAnswerCallback(token, callbackId).catch(() => {});
-    return;
-  }
-
-  const chatId = String(
-    cb.message?.recipient?.chat_id ?? cb.user?.user_id ?? loop.botUserId ?? ''
-  );
-  if (!chatId) return;
-
-  if (callbackId && !claimInboundKey(`${channelId}:cb:${callbackId}`)) return;
-
-  const contact = cb.user?.name ?? cb.user?.first_name ?? cb.user?.username ?? undefined;
-
-  const result = await processInbound(channelId, {
-    externalId: chatId,
-    text: choice.slice(0, 2000),
-    contact,
-    externalKey: callbackId ? `cb:${callbackId}` : undefined,
-  });
-
-  if (!result.ok || result.duplicate) {
-    // Снимаем «крутилку» с кнопки в любом случае
-    if (callbackId) await maxAnswerCallback(token, callbackId).catch(() => {});
-    if (!result.ok) console.warn('[max-poller] callback пропущен:', result.error);
-    return;
-  }
-
-  // Первый ответ отправляем как ответ на callback (мгновенно, без крутилки),
-  // остальные — обычными сообщениями
-  const [first, ...rest] = result.messages;
-  if (callbackId) {
-    await maxAnswerCallback(token, callbackId, first?.text, first?.buttons);
-  } else if (first) {
-    await maxSendMessage(token, chatId, first.text, first.buttons);
-  }
-  let sent = 1;
-  for (const m of rest) {
-    if (sent > 0) await sleep(650); // лимит MAX: 2 сообщения/сек на диалог
-    await maxSendMessage(token, chatId, m.text, m.buttons);
-    sent += 1;
-  }
-}
-
-async function sendReplies(
-  token: string,
-  chatId: string,
-  messages: { text: string; buttons?: { id: string; text: string }[] }[]
-): Promise<void> {
-  let sent = 0;
-  for (const m of messages) {
-    if (sent > 0) await sleep(650); // лимит MAX: 2 сообщения/сек на диалог
-    const res = await maxSendMessage(token, chatId, m.text, m.buttons);
-    if (!res.ok) {
-      console.error('[max-poller] не удалось отправить ответ:', res.error);
-      break;
-    }
-    sent += 1;
-  }
-}
+export type { MaxUpdate };

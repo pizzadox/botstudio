@@ -151,3 +151,26 @@ Stage Summary:
 - В MAX теперь приходят кликабельные кнопки сценария; нажатие обрабатывается движком (выбор по тексту кнопки).
 - Дубли устранены на трёх уровнях: in-memory, БД (unique), отписка вебхуков.
 - Артефакты: src/lib/inbound-dedupe.ts; обновлены webhook.ts, max-api.ts, max-poller.ts, webhook/max route, prisma schema (Message.externalKey).
+
+---
+Task ID: 7
+Agent: main
+Task: «Сообщения до MAX не доходят; дублируются ответы бота (по два одинаковых); сделай чат с клиентом один, а не новые обращения»
+
+Work Log:
+- ДИАГНОСТИКА (по данным БД реального пользователя): (1) текстовые сообщения MAX приходят с chat_id диалога (326491749), а нажатия inline-кнопок — только с user_id (170579338) → callback создавал ВТОРОЕ обращение → бот заново здоровался и присылал меню (воспринималось как «дубли»); (2) после передачи оператору движок молчит, а poller на каждый callback отправлял заглушку «…» через /answers → «по два одинаковых сообщения» (4 клика = 4 «…»); (3) ответы оператора из инбокса только сохранялись в БД и НИКОГДА не доставлялись в MAX → «сообщения до макса не доходят»; (4) гонка состояний: одновременные сообщения одного диалога читали/перезаписывали state друг друга.
+- Схема: Conversation.externalUserId (стабильный id человека, для MAX — user_id) + индекс [botId, source, externalUserId]; db:push.
+- processInbound (src/lib/webhook.ts): разрешение диалога по человеку (externalUserId) с приоритетом; при смене chat_id externalId обновляется (ответы уходят туда, откуда пишут); плейсхолдер user:{id} для callback'ов без chat_id; P2002-ретрай при гонке создания; новое сообщение reopen'ит обращение (status: 'open'); в результате возвращаются chatId + needsOperator; мьютекс на диалог (withConversationLock, globalThis) — критическая секция «вставка сообщения → движок → запись state» строго последовательно, с перечитыванием диалога под локом.
+- max-api.ts: maxAnswerCallback переведён на opts {text, buttons, silent} — без текста шлёт {silent:true} (останавливает «крутилку» БЕЗ сообщения) вместо заглушки «…».
+- src/lib/max-inbound.ts (новый): общий обработчик MAX-апдейтов для poller'а и вебхука (handleMaxUpdate): message_created → processInbound(externalId=chat_id, externalUserId=user_id); message_callback → выбор по тексту кнопки; в режиме оператора — записка «📨 Ваше сообщение передано оператору» (через /answers для клика, текстом для обычных сообщений, троттлинг 10 мин/диалог, фиксируется в инбоксе как сообщение бота); остаток ответов — только при числовом chat_id; ошибки отправки пишутся в lastStatus канала, успех логируется.
+- max-poller.ts упрощён (использует max-inbound), webhook/max route тоже (плюс поддержка формата {updates:[...]} и «голых» message/callback).
+- src/lib/deliver.ts (новый): deliverTextToConversation — доставка в мессенджер клиента: max → POST /messages (chat_id), telegram → sendMessage; web/simulator → delivered (polling). Подключена к /api/conversations/[id]/operator (ответ оператора теперь ДОХОДИТ до MAX; в ответе delivered/deliveryError) и к close (клиенту в MAX уходит «✅ Обращение закрыто…»).
+- Демо-чат: стабильный visitorId в localStorage (bstudio_visitor) → один гость сайта = одно обращение даже при потере conversationId (demo route принимает visitorId → externalUserId=web:{visitorId}).
+- Слияние существующих дублей: download/merge-dup-convs.ts — группы (bot+source='max'+contact), primary по числу неколбэк-сообщений, перенос Message, needsOperator=OR, state от свежайшего, externalUserId из externalId дубля. Выполнен: «Михаил Инженер ОИТ» — 2 обращения → 1 (20 сообщений в одной переписке, режим оператора сохранён, externalUserId=170579338).
+- Верификация: bun run lint — 0 ошибок; e2e download/e2e-max-unified.ts (изолированный бот+канал с фейковым токеном через реальный webhook-роут) — 18/18 ✅: текст и кнопки одного человека = одно обращение; дедупликация mid/callback_id; нет заглушек «…»; handoff по кнопке; записка о передаче + троттлинг; смена chat_id тем же человеком не создаёт обращение (externalId обновляется); deliver-путь (download/e2e-deliver.ts) — внятные ошибки без падений; браузер (agent-browser): вход, публикация, веб-канал, демо-чат (кнопки кликабельны, «Оператор» → handoff), инбокс — ровно одно обращение гостя, ответ оператора доставлен в переписку, мобильный вид 390px ок, MAX-диалог с подсказками на месте; dev.log чистый (реальный MAX-канал «OK: получаю сообщения из MAX»); тестовые боты/данные удалены.
+
+Stage Summary:
+- Один человек = одно обращение: MAX-пользователь идентифицируется по user_id (Conversation.externalUserId), текст и клики кнопок попадают в одну переписку, при смене чата ответы следуют за человеком.
+- Дубли устранены по всем источникам: заглушки «…» заменены silent-ack/запиской «передал оператору» (троттлинг), гонки состояний закрыты мьютексом на диалог, дедупликация mid/callback_id на месте.
+- Ответы оператора и закрытие обращения теперь ДОСТАВЛЯЮТСЯ в MAX (и Telegram); ошибки отправки видны в статусе канала.
+- Артефакты: prisma/schema.prisma (+externalUserId), src/lib/{webhook,max-inbound,max-api,max-poller,deliver}.ts, routes (operator, close, webhook/max, webhook/demo), channels-view.tsx; скрипты download/{merge-dup-convs,e2e-max-unified,e2e-deliver,diag-conv}.ts.

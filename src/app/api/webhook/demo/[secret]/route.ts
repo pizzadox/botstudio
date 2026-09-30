@@ -24,10 +24,15 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (!text) return NextResponse.json({ error: 'Пустое сообщение' }, { status: 400 });
 
     const conversationId = body.conversationId ? String(body.conversationId) : undefined;
+    // Стабильный id посетителя (localStorage виджета): один гость = одно обращение,
+    // даже если localStorage с conversationId был потерян
+    const visitorId = body.visitorId ? String(body.visitorId).slice(0, 64) : undefined;
+    const externalUserId = visitorId ? `web:${visitorId}` : undefined;
 
     const result = await processInbound(channel.id, {
       conversationId,
-      externalId: conversationId ?? crypto.randomBytes(12).toString('hex'),
+      externalId: conversationId ?? externalUserId ?? crypto.randomBytes(12).toString('hex'),
+      externalUserId,
       text,
       contact: 'Гость сайта',
     });

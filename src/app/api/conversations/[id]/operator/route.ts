@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { deliverTextToConversation } from '@/lib/deliver';
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -28,8 +29,14 @@ export async function POST(req: NextRequest, { params }: Params) {
       data: { updatedAt: new Date() },
     });
 
+    // Доставка в мессенджер клиента (MAX/Telegram); для веба клиент заберёт
+    // ответ polling'ом — ошибки отправки не валим в 500
+    const delivery = await deliverTextToConversation(conversation.id, text);
+
     return NextResponse.json({
       message: { id: message.id, role: message.role, text: message.text, createdAt: message.createdAt },
+      delivered: delivery.delivered,
+      deliveryError: delivery.error,
     });
   } catch (err) {
     console.error('[operator reply]', err);

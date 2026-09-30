@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { deliverTextToConversation } from '@/lib/deliver';
 import type { EngineState } from '@/lib/flow-types';
 
 type Params = { params: Promise<{ id: string }> };
@@ -35,5 +36,12 @@ export async function POST(req: NextRequest, { params }: Params) {
     where: { id: conversation.id },
     data: { status: 'closed', needsOperator: false, state: nextState },
   });
+
+  // Сообщаем клиенту в мессенджере, что обращение закрыто
+  await deliverTextToConversation(
+    conversation.id,
+    '✅ Обращение закрыто. Если понадобится помощь — просто напишите нам!'
+  ).catch(() => {});
+
   return NextResponse.json({ ok: true });
 }

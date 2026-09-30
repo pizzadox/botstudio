@@ -56,22 +56,26 @@ model Channel {
 }
 
 model Conversation {
-  id            String    @id @default(cuid())
-  botId         String
-  bot           Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
-  channelId     String?
-  channel       Channel?  @relation(fields: [channelId], references: [id], onDelete: SetNull)
-  source        String    @default("web")
-  externalId    String?
-  contact       String?
-  state         String?
-  needsOperator Boolean   @default(false)
-  status        String    @default("open")
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  messages      Message[]
+  id             String    @id @default(cuid())
+  botId          String
+  bot            Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  channelId      String?
+  channel        Channel?  @relation(fields: [channelId], references: [id], onDelete: SetNull)
+  source         String    @default("web")
+  /// Куда отвечать в мессенджере (для MAX — chat_id диалога)
+  externalId     String?
+  /// Стабильный идентификатор человека (для MAX — user_id): один пользователь = одно обращение
+  externalUserId String?
+  contact        String?
+  state          String?
+  needsOperator  Boolean   @default(false)
+  status         String    @default("open")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  messages       Message[]
 
   @@unique([botId, source, externalId])
+  @@index([botId, source, externalUserId])
 }
 
 model Message {
