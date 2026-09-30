@@ -82,6 +82,14 @@ function findMenuNode(flow: Flow, lastMenuId?: string): FlowNode | null {
   return flow.nodes.find((n) => n.type === 'buttons') ?? null;
 }
 
+/**
+ * Команда старта сценария (/start, «старт», «начать») — детерминированный вход
+ * в сценарий, минуя ИИ-ассистента (мессенджеры шлют /start при первом открытии бота).
+ */
+function isStartCommand(text: string): boolean {
+  return /^\/(start|старт|начать)$|^(старт|начать)\s*$/i.test(text.trim());
+}
+
 function evalCondition(
   cond: FlowNode['data']['condition'],
   vars: Record<string, string>
@@ -286,6 +294,12 @@ export async function runEngine(
       lastInput = '';
       if (btn) {
         current = nextNode(flow, node.id, btn.id);
+      } else if (isStartCommand(input)) {
+        // /start в любом месте диалога — начать сценарий заново
+        current = findStart(flow);
+        if (current && current.type === 'start') {
+          current = nextNode(flow, current.id);
+        }
       } else if (assistantEnabled) {
         // Свободный текст вместо кнопки — отвечает ИИ-ассистент,
         // затем пользователю снова показывается это же меню
@@ -319,8 +333,9 @@ export async function runEngine(
     if (needsOperator) {
       return { messages, state, needsOperator };
     }
-    // ИИ-ассистент: свободный вопрос пользователя (в т.ч. первое сообщение)
-    if (assistantEnabled && input) {
+    // ИИ-ассистент: свободный вопрос пользователя (в т.ч. первое сообщение);
+    // /start всегда запускает сценарий с приветствия — детерминированный вход
+    if (assistantEnabled && input && !isStartCommand(input)) {
       await assistantFallback(input);
       return { messages, state, needsOperator };
     }
