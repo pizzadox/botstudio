@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { geocodeAddress } from '@/lib/orders';
+import { geocodeAddress, reverseGeocode } from '@/lib/orders';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
 
@@ -94,6 +94,24 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       data.lat = null;
       data.lng = null;
       data.geoSource = null;
+    }
+
+    // Точку поставили/сдвинули вручную — адрес подтягиваем под точку
+    // (обратный геокодинг). Если сервис не ответил — адрес не трогаем.
+    const manualPoint =
+      (typeof data.lat === 'number' || typeof data.lng === 'number') &&
+      data.geoSource === 'manual' &&
+      body.geocode !== true;
+    if (manualPoint) {
+      const rev = await reverseGeocode(
+        (data.lat as number) ?? order.lat!,
+        (data.lng as number) ?? order.lng!
+      );
+      if (rev?.address) {
+        // Полный адрес: город (если распознался) + улица/дом
+        data.address = rev.city ? `${rev.city}, ${rev.address}` : rev.address;
+        if (rev.city) data.city = rev.city;
+      }
     }
 
     // Перегеокодировать адрес по требованию оператора.

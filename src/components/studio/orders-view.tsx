@@ -1203,11 +1203,16 @@ export default function OrdersView({
       const id = placementId;
       setPlacementId(null);
       try {
-        await api(`/api/bots/${bot.id}/orders/${id}`, {
+        const d = await api<{ order: OrderDto }>(`/api/bots/${bot.id}/orders/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({ lat, lng }),
         });
-        toast({ title: 'Точка заявки сохранена на карте' });
+        toast({
+          title: 'Точка заявки сохранена на карте',
+          description: d.order?.address
+            ? `Адрес обновлён: ${d.order.address}`
+            : 'Адрес не удалось определить — точка сохранена',
+        });
         load();
       } catch {
         toast({ title: 'Не удалось сохранить точку', variant: 'destructive' });

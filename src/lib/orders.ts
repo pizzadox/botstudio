@@ -202,6 +202,56 @@ function geocodeRetryLater(orderId: string, address: string): void {
   }, 90 * 1000);
 }
 
+/**
+ * Обратный геокодинг: координаты → адрес (Nominatim /reverse).
+ * Используется, когда оператор ставит/сдвигает точку заявки вручную —
+ * адрес в карточке подтягивается под точку на карте.
+ * Кэш по округлённым координатам (5 знаков ≈ 1 м).
+ */
+const revCache = new Map<
+  string,
+  { address: string; city: string | null } | null
+>();
+
+export async function reverseGeocode(
+  lat: number,
+  lng: number
+): Promise<{ address: string; city: string | null } | null> {
+  const key = `${lat.toFixed(5)}:${lng.toFixed(5)}`;
+  if (revCache.has(key)) return revCache.get(key) ?? null;
+
+  let result: { address: string; city: string | null } | null = null;
+  try {
+    const url = new URL('https://nominatim.openstreetmap.org/reverse');
+    url.searchParams.set('format', 'jsonv2');
+    url.searchParams.set('lat', String(lat));
+    url.searchParams.set('lon', String(lng));
+    url.searchParams.set('zoom', '18');
+    url.searchParams.set('accept-language', 'ru');
+    const res = await fetch(url.toString(), {
+      headers: { 'User-Agent': 'BotStudio/1.0 (bot support orders)' },
+      signal: AbortSignal.timeout(3500),
+    });
+    if (res.ok) {
+      const json = (await res.json()) as {
+        address?: Record<string, string>;
+        name?: string;
+      };
+      const a = json.address ?? {};
+      const street = [a.road, a.house_number].filter(Boolean).join(', ');
+      const city = a.city ?? a.town ?? a.village ?? a.municipality ?? null;
+      const address = street || json.name || a.suburb || null;
+      if (address) result = { address, city };
+    }
+  } catch {
+    result = null;
+  }
+
+  if (revCache.size > 500) revCache.clear();
+  revCache.set(key, result);
+  return result;
+}
+
 export async function createOrder(input: CreateOrderInput) {
   // Координаты — сразу при создании (метка появляется на карте моментально):
   // геокодим до вставки, кэш делает результат детерминированным.
