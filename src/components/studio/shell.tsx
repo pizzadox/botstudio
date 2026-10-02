@@ -6,6 +6,7 @@ import {
   Inbox,
   LayoutDashboard,
   LogOut,
+  MapPin,
   Workflow,
   Plug,
   Sparkles,
@@ -19,6 +20,7 @@ const NAV: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'ai', label: 'ИИ-ассистент', icon: Sparkles },
   { key: 'channels', label: 'Каналы', icon: Plug },
   { key: 'inbox', label: 'Входящие', icon: Inbox },
+  { key: 'orders', label: 'Заявки', icon: MapPin },
 ];
 
 export default function Shell({

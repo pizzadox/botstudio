@@ -41,6 +41,7 @@ model Bot {
   channels      Channel[]
   conversations Conversation[]
   knowledge     KnowledgeItem[]
+  orders        Order[]
 }
 
 model Channel {
@@ -76,6 +77,7 @@ model Conversation {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   messages       Message[]
+  orders         Order[]
 
   @@unique([botId, source, externalId])
   @@index([botId, source, externalUserId])
@@ -90,9 +92,50 @@ model Message {
   nodeId         String?
   /// Ключ входящего сообщения мессенджера (mid / callback_id) — защита от повторной обработки
   externalKey    String?
+  /// Сообщение относится к конкретной заявке (чат по заявке)
+  orderId        String?
+  order          Order?       @relation(fields: [orderId], references: [id], onDelete: SetNull)
   createdAt      DateTime     @default(now())
 
   @@unique([conversationId, externalKey])
+  @@index([orderId])
+}
+
+/// Заявка клиента (вывоз отходов / КГМ), создаётся сценарием бота или оператором
+model Order {
+  id             String        @id @default(cuid())
+  botId          String
+  bot            Bot           @relation(fields: [botId], references: [id], onDelete: Cascade)
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  /// Стабильный идентификатор клиента в канале (MAX user_id и т.п.) — история заказов клиента
+  externalUserId String?
+  /// Человекочитаемый номер заявки в пределах бота (№1, №2, …)
+  number         Int
+  /// waste — вывоз отходов, kgm — крупногабаритный мусор, other — другое
+  type           String        @default("waste")
+  clientName     String?
+  phone          String?
+  address        String?
+  /// Объём контейнера / состав предметов
+  size           String?
+  /// Желаемая дата подачи машины (свободный текст из сценария)
+  wishDate       String?
+  comment        String?
+  /// new → assigned → in_progress → completed | cancelled
+  status         String        @default("new")
+  assignee       String?
+  /// Координаты для карты (OpenFreeMap); заполняются геокодингом или оператором
+  lat            Float?
+  lng            Float?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  completedAt    DateTime?
+  messages       Message[]
+
+  @@unique([botId, number])
+  @@index([botId, status])
+  @@index([botId, externalUserId])
 }
 
 /// Запись базы знаний ИИ-ассистента бота

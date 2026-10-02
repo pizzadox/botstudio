@@ -1,4 +1,6 @@
 import ZAI from 'z-ai-web-dev-sdk';
+import { db } from '@/lib/db';
+import { createOrder } from '@/lib/orders';
 import type {
   ConditionOp,
   EngineMessage,
@@ -10,6 +12,21 @@ import type {
 
 const MAX_STEPS = 30;
 const MEMORY_TAIL = 12;
+
+/**
+ * Контекст движка: данные диалога, нужные для действий уровня приложения
+ * (создание заявки с привязкой к клиенту).
+ */
+export interface EngineContext {
+  botId?: string;
+  conversationId?: string;
+  externalUserId?: string | null;
+}
+
+/** Кнопка/команда возврата в главное меню — доступна пользователю всегда */
+export function isMainMenuCommand(text: string): boolean {
+  return /^(🏠\s*)?в главное меню[.!]?\s*$|^(🏠\s*)?главное меню[.!]?\s*$/i.test(text.trim());
+}
 
 /**
  * Конфигурация ИИ-ассистента на уровне бота (Bot.aiConfig + база знаний).
@@ -137,8 +154,7 @@ async function runAI(
   state: EngineState,
   lastInput: string,
   extraSystem?: string
-): Promise<string> {
-  const zai = await ZAI.create();
+): Promise<string> {  const zai = await ZAI.create();
 
   const sysParts: string[] = [];
   sysParts.push(
@@ -186,13 +202,34 @@ async function runAI(
     : 'Извините, я не смог сформулировать ответ. Попробуйте перефразировать вопрос.';
 }
 
+/** Ответ ИИ-ассистента на свободный вопрос (используется и режимом «Свободный чат») */
+export async function askAssistant(
+  assistant: AiAssistantConfig,
+  state: EngineState,
+  userText: string
+): Promise<string | null> {
+  try {
+    const raw = await runAI(
+      { prompt: assistant.prompt, knowledge: assistant.knowledge, useMemory: true },
+      state,
+      userText,
+      ASSISTANT_SYSTEM_RULES
+    );
+    return raw && raw.trim().length > 0 ? raw : null;
+  } catch (err) {
+    console.error('[flow-engine] askAssistant error:', err);
+    return null;
+  }
+}
+
 // ─── Оркестратор: главный цикл выполнения сценария ───────────────────────────
 
 export async function runEngine(
   flow: Flow,
   input: string | null,
   prevState: EngineState | null,
-  assistant?: AiAssistantConfig
+  assistant?: AiAssistantConfig,
+  ctx?: EngineContext
 ): Promise<EngineResult> {
   const state: EngineState = prevState
     ? {
@@ -279,12 +316,23 @@ export async function runEngine(
   if (input && state.waiting !== 'none' && state.currentNodeId) {
     const node = findNode(flow, state.currentNodeId);
     if (node?.type === 'question') {
-      const v = node.data.variable?.trim() || 'answer';
-      state.vars[v] = input;
-      state.history.push({ role: 'user', text: input });
-      state.waiting = 'none';
-      lastInput = '';
-      current = nextNode(flow, node.id);
+      // Постоянная кнопка «🏠 Главное меню» — работает и вместо ответа на вопрос
+      if (isMainMenuCommand(input)) {
+        state.history.push({ role: 'user', text: input });
+        state.waiting = 'none';
+        lastInput = '';
+        current = findStart(flow);
+        if (current && current.type === 'start') {
+          current = nextNode(flow, current.id);
+        }
+      } else {
+        const v = node.data.variable?.trim() || 'answer';
+        state.vars[v] = input;
+        state.history.push({ role: 'user', text: input });
+        state.waiting = 'none';
+        lastInput = '';
+        current = nextNode(flow, node.id);
+      }
     } else if (node?.type === 'buttons') {
       state.history.push({ role: 'user', text: input });
       const btn = (node.data.buttons ?? []).find(
@@ -293,9 +341,13 @@ export async function runEngine(
       state.waiting = 'none';
       lastInput = '';
       if (btn) {
+        // Выбор из меню можно сохранить в переменную (напр. объём контейнера)
+        if (node.data.saveSelection) {
+          state.vars[node.data.saveSelection] = btn.text;
+        }
         current = nextNode(flow, node.id, btn.id);
-      } else if (isStartCommand(input)) {
-        // /start в любом месте диалога — начать сценарий заново
+      } else if (isMainMenuCommand(input) || isStartCommand(input)) {
+        // «🏠 Главное меню» или /start в любом месте диалога — начать заново
         current = findStart(flow);
         if (current && current.type === 'start') {
           current = nextNode(flow, current.id);
@@ -356,6 +408,33 @@ export async function runEngine(
         break;
       }
       case 'message': {
+        // Узел с флагом «Создать заявку»: номер попадает в {{order.number}}
+        if (node.data.createOrder && ctx?.botId) {
+          try {
+            const cfg = node.data.createOrder;
+            const pick = (v?: string) =>
+              v && v.trim() ? (state.vars[v.trim()] ?? '').trim() : '';
+            const order = await createOrder({
+              botId: ctx.botId,
+              conversationId: ctx.conversationId,
+              externalUserId: ctx.externalUserId ?? null,
+              type: cfg.type ?? 'waste',
+              clientName: pick(cfg.nameVar) || null,
+              phone: pick(cfg.phoneVar) || null,
+              address: pick(cfg.addressVar) || null,
+              size: pick(cfg.sizeVar) || null,
+              wishDate: pick(cfg.dateVar) || null,
+              comment: cfg.comment ? interpolate(cfg.comment, state.vars) : null,
+            });
+            state.vars['order.number'] = String(order.number);
+            state.vars['order.id'] = order.id;
+            state.vars['order.type'] = order.type;
+            console.log(`[flow-engine] заявка №${order.number} создана (${order.type})`);
+          } catch (err) {
+            console.error('[flow-engine] createOrder error:', err);
+            state.vars['order.number'] = '—';
+          }
+        }
         const text = interpolate(node.data.text, state.vars, lastInput || undefined);
         if (text.trim()) {
           messages.push({ text, nodeId: node.id });

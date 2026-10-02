@@ -1,6 +1,6 @@
 'use client';
 
-import { CircleHelp, Plus, Settings2, Trash2, X } from 'lucide-react';
+import { CircleHelp, ClipboardList, MousePointerClick, Plus, Settings2, Trash2, X } from 'lucide-react';
 import type { ConditionOp, FlowButton, FlowNode, FlowNodeData } from '@/lib/flow-types';
 import { CONDITION_OP_LABELS, NODE_META } from '@/lib/flow-types';
 import { NODE_ICONS } from './flow-node';
@@ -80,6 +80,112 @@ export default function NodeInspector({
             </div>
           )}
 
+          {node.type === 'message' && (
+            <div className="space-y-1.5 rounded-xl border p-3">
+              <div className="flex items-center justify-between">
+                <Label className="flex items-center gap-1 text-sm">
+                  <ClipboardList className="h-3.5 w-3.5" /> Создать заявку
+                </Label>
+                <Switch
+                  checked={!!d.createOrder}
+                  onCheckedChange={(v) =>
+                    onChange({
+                      createOrder: v
+                        ? {
+                            type: 'waste' as const,
+                            phoneVar: 'phone',
+                            addressVar: 'address',
+                            dateVar: 'date',
+                          }
+                        : undefined,
+                    })
+                  }
+                />
+              </div>
+              {d.createOrder && (
+                <div className="space-y-2 pt-1">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Тип заявки</Label>
+                    <Select
+                      value={d.createOrder.type ?? 'waste'}
+                      onValueChange={(v) =>
+                        onChange({
+                          createOrder: { ...d.createOrder, type: v as 'waste' | 'kgm' | 'other' },
+                        })
+                      }
+                    >
+                      <SelectTrigger className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="waste">🚛 Вывоз отходов</SelectItem>
+                        <SelectItem value="kgm">📦 Вывоз КГМ</SelectItem>
+                        <SelectItem value="other">📋 Другое</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Перем.: адрес</Label>
+                      <Input
+                        className="h-8"
+                        value={d.createOrder.addressVar ?? ''}
+                        placeholder="address"
+                        onChange={(e) =>
+                          onChange({
+                            createOrder: { ...d.createOrder, addressVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Перем.: телефон</Label>
+                      <Input
+                        className="h-8"
+                        value={d.createOrder.phoneVar ?? ''}
+                        placeholder="phone"
+                        onChange={(e) =>
+                          onChange({
+                            createOrder: { ...d.createOrder, phoneVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Перем.: дата</Label>
+                      <Input
+                        className="h-8"
+                        value={d.createOrder.dateVar ?? ''}
+                        placeholder="date"
+                        onChange={(e) =>
+                          onChange({
+                            createOrder: { ...d.createOrder, dateVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Перем.: объём/состав</Label>
+                      <Input
+                        className="h-8"
+                        value={d.createOrder.sizeVar ?? ''}
+                        placeholder="container"
+                        onChange={(e) =>
+                          onChange({
+                            createOrder: { ...d.createOrder, sizeVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Перед показом сообщения бот создаст заявку с номером — он подставится в {'{{order.number}}'}. Заявка появится в разделе «Заявки» на карте.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {node.type === 'question' && (
             <div className="space-y-1.5">
               <Label htmlFor="insp-var" className="flex items-center gap-1">
@@ -152,6 +258,20 @@ export default function NodeInspector({
                 <p className="text-[11px] text-muted-foreground">
                   Каждая кнопка — отдельная точка соединения снизу блока: тяните связь к следующему шагу.
                 </p>
+                <div className="space-y-1 rounded-lg border bg-muted/30 p-2">
+                  <Label className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <MousePointerClick className="h-3 w-3" /> Сохранить выбор кнопки в переменную
+                  </Label>
+                  <Input
+                    className="h-8"
+                    placeholder="например: container"
+                    value={d.saveSelection ?? ''}
+                    onChange={(e) => onChange({ saveSelection: e.target.value.replace(/\s/g, '_') })}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Текст нажатой кнопки попадёт в переменную — удобно для заявки (объём контейнера).
+                  </p>
+                </div>
               </div>
             </>
           )}

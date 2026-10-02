@@ -11,6 +11,7 @@ import EditorView from './editor-view';
 import AiAssistantView from './ai-assistant-view';
 import ChannelsView from './channels-view';
 import InboxView from './inbox-view';
+import OrdersView from './orders-view';
 
 export default function AppRoot() {
   const [user, setUser] = useState<SessionUser | null>(null);
@@ -109,6 +110,12 @@ export default function AppRoot() {
       )}
       {view === 'inbox' && currentBot && (
         <InboxView
+          bot={{ id: currentBot.id, name: currentBot.name }}
+          onBack={() => setView('dashboard')}
+        />
+      )}
+      {view === 'orders' && currentBot && (
+        <OrdersView
           bot={{ id: currentBot.id, name: currentBot.name }}
           onBack={() => setView('dashboard')}
         />

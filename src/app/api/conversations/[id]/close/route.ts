@@ -27,6 +27,10 @@ export async function POST(req: NextRequest, { params }: Params) {
   let nextState: string | null = conversation.state;
   if (state) {
     delete state.vars['__operator'];
+    // Сбрасываем и режим беседы (заявки/чат), чтобы бот снова вёл сценарий
+    delete state.vars['__mode'];
+    delete state.vars['__orderId'];
+    delete state.vars['__orderNumber'];
     state.currentNodeId = null;
     state.waiting = 'none';
     nextState = JSON.stringify(state);

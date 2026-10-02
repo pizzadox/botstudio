@@ -67,7 +67,7 @@ export interface ChatMessage {
   createdAt: string;
 }
 
-export type ViewKey = 'dashboard' | 'editor' | 'ai' | 'channels' | 'inbox';
+export type ViewKey = 'dashboard' | 'editor' | 'ai' | 'channels' | 'inbox' | 'orders';
 
 export interface AiConfig {
   enabled: boolean;
@@ -83,6 +83,74 @@ export interface KnowledgeItemDto {
   createdAt: string;
   updatedAt: string;
 }
+
+// ─── Заявки (вывоз отходов / КГМ) ──────────────────────────────────────────
+
+export interface OrderDto {
+  id: string;
+  botId: string;
+  conversationId: string | null;
+  externalUserId: string | null;
+  number: number;
+  type: string;
+  clientName: string | null;
+  phone: string | null;
+  address: string | null;
+  size: string | null;
+  wishDate: string | null;
+  comment: string | null;
+  status: string;
+  assignee: string | null;
+  lat: number | null;
+  lng: number | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  conversation?: {
+    contact: string | null;
+    source: string;
+    externalUserId: string | null;
+    needsOperator?: boolean;
+  } | null;
+  messagesCount?: number;
+}
+
+export interface OrderMessageDto {
+  id: string;
+  role: string;
+  text: string;
+  nodeId?: string | null;
+  orderId?: string | null;
+  createdAt: string;
+}
+
+export const ORDER_STATUS_LABELS: Record<string, string> = {
+  new: 'Новая',
+  assigned: 'Назначена',
+  in_progress: 'В работе',
+  completed: 'Выполнена',
+  cancelled: 'Отменена',
+};
+
+export const ORDER_STATUS_BADGES: Record<string, string> = {
+  new: 'bg-amber-100 text-amber-800 border-amber-200',
+  assigned: 'bg-sky-100 text-sky-800 border-sky-200',
+  in_progress: 'bg-violet-100 text-violet-800 border-violet-200',
+  completed: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  cancelled: 'bg-slate-200 text-slate-600 border-slate-300',
+};
+
+export const ORDER_TYPE_LABELS: Record<string, string> = {
+  waste: 'Вывоз отходов',
+  kgm: 'Вывоз КГМ',
+  other: 'Другое',
+};
+
+export const ORDER_TYPE_ICONS: Record<string, string> = {
+  waste: '🚛',
+  kgm: '📦',
+  other: '📋',
+};
 
 export const SOURCE_LABELS: Record<string, string> = {
   telegram: 'Telegram',

@@ -32,6 +32,8 @@ export interface FlowNodeData {
   text?: string;
   variable?: string;
   buttons?: FlowButton[];
+  /** Сохранить текст выбранной кнопки в переменную (выбор из меню) */
+  saveSelection?: string;
   condition?: {
     left: string;
     op: ConditionOp;
@@ -46,6 +48,19 @@ export interface FlowNodeData {
   method?: string;
   body?: string;
   seconds?: number;
+  /** Создать заявку перед показом сообщения (номер → {{order.number}}) */
+  createOrder?: {
+    type?: 'waste' | 'kgm' | 'other';
+    /** Переменная с именем клиента */
+    nameVar?: string;
+    phoneVar?: string;
+    addressVar?: string;
+    /** Объём контейнера / состав предметов */
+    sizeVar?: string;
+    dateVar?: string;
+    /** Статичный комментарий (может содержать {{переменные}}) */
+    comment?: string;
+  };
 }
 
 export interface FlowNode {
