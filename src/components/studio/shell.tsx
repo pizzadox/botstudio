@@ -12,16 +12,27 @@ import {
   Sparkles,
 } from 'lucide-react';
 import type { SessionUser, ViewKey } from '@/lib/studio-types';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
-const NAV: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[] = [
-  { key: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
-  { key: 'editor', label: 'Конструктор', icon: Workflow },
-  { key: 'ai', label: 'ИИ-ассистент', icon: Sparkles },
-  { key: 'channels', label: 'Каналы', icon: Plug },
-  { key: 'inbox', label: 'Входящие', icon: Inbox },
-  { key: 'orders', label: 'Заявки', icon: MapPin },
+const NAV: { key: ViewKey; label: string; icon: typeof LayoutDashboard; hint: string }[] = [
+  { key: 'dashboard', label: 'Дашборд', icon: LayoutDashboard, hint: 'Список ваших ботов' },
+  { key: 'editor', label: 'Конструктор', icon: Workflow, hint: 'Сценарий бота на канвасе' },
+  { key: 'ai', label: 'ИИ-ассистент', icon: Sparkles, hint: 'Личность ИИ и база знаний' },
+  { key: 'channels', label: 'Каналы', icon: Plug, hint: 'MAX, Telegram, WhatsApp, сайт и MyTKO' },
+  { key: 'inbox', label: 'Входящие', icon: Inbox, hint: 'Диалоги с клиентами и обращения' },
+  { key: 'orders', label: 'Заявки', icon: MapPin, hint: 'Заявки на карте, статусы, архив' },
 ];
+
+/** Красный счётчик на пункте навигации */
+function Badge({ count }: { count: number }) {
+  if (!count) return null;
+  return (
+    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white">
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
 
 export default function Shell({
   user,
@@ -29,6 +40,7 @@ export default function Shell({
   onViewChange,
   currentBot,
   onLogout,
+  badges,
   children,
 }: {
   user: SessionUser;
@@ -36,107 +48,130 @@ export default function Shell({
   onViewChange: (v: ViewKey) => void;
   currentBot: { id: string; name: string } | null;
   onLogout: () => void;
+  badges?: { inbox?: number; orders?: number };
   children: ReactNode;
 }) {
+  const badgeFor = (key: ViewKey): number =>
+    key === 'inbox' ? (badges?.inbox ?? 0) : key === 'orders' ? (badges?.orders ?? 0) : 0;
+
   return (
-    <div className="h-dvh overflow-hidden flex flex-col bg-muted/40">
-      {/* Мобильный хедер */}
-      <header className="md:hidden flex items-center justify-between border-b bg-background px-4 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Bot className="h-4 w-4" />
-          </div>
-          <span className="hidden font-bold sm:inline">BotStudio</span>
-        </div>
-        <nav className="flex items-center gap-1">
-          {NAV.map((n) => (
-            <button
-              key={n.key}
-              aria-label={n.label}
-              title={n.label}
-              onClick={() => onViewChange(n.key)}
-              className={cn(
-                'flex h-10 w-10 items-center justify-center rounded-lg transition-colors',
-                view === n.key
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted'
-              )}
-            >
-              <n.icon className="h-4 w-4" />
-            </button>
-          ))}
-          <button
-            aria-label="Выйти"
-            title="Выйти"
-            onClick={onLogout}
-            className="flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
-        </nav>
-      </header>
-
-      <div className="flex flex-1 min-h-0">
-        {/* Десктопный сайдбар */}
-        <aside className="hidden md:flex h-full w-60 shrink-0 flex-col border-r bg-background">
-          <div className="flex items-center gap-3 px-5 py-5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-emerald-600/20">
-              <Bot className="h-5 w-5" />
+    <TooltipProvider delayDuration={350}>
+      <div className="h-dvh overflow-hidden flex flex-col bg-muted/40">
+        {/* Мобильный хедер */}
+        <header className="md:hidden flex items-center justify-between border-b bg-background px-4 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+              <Bot className="h-4 w-4" />
             </div>
-            <div>
-              <div className="font-bold leading-tight">BotStudio</div>
-              <div className="text-xs text-muted-foreground">визуальный конструктор</div>
-            </div>
+            <span className="hidden font-bold sm:inline">BotStudio</span>
           </div>
-
-          <nav className="flex-1 space-y-1 px-3">
+          <nav className="flex items-center gap-1">
             {NAV.map((n) => (
-              <button
-                key={n.key}
-                onClick={() => onViewChange(n.key)}
-                className={cn(
-                  'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors',
-                  view === n.key
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                )}
-              >
-                <n.icon className="h-4 w-4" />
-                {n.label}
-              </button>
+              <Tooltip key={n.key}>
+                <TooltipTrigger asChild>
+                  <button
+                    aria-label={n.label}
+                    onClick={() => onViewChange(n.key)}
+                    className={cn(
+                      'relative flex h-10 w-10 items-center justify-center rounded-lg transition-colors',
+                      view === n.key
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:bg-muted'
+                    )}
+                  >
+                    <n.icon className="h-4 w-4" />
+                    <Badge count={badgeFor(n.key)} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">{n.label}</TooltipContent>
+              </Tooltip>
             ))}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  aria-label="Выйти"
+                  onClick={onLogout}
+                  className="flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"
+                >
+                  <LogOut className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Выйти из студии</TooltipContent>
+            </Tooltip>
           </nav>
+        </header>
 
-          {currentBot && (
-            <div className="mx-3 mb-3 rounded-xl border bg-muted/50 p-3">
-              <div className="text-xs text-muted-foreground">Текущий бот</div>
-              <div className="mt-0.5 truncate text-sm font-medium">{currentBot.name}</div>
-            </div>
-          )}
-
-          <div className="border-t p-3">
-            <div className="flex items-center gap-2 rounded-xl px-2 py-1.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary text-sm font-bold uppercase">
-                {user.name?.[0] ?? user.username[0]}
+        <div className="flex flex-1 min-h-0">
+          {/* Десктопный сайдбар */}
+          <aside className="hidden md:flex h-full w-60 shrink-0 flex-col border-r bg-background">
+            <div className="flex items-center gap-3 px-5 py-5">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-emerald-600/20">
+                <Bot className="h-5 w-5" />
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium">{user.name ?? user.username}</div>
-                <div className="truncate text-xs text-muted-foreground">@{user.username}</div>
+              <div>
+                <div className="font-bold leading-tight">BotStudio</div>
+                <div className="text-xs text-muted-foreground">визуальный конструктор</div>
               </div>
-              <button
-                aria-label="Выйти"
-                title="Выйти"
-                onClick={onLogout}
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                <LogOut className="h-4 w-4" />
-              </button>
             </div>
-          </div>
-        </aside>
 
-        <main className="flex-1 min-w-0 min-h-0 flex flex-col">{children}</main>
+            <nav className="flex-1 space-y-1 px-3">
+              {NAV.map((n) => (
+                <Tooltip key={n.key}>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => onViewChange(n.key)}
+                      className={cn(
+                        'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors',
+                        view === n.key
+                          ? 'bg-primary text-primary-foreground shadow-sm'
+                          : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                      )}
+                    >
+                      <n.icon className="h-4 w-4" />
+                      <span className="flex-1 text-left">{n.label}</span>
+                      <Badge count={badgeFor(n.key)} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">{n.hint}</TooltipContent>
+                </Tooltip>
+              ))}
+            </nav>
+
+            {currentBot && (
+              <div className="mx-3 mb-3 rounded-xl border bg-muted/50 p-3">
+                <div className="text-xs text-muted-foreground">Текущий бот</div>
+                <div className="mt-0.5 truncate text-sm font-medium">{currentBot.name}</div>
+              </div>
+            )}
+
+            <div className="border-t p-3">
+              <div className="flex items-center gap-2 rounded-xl px-2 py-1.5">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary text-sm font-bold uppercase">
+                  {user.name?.[0] ?? user.username[0]}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{user.name ?? user.username}</div>
+                  <div className="truncate text-xs text-muted-foreground">@{user.username}</div>
+                </div>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      aria-label="Выйти"
+                      onClick={onLogout}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      <LogOut className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">Выйти из студии</TooltipContent>
+                </Tooltip>
+              </div>
+            </div>
+          </aside>
+
+          <main className="flex-1 min-w-0 min-h-0 flex flex-col">{children}</main>
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }

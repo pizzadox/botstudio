@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bot, Loader2 } from 'lucide-react';
 import { api, clearAuthToken } from '@/lib/client-api';
 import type { SessionUser, BotListItem, ViewKey } from '@/lib/studio-types';
+import { useToast } from '@/hooks/use-toast';
 import LoginView from './login-view';
 import Shell from './shell';
 import Dashboard from './dashboard';
@@ -13,14 +14,77 @@ import ChannelsView from './channels-view';
 import InboxView from './inbox-view';
 import OrdersView from './orders-view';
 
+interface NotificationsResponse {
+  newOrders: { id: string; number: number; type: string; address: string | null; botName: string }[];
+  newChats: { id: string; contact: string | null; source: string; botName: string }[];
+  totals: { newOrders: number; openConvs: number };
+}
+
+/**
+ * Фоновый наблюдатель: раз в 12 секунд спрашивает /api/notifications и
+ * показывает тосты о новых заявках/диалогах + обновляет бейджи навигации.
+ */
+function NotificationsWatcher({
+  onTotals,
+}: {
+  onTotals: (t: { newOrders: number; openConvs: number }) => void;
+}) {
+  const { toast } = useToast();
+  const sinceRef = useRef<string>(new Date().toISOString());
+
+  useEffect(() => {
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const d = await api<NotificationsResponse>(
+          `/api/notifications?since=${encodeURIComponent(sinceRef.current)}`
+        );
+        if (stopped) return;
+        sinceRef.current = new Date().toISOString();
+        onTotals(d.totals);
+        let shown = 0;
+        for (const o of d.newOrders) {
+          if (shown++ >= 3) break;
+          toast({
+            title: `🆕 Новая заявка №${o.number}`,
+            description: `${o.botName}${o.address ? ` · ${o.address}` : ''}`,
+          });
+        }
+        for (const c of d.newChats) {
+          if (shown++ >= 3) break;
+          toast({
+            title: '💬 Новый диалог с клиентом',
+            description: `${c.contact ?? 'Гость'} · ${c.botName}`,
+          });
+        }
+      } catch {
+        /* polling errors ignored */
+      }
+    };
+    poll();
+    const t = setInterval(poll, 12000);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+    };
+  }, [onTotals, toast]);
+
+  return null;
+}
+
 export default function AppRoot() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<ViewKey>('dashboard');
   const [currentBot, setCurrentBot] = useState<BotListItem | null>(null);
   const [botsVersion, setBotsVersion] = useState(0);
+  const [badges, setBadges] = useState({ newOrders: 0, openConvs: 0 });
 
   const refreshBots = useCallback(() => setBotsVersion((v) => v + 1), []);
+  const onTotals = useCallback(
+    (t: { newOrders: number; openConvs: number }) => setBadges(t),
+    []
+  );
 
   useEffect(() => {
     api<{ user: SessionUser }>('/api/auth/me')
@@ -69,6 +133,7 @@ export default function AppRoot() {
       view={view}
       onViewChange={setView}
       currentBot={currentBot}
+      badges={{ inbox: badges.openConvs, orders: badges.newOrders }}
       onLogout={async () => {
         await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
         clearAuthToken();
@@ -77,6 +142,7 @@ export default function AppRoot() {
         setView('dashboard');
       }}
     >
+      <NotificationsWatcher onTotals={onTotals} />
       {view === 'dashboard' && (
         <Dashboard
           key={`dash-${botsVersion}`}
