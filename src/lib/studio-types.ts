@@ -103,6 +103,8 @@ export interface OrderDto {
   assignee: string | null;
   lat: number | null;
   lng: number | null;
+  /** Как получены координаты: manual — указаны оператором, geocode — по адресу */
+  geoSource: 'manual' | 'geocode' | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;

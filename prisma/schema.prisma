@@ -128,6 +128,8 @@ model Order {
   /// Координаты для карты (OpenFreeMap); заполняются геокодингом или оператором
   lat            Float?
   lng            Float?
+  /// Как получены координаты: manual — оператор указал на карте, geocode — по адресу
+  geoSource      String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   completedAt    DateTime?

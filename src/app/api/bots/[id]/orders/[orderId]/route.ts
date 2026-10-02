@@ -81,23 +81,41 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     if (typeof body.size === 'string') data.size = body.size.trim().slice(0, 200) || null;
     if (typeof body.address === 'string') data.address = body.address.trim().slice(0, 300) || null;
 
-    if (typeof body.lat === 'number' && Number.isFinite(body.lat)) data.lat = body.lat;
-    if (typeof body.lng === 'number' && Number.isFinite(body.lng)) data.lng = body.lng;
+    if (typeof body.lat === 'number' && Number.isFinite(body.lat)) {
+      data.lat = body.lat;
+      data.geoSource = 'manual';
+    }
+    if (typeof body.lng === 'number' && Number.isFinite(body.lng)) {
+      data.lng = body.lng;
+      data.geoSource = 'manual';
+    }
     if (body.lat === null || body.lng === null) {
       data.lat = null;
       data.lng = null;
+      data.geoSource = null;
     }
 
-    // Перегеокодировать адрес по требованию оператора
+    // Перегеокодировать адрес по требованию оператора.
+    // Ручная точка не теряется: если адрес не нашёлся — прежние координаты остаются.
+    let geoResult: { ok: boolean; lat?: number; lng?: number } | undefined;
     if (body.geocode === true) {
       const addr = (typeof data.address === 'string' ? data.address : order.address) ?? '';
       const geo = await geocodeAddress(addr);
-      data.lat = geo?.lat ?? null;
-      data.lng = geo?.lng ?? null;
+      if (geo) {
+        data.lat = geo.lat;
+        data.lng = geo.lng;
+        data.geoSource = 'geocode';
+        geoResult = { ok: true, lat: geo.lat, lng: geo.lng };
+      } else {
+        // Координаты не трогаем: неудачный поиск не должен сдвигать/стирать точку
+        delete data.lat;
+        delete data.lng;
+        geoResult = { ok: false };
+      }
     }
 
     const updated = await db.order.update({ where: { id: orderId }, data });
-    return NextResponse.json({ order: updated });
+    return NextResponse.json({ order: updated, geo: geoResult });
   } catch (err) {
     console.error('[orders patch]', err);
     return NextResponse.json({ error: 'Не удалось обновить заявку' }, { status: 500 });

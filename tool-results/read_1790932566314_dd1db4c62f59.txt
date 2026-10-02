@@ -1,0 +1,1158 @@
+     1→'use client';
+     2→
+     3→import { useCallback, useEffect, useRef, useState } from 'react';
+     4→import 'maplibre-gl/dist/maplibre-gl.css';
+     5→import type { Map as MlMap, Marker as MlMarker } from 'maplibre-gl';
+     6→import {
+     7→  Archive,
+     8→  ChevronLeft,
+     9→  Crosshair,
+    10→  Globe,
+    11→  Headset,
+    12→  Loader2,
+    13→  MapPin,
+    14→  MessageSquare,
+    15→  Phone,
+    16→  Plus,
+    17→  RefreshCw,
+    18→  Search,
+    19→  Send,
+    20→  Trash2,
+    21→  User,
+    22→} from 'lucide-react';
+    23→import { api } from '@/lib/client-api';
+    24→import type { OrderDto, OrderMessageDto } from '@/lib/studio-types';
+    25→import {
+    26→  ORDER_STATUS_BADGES,
+    27→  ORDER_STATUS_LABELS,
+    28→  ORDER_TYPE_ICONS,
+    29→  ORDER_TYPE_LABELS,
+    30→  SOURCE_COLORS,
+    31→  SOURCE_LABELS,
+    32→} from '@/lib/studio-types';
+    33→import { Badge } from '@/components/ui/badge';
+    34→import { Button } from '@/components/ui/button';
+    35→import { Card, CardContent } from '@/components/ui/card';
+    36→import {
+    37→  Dialog,
+    38→  DialogContent,
+    39→  DialogDescription,
+    40→  DialogHeader,
+    41→  DialogTitle,
+    42→} from '@/components/ui/dialog';
+    43→import { Input } from '@/components/ui/input';
+    44→import { Label } from '@/components/ui/label';
+    45→import {
+    46→  Select,
+    47→  SelectContent,
+    48→  SelectItem,
+    49→  SelectTrigger,
+    50→  SelectValue,
+    51→} from '@/components/ui/select';
+    52→import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+    53→import { Textarea } from '@/components/ui/textarea';
+    54→import { useToast } from '@/hooks/use-toast';
+    55→import { cn } from '@/lib/utils';
+    56→
+    57→type Tab = 'map' | 'active' | 'archive';
+    58→
+    59→const ACTIVE_STATUSES = ['new', 'assigned', 'in_progress'];
+    60→const ARCHIVE_STATUSES = ['completed', 'cancelled'];
+    61→
+    62→/** Цвет маркера на карте */
+    63→function markerColor(order: OrderDto): string {
+    64→  if (ARCHIVE_STATUSES.includes(order.status)) return 'bg-slate-400';
+    65→  switch (order.type) {
+    66→    case 'waste':
+    67→      return 'bg-emerald-500';
+    68→    case 'kgm':
+    69→      return 'bg-amber-500';
+    70→    default:
+    71→      return 'bg-violet-500';
+    72→  }
+    73→}
+    74→
+    75→function fmtDate(iso: string): string {
+    76→  return new Date(iso).toLocaleString('ru-RU', {
+    77→    day: '2-digit',
+    78→    month: '2-digit',
+    79→    hour: '2-digit',
+    80→    minute: '2-digit',
+    81→  });
+    82→}
+    83→
+    84→// ─── Карта OpenFreeMap (MapLibre GL, бесплатные векторные тайлы без ключа) ───
+    85→
+    86→function OrdersMap({
+    87→  orders,
+    88→  showCompleted,
+    89→  placementOrderId,
+    90→  onSelect,
+    91→  onPlace,
+    92→}: {
+    93→  orders: OrderDto[];
+    94→  showCompleted: boolean;
+    95→  placementOrderId: string | null;
+    96→  onSelect: (id: string) => void;
+    97→  onPlace: (lat: number, lng: number) => void;
+    98→}) {
+    99→  const containerRef = useRef<HTMLDivElement>(null);
+   100→  const mapRef = useRef<MlMap | null>(null);
+   101→  const mlRef = useRef<typeof import('maplibre-gl') | null>(null);
+   102→  const markersRef = useRef<MlMarker[]>([]);
+   103→  const [ready, setReady] = useState(false);
+   104→  const [failed, setFailed] = useState(false);
+   105→  const [zoomKey, setZoomKey] = useState(0);
+   106→
+   107→  // Инициализация карты (динамический импорт — компонент клиентский)
+   108→  useEffect(() => {
+   109→    let cancelled = false;
+   110→    (async () => {
+   111→      try {
+   112→        const ml = await import('maplibre-gl');
+   113→        if (cancelled || !containerRef.current) return;
+   114→        // Воркер MapLibre не собирается Turbopack'ом — берём локальную копию из public/
+   115→        ml.setWorkerUrl('/maplibre-gl-worker.mjs');
+   116→        mlRef.current = ml;
+   117→        const map = new ml.Map({
+   118→          container: containerRef.current,
+   119→          style: 'https://tiles.openfreemap.org/styles/liberty',
+   120→          center: [37.6176, 55.7558], // Москва — стартовый вид
+   121→          zoom: 8.5,
+   122→        });
+   123→        map.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
+   124→        map.on('load', () => {
+   125→          if (!cancelled) setReady(true);
+   126→        });
+   127→        map.on('error', (e) => {
+   128→          // Тайловая сеть недоступна — сообщаем, но карту не убиваем
+   129→          console.warn('[orders map]', e?.error?.message ?? e);
+   130→        });
+   131→        mapRef.current = map;
+   132→      } catch (err) {
+   133→        console.error('[orders map] init failed', err);
+   134→        if (!cancelled) setFailed(true);
+   135→      }
+   136→    })();
+   137→    return () => {
+   138→      cancelled = true;
+   139→      mapRef.current?.remove();
+   140→      mapRef.current = null;
+   141→      setReady(false);
+   142→    };
+   143→  }, []);
+   144→
+   145→  // Маркеры заявок
+   146→  const visible = orders.filter(
+   147→    (o) => o.lat != null && o.lng != null && (showCompleted || ACTIVE_STATUSES.includes(o.status))
+   148→  );
+   149→
+   150→  useEffect(() => {
+   151→    const map = mapRef.current;
+   152→    const ml = mlRef.current;
+   153→    if (!map || !ml || !ready) return;
+   154→    for (const m of markersRef.current) m.remove();
+   155→    markersRef.current = [];
+   156→    for (const o of visible) {
+   157→      const el = document.createElement('button');
+   158→      el.type = 'button';
+   159→      el.title = `Заявка №${o.number} — ${ORDER_TYPE_LABELS[o.type] ?? ''}`;
+   160→      el.className = cn(
+   161→        'flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-2 border-white text-[11px] font-bold text-white shadow-lg transition-transform hover:scale-110',
+   162→        markerColor(o)
+   163→      );
+   164→      el.textContent = String(o.number);
+   165→      el.addEventListener('click', (e) => {
+   166→        e.stopPropagation();
+   167→        onSelect(o.id);
+   168→      });
+   169→      const marker = new ml.Marker({ element: el })
+   170→        .setLngLat([o.lng as number, o.lat as number])
+   171→        .addTo(map);
+   172→      markersRef.current.push(marker);
+   173→    }
+   174→    // зависимость — сериализованный список видимых маркеров
+   175→  }, [ready, zoomKey, visible.map((o) => `${o.id}:${o.lat}:${o.lng}:${o.status}`).join('|')]);
+   176→
+   177→  // Режим указания точки: клик по карте → координаты заявки
+   178→  const handleMapClick = useCallback(
+   179→    (lat: number, lng: number) => onPlace(lat, lng),
+   180→    [onPlace]
+   181→  );
+   182→  useEffect(() => {
+   183→    const map = mapRef.current;
+   184→    if (!map || !ready || !placementOrderId) return;
+   185→    const onClick = (e: { lngLat: { lat: number; lng: number } }) =>
+   186→      handleMapClick(e.lngLat.lat, e.lngLat.lng);
+   187→    map.on('click', onClick);
+   188→    map.getCanvas().style.cursor = 'crosshair';
+   189→    return () => {
+   190→      map.off('click', onClick);
+   191→      map.getCanvas().style.cursor = '';
+   192→    };
+   193→  }, [ready, placementOrderId, handleMapClick]);
+   194→
+   195→  if (failed) {
+   196→    return (
+   197→      <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-3 rounded-xl border bg-muted/30 text-center text-muted-foreground">
+   198→        <MapPin className="h-10 w-10 opacity-30" />
+   199→        <p className="max-w-xs text-sm">
+   200→          Не удалось загрузить карту OpenFreeMap. Проверьте доступ к tiles.openfreemap.org и
+   201→          обновите страницу.
+   202→        </p>
+   203→      </div>
+   204→    );
+   205→  }
+   206→
+   207→  return (
+   208→    <div className="relative h-full min-h-[420px] overflow-hidden rounded-xl border bg-muted/30">
+   209→      <div ref={containerRef} className="h-full w-full" aria-label="Карта заявок" />
+   210→      {!ready && (
+   211→        <div className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+   212→          <Loader2 className="h-4 w-4 animate-spin" /> Загружаю карту OpenFreeMap…
+   213→        </div>
+   214→      )}
+   215→      {/* Легенда */}
+   216→      <div className="absolute bottom-3 left-3 flex flex-col gap-1 rounded-lg border bg-background/95 px-3 py-2 text-[11px] shadow-sm backdrop-blur">
+   217→        <span className="flex items-center gap-1.5">
+   218→          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> вывоз отходов
+   219→        </span>
+   220→        <span className="flex items-center gap-1.5">
+   221→          <span className="h-2.5 w-2.5 rounded-full bg-amber-500" /> КГМ
+   222→        </span>
+   223→        <span className="flex items-center gap-1.5">
+   224→          <span className="h-2.5 w-2.5 rounded-full bg-slate-400" /> выполненные
+   225→        </span>
+   226→      </div>
+   227→      {/* Счётчик маркеров */}
+   228→      <div className="absolute left-3 top-3 rounded-lg border bg-background/95 px-3 py-1.5 text-xs shadow-sm backdrop-blur">
+   229→        <MapPin className="mr-1 inline h-3 w-3 text-primary" />
+   230→        На карте: <b>{visible.length}</b>
+   231→      </div>
+   232→      {placementOrderId && (
+   233→        <div className="absolute inset-x-3 top-3 z-10 flex items-center justify-between gap-2 rounded-lg border border-primary/40 bg-primary/95 px-3 py-2 text-xs text-primary-foreground shadow-md md:right-auto">
+   234→          <span className="flex items-center gap-1.5">
+   235→            <Crosshair className="h-3.5 w-3.5" /> Кликните по карте — точка заявки №
+   236→            {placementOrderId}
+   237→          </span>
+   238→        </div>
+   239→      )}
+   240→    </div>
+   241→  );
+   242→}
+   243→
+   244→// ─── Чат по заявке ───────────────────────────────────────────────────────────
+   245→
+   246→function OrderChat({
+   247→  botId,
+   248→  orderId,
+   249→  hasConversation,
+   250→}: {
+   251→  botId: string;
+   252→  orderId: string;
+   253→  hasConversation: boolean;
+   254→}) {
+   255→  const { toast } = useToast();
+   256→  const [messages, setMessages] = useState<OrderMessageDto[]>([]);
+   257→  const [text, setText] = useState('');
+   258→  const [sending, setSending] = useState(false);
+   259→  const scrollRef = useRef<HTMLDivElement>(null);
+   260→
+   261→  const load = useCallback(async () => {
+   262→    try {
+   263→      const d = await api<{ messages: OrderMessageDto[] }>(
+   264→        `/api/bots/${botId}/orders/${orderId}/messages`
+   265→      );
+   266→      setMessages(d.messages);
+   267→    } catch {
+   268→      /* polling errors ignored */
+   269→    }
+   270→  }, [botId, orderId]);
+   271→
+   272→  useEffect(() => {
+   273→    setMessages([]);
+   274→    load();
+   275→    const t = setInterval(load, 3000);
+   276→    return () => clearInterval(t);
+   277→  }, [load]);
+   278→
+   279→  useEffect(() => {
+   280→    requestAnimationFrame(() => {
+   281→      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+   282→    });
+   283→  }, [messages.length]);
+   284→
+   285→  const send = async () => {
+   286→    const t = text.trim();
+   287→    if (!t) return;
+   288→    setSending(true);
+   289→    setText('');
+   290→    try {
+   291→      const d = await api<{ message: OrderMessageDto; delivered: boolean; deliveryError?: string }>(
+   292→        `/api/bots/${botId}/orders/${orderId}/messages`,
+   293→        { method: 'POST', body: JSON.stringify({ text: t }) }
+   294→      );
+   295→      setMessages((prev) => [...prev, d.message]);
+   296→      if (!d.delivered && d.deliveryError) {
+   297→        toast({ title: 'Не доставлено в мессенджер', description: d.deliveryError, variant: 'destructive' });
+   298→      }
+   299→    } catch {
+   300→      toast({ title: 'Не удалось отправить', variant: 'destructive' });
+   301→    } finally {
+   302→      setSending(false);
+   303→    }
+   304→  };
+   305→
+   306→  return (
+   307→    <div className="flex min-h-0 flex-1 flex-col">
+   308→      <div className="flex items-center gap-2 border-b px-3 py-2 text-xs text-muted-foreground">
+   309→        <MessageSquare className="h-3.5 w-3.5" />
+   310→        Чат с клиентом по заявке — сообщения доставляются в его мессенджер
+   311→      </div>
+   312→      <div ref={scrollRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/30 p-3">
+   313→        {messages.length === 0 && (
+   314→          <div className="flex h-full items-center justify-center text-center text-xs text-muted-foreground">
+   315→            Сообщений по заявке пока нет.
+   316→            <br />
+   317→            Клиент может написать в боте, открыв карточку своей заявки.
+   318→          </div>
+   319→        )}
+   320→        {messages.map((m) => {
+   321→          const fromClient = m.role === 'user';
+   322→          return (
+   323→            <div key={m.id} className={cn('flex', fromClient ? 'justify-start' : 'justify-end')}>
+   324→              <div
+   325→                className={cn(
+   326→                  'max-w-[85%] space-y-0.5 rounded-2xl px-3 py-1.5 text-sm leading-snug',
+   327→                  fromClient
+   328→                    ? 'rounded-bl-md border bg-card'
+   329→                    : 'rounded-br-md bg-primary text-primary-foreground'
+   330→                )}
+   331→              >
+   332→                {m.nodeId === '__operator' && (
+   333→                  <div className="flex items-center gap-1 text-[10px] opacity-70">
+   334→                    <Headset className="h-3 w-3" /> оператор
+   335→                  </div>
+   336→                )}
+   337→                <div className="whitespace-pre-wrap">{m.text}</div>
+   338→                <div className="text-right text-[9px] opacity-60">
+   339→                  {new Date(m.createdAt).toLocaleTimeString('ru-RU', {
+   340→                    hour: '2-digit',
+   341→                    minute: '2-digit',
+   342→                  })}
+   343→                </div>
+   344→              </div>
+   345→            </div>
+   346→          );
+   347→        })}
+   348→      </div>
+   349→      <form
+   350→        className="flex items-center gap-2 border-t p-2.5"
+   351→        onSubmit={(e) => {
+   352→          e.preventDefault();
+   353→          send();
+   354→        }}
+   355→      >
+   356→        <Input
+   357→          placeholder={
+   358→            hasConversation
+   359→              ? 'Ответить клиенту…'
+   360→              : 'Диалог с клиентом не привязан — чат только для чтения'
+   361→          }
+   362→          value={text}
+   363→          disabled={!hasConversation}
+   364→          onChange={(e) => setText(e.target.value)}
+   365→        />
+   366→        <Button
+   367→          type="submit"
+   368→          size="icon"
+   369→          className="h-10 w-10 shrink-0"
+   370→          disabled={sending || !hasConversation || !text.trim()}
+   371→          aria-label="Отправить"
+   372→        >
+   373→          {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+   374→        </Button>
+   375→      </form>
+   376→    </div>
+   377→  );
+   378→}
+   379→
+   380→// ─── Карточка заявки + карточка клиента ──────────────────────────────────────
+   381→
+   382→function OrderDetailDialog({
+   383→  botId,
+   384→  orderId,
+   385→  open,
+   386→  onClose,
+   387→  onSwitchOrder,
+   388→  onPlaceRequest,
+   389→  onDataChanged,
+   390→}: {
+   391→  botId: string;
+   392→  orderId: string | null;
+   393→  open: boolean;
+   394→  onClose: () => void;
+   395→  onSwitchOrder: (id: string) => void;
+   396→  onPlaceRequest: (orderId: string) => void;
+   397→  onDataChanged: () => void;
+   398→}) {
+   399→  const { toast } = useToast();
+   400→  const [order, setOrder] = useState<OrderDto | null>(null);
+   401→  const [clientOrders, setClientOrders] = useState<OrderDto[]>([]);
+   402→  const [loading, setLoading] = useState(false);
+   403→  const [assignee, setAssignee] = useState('');
+   404→  const [wishDate, setWishDate] = useState('');
+   405→  const [comment, setComment] = useState('');
+   406→  const [saving, setSaving] = useState(false);
+   407→  const [confirmDelete, setConfirmDelete] = useState(false);
+   408→
+   409→  const load = useCallback(async () => {
+   410→    if (!orderId) return;
+   411→    setLoading(true);
+   412→    try {
+   413→      const d = await api<{ order: OrderDto; clientOrders: OrderDto[] }>(
+   414→        `/api/bots/${botId}/orders/${orderId}`
+   415→      );
+   416→      setOrder(d.order);
+   417→      setClientOrders(d.clientOrders);
+   418→      setAssignee(d.order.assignee ?? '');
+   419→      setWishDate(d.order.wishDate ?? '');
+   420→      setComment(d.order.comment ?? '');
+   421→    } catch {
+   422→      toast({ title: 'Не удалось загрузить заявку', variant: 'destructive' });
+   423→    } finally {
+   424→      setLoading(false);
+   425→    }
+   426→  }, [botId, orderId, toast]);
+   427→
+   428→  useEffect(() => {
+   429→    if (open && orderId) load();
+   430→    if (!open) {
+   431→      setOrder(null);
+   432→      setClientOrders([]);
+   433→      setConfirmDelete(false);
+   434→    }
+   435→  }, [open, orderId, load]);
+   436→
+   437→  const patch = async (data: Record<string, unknown>, successMsg?: string) => {
+   438→    if (!orderId) return;
+   439→    setSaving(true);
+   440→    try {
+   441→      const d = await api<{ order: OrderDto }>(`/api/bots/${botId}/orders/${orderId}`, {
+   442→        method: 'PATCH',
+   443→        body: JSON.stringify(data),
+   444→      });
+   445→      setOrder(d.order);
+   446→      onDataChanged();
+   447→      if (successMsg) toast({ title: successMsg });
+   448→    } catch {
+   449→      toast({ title: 'Ошибка сохранения', variant: 'destructive' });
+   450→    } finally {
+   451→      setSaving(false);
+   452→    }
+   453→  };
+   454→
+   455→  const remove = async () => {
+   456→    if (!orderId) return;
+   457→    try {
+   458→      await api(`/api/bots/${botId}/orders/${orderId}`, { method: 'DELETE' });
+   459→      toast({ title: `Заявка удалена` });
+   460→      onDataChanged();
+   461→      onClose();
+   462→    } catch {
+   463→      toast({ title: 'Не удалось удалить', variant: 'destructive' });
+   464→    }
+   465→  };
+   466→
+   467→  return (
+   468→    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+   469→      <DialogContent className="grid h-[90dvh] max-w-4xl grid-rows-[auto_1fr] gap-0 overflow-hidden p-0 md:h-[85vh]">
+   470→        <DialogHeader className="border-b px-4 py-3 md:px-5">
+   471→          <DialogTitle className="flex items-center gap-2 text-base">
+   472→            <span className="text-lg">{order ? ORDER_TYPE_ICONS[order.type] : '📋'}</span>
+   473→            {order ? `Заявка №${order.number} — ${ORDER_TYPE_LABELS[order.type] ?? ''}` : 'Заявка'}
+   474→          </DialogTitle>
+   475→          <DialogDescription className="sr-only">
+   476→            Карточка заявки: данные клиента, статус и встроенный чат
+   477→          </DialogDescription>
+   478→        </DialogHeader>
+   479→
+   480→        {!order && loading ? (
+   481→          <div className="flex items-center justify-center gap-2 text-muted-foreground">
+   482→            <Loader2 className="h-5 w-5 animate-spin" /> Загрузка…
+   483→          </div>
+   484→        ) : !order ? (
+   485→          <div className="flex items-center justify-center text-sm text-muted-foreground">
+   486→            Заявка не найдена
+   487→          </div>
+   488→        ) : (
+   489→          <div className="grid min-h-0 overflow-y-auto md:grid-cols-2 md:overflow-hidden">
+   490→            {/* Левая колонка: клиент + данные заявки */}
+   491→            <div className="min-h-0 space-y-4 border-b p-4 md:border-b-0 md:border-r md:overflow-y-auto">
+   492→              {/* Клиент */}
+   493→              <div className="rounded-xl border bg-muted/30 p-3">
+   494→                <div className="flex items-center justify-between">
+   495→                  <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   496→                    <User className="h-3.5 w-3.5" /> Карточка клиента
+   497→                  </h3>
+   498→                  {order.conversation && (
+   499→                    <span
+   500→                      className={cn(
+   501→                        'rounded-full px-2 py-0.5 text-[10px] font-medium',
+   502→                        SOURCE_COLORS[order.conversation.source] ?? 'bg-muted text-muted-foreground'
+   503→                      )}
+   504→                    >
+   505→                      {SOURCE_LABELS[order.conversation.source] ?? order.conversation.source}
+   506→                    </span>
+   507→                  )}
+   508→                </div>
+   509→                <div className="mt-2 space-y-1 text-sm">
+   510→                  <div className="font-medium">
+   511→                    {order.clientName || order.conversation?.contact || 'Клиент без имени'}
+   512→                  </div>
+   513→                  {order.phone && (
+   514→                    <a
+   515→                      href={`tel:${order.phone.replace(/[^\d+]/g, '')}`}
+   516→                      className="flex w-fit items-center gap-1.5 text-primary hover:underline"
+   517→                    >
+   518→                      <Phone className="h-3.5 w-3.5" /> {order.phone}
+   519→                    </a>
+   520→                  )}
+   521→                  {order.conversation?.externalUserId && (
+   522→                    <div className="text-xs text-muted-foreground">
+   523→                      ID клиента: {order.conversation.externalUserId}
+   524→                    </div>
+   525→                  )}
+   526→                </div>
+   527→                {/* История заказов клиента */}
+   528→                {clientOrders.length > 1 && (
+   529→                  <div className="mt-3 border-t pt-2">
+   530→                    <div className="text-[11px] font-medium text-muted-foreground">
+   531→                      Заказы клиента ({clientOrders.length}):
+   532→                    </div>
+   533→                    <div className="mt-1.5 flex max-h-36 flex-col gap-1 overflow-y-auto pr-1">
+   534→                      {clientOrders.map((o) => (
+   535→                        <button
+   536→                          key={o.id}
+   537→                          onClick={() => onSwitchOrder(o.id)}
+   538→                          className={cn(
+   539→                            'flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted',
+   540→                            o.id === order.id && 'border-primary/50 bg-primary/5'
+   541→                          )}
+   542→                        >
+   543→                          <span>№{o.number}</span>
+   544→                          <span className="min-w-0 flex-1 truncate text-muted-foreground">
+   545→                            {ORDER_TYPE_LABELS[o.type] ?? o.type}
+   546→                            {o.address ? ` · ${o.address}` : ''}
+   547→                          </span>
+   548→                          <Badge
+   549→                            variant="outline"
+   550→                            className={cn('h-4 shrink-0 px-1 text-[9px]', ORDER_STATUS_BADGES[o.status])}
+   551→                          >
+   552→                            {ORDER_STATUS_LABELS[o.status] ?? o.status}
+   553→                          </Badge>
+   554→                        </button>
+   555→                      ))}
+   556→                    </div>
+   557→                  </div>
+   558→                )}
+   559→              </div>
+   560→
+   561→              {/* Данные заявки */}
+   562→              <div className="space-y-3 rounded-xl border p-3">
+   563→                <div className="grid grid-cols-2 gap-3">
+   564→                  <div className="space-y-1">
+   565→                    <Label className="text-xs text-muted-foreground">Статус</Label>
+   566→                    <Select
+   567→                      value={order.status}
+   568→                      onValueChange={(v) => patch({ status: v }, 'Статус обновлён')}
+   569→                    >
+   570→                      <SelectTrigger className="h-9">
+   571→                        <SelectValue />
+   572→                      </SelectTrigger>
+   573→                      <SelectContent>
+   574→                        {Object.entries(ORDER_STATUS_LABELS).map(([k, v]) => (
+   575→                          <SelectItem key={k} value={k}>
+   576→                            {v}
+   577→                          </SelectItem>
+   578→                        ))}
+   579→                      </SelectContent>
+   580→                    </Select>
+   581→                  </div>
+   582→                  <div className="space-y-1">
+   583→                    <Label className="text-xs text-muted-foreground">Желаемая дата</Label>
+   584→                    <Input
+   585→                      className="h-9"
+   586→                      value={wishDate}
+   587→                      placeholder="напр. завтра до 12:00"
+   588→                      onChange={(e) => setWishDate(e.target.value)}
+   589→                      onBlur={() => {
+   590→                        if (wishDate !== (order.wishDate ?? '')) {
+   591→                          patch({ wishDate }, 'Дата обновлена');
+   592→                        }
+   593→                      }}
+   594→                      disabled={saving}
+   595→                    />
+   596→                  </div>
+   597→                </div>
+   598→                <div className="space-y-1">
+   599→                  <Label className="text-xs text-muted-foreground">Исполнитель</Label>
+   600→                  <div className="flex gap-2">
+   601→                    <Input
+   602→                      className="h-9"
+   603→                      value={assignee}
+   604→                      placeholder="Бригада / водитель"
+   605→                      onChange={(e) => setAssignee(e.target.value)}
+   606→                    />
+   607→                    <Button
+   608→                      size="sm"
+   609→                      variant="outline"
+   610→                      className="h-9 shrink-0"
+   611→                      disabled={saving}
+   612→                      onClick={() => patch({ assignee }, 'Исполнитель назначен')}
+   613→                    >
+   614→                      Назначить
+   615→                    </Button>
+   616→                  </div>
+   617→                </div>
+   618→                <div className="space-y-1">
+   619→                  <Label className="text-xs text-muted-foreground">Адрес вывоза</Label>
+   620→                  <div className="text-sm">{order.address || '— не указан —'}</div>
+   621→                  <div className="flex flex-wrap gap-2 pt-1">
+   622→                    <Button
+   623→                      size="sm"
+   624→                      variant="outline"
+   625→                      className="h-8"
+   626→                      onClick={() => onPlaceRequest(order.id)}
+   627→                    >
+   628→                      <Crosshair className="h-3.5 w-3.5" />
+   629→                      {order.lat != null ? 'Перенести точку' : 'Указать на карте'}
+   630→                    </Button>
+   631→                    <Button
+   632→                      size="sm"
+   633→                      variant="outline"
+   634→                      className="h-8"
+   635→                      disabled={saving}
+   636→                      onClick={() => patch({ geocode: true }, order.lat != null ? 'Координаты обновлены' : 'Адрес не найден на карте')}
+   637→                    >
+   638→                      <Globe className="h-3.5 w-3.5" /> Геокодировать
+   639→                    </Button>
+   640→                  </div>
+   641→                  {order.lat != null && (
+   642→                    <div className="pt-1 text-[11px] text-muted-foreground">
+   643→                      Координаты: {order.lat.toFixed(5)}, {order.lng?.toFixed(5)}
+   644→                    </div>
+   645→                  )}
+   646→                </div>
+   647→                <div className="space-y-1">
+   648→                  <Label className="text-xs text-muted-foreground">Состав / объём</Label>
+   649→                  <div className="text-sm">{order.size || '—'}</div>
+   650→                </div>
+   651→                <div className="space-y-1">
+   652→                  <Label className="text-xs text-muted-foreground">Комментарий оператора</Label>
+   653→                  <Textarea
+   654→                    rows={2}
+   655→                    value={comment}
+   656→                    placeholder="Заметки по заявке…"
+   657→                    onChange={(e) => setComment(e.target.value)}
+   658→                  />
+   659→                  <Button
+   660→                    size="sm"
+   661→                    variant="outline"
+   662→                    className="h-8"
+   663→                    disabled={saving}
+   664→                    onClick={() => patch({ comment }, 'Комментарий сохранён')}
+   665→                  >
+   666→                    Сохранить комментарий
+   667→                  </Button>
+   668→                </div>
+   669→                <div className="flex items-center justify-between border-t pt-2 text-[11px] text-muted-foreground">
+   670→                  <span>Создана: {fmtDate(order.createdAt)}</span>
+   671→                  {confirmDelete ? (
+   672→                    <span className="flex items-center gap-1.5">
+   673→                      Удалить заявку?
+   674→                      <Button size="sm" variant="destructive" className="h-7" onClick={remove}>
+   675→                        Да
+   676→                      </Button>
+   677→                      <Button
+   678→                        size="sm"
+   679→                        variant="ghost"
+   680→                        className="h-7"
+   681→                        onClick={() => setConfirmDelete(false)}
+   682→                      >
+   683→                        Нет
+   684→                      </Button>
+   685→                    </span>
+   686→                  ) : (
+   687→                    <button
+   688→                      className="flex items-center gap-1 text-muted-foreground transition-colors hover:text-destructive"
+   689→                      onClick={() => setConfirmDelete(true)}
+   690→                    >
+   691→                      <Trash2 className="h-3 w-3" /> удалить
+   692→                    </button>
+   693→                  )}
+   694→                </div>
+   695→              </div>
+   696→            </div>
+   697→
+   698→            {/* Правая колонка: встроенный чат с пользователем */}
+   699→            <div className="flex min-h-0 flex-col md:overflow-hidden">
+   700→              <OrderChat
+   701→                botId={botId}
+   702→                orderId={order.id}
+   703→                hasConversation={!!order.conversationId}
+   704→              />
+   705→            </div>
+   706→          </div>
+   707→        )}
+   708→      </DialogContent>
+   709→    </Dialog>
+   710→  );
+   711→}
+   712→
+   713→// ─── Диалог создания заявки оператором ───────────────────────────────────────
+   714→
+   715→function NewOrderDialog({
+   716→  botId,
+   717→  open,
+   718→  onClose,
+   719→  onCreated,
+   720→}: {
+   721→  botId: string;
+   722→  open: boolean;
+   723→  onClose: () => void;
+   724→  onCreated: () => void;
+   725→}) {
+   726→  const { toast } = useToast();
+   727→  const [saving, setSaving] = useState(false);
+   728→  const [form, setForm] = useState({
+   729→    type: 'waste',
+   730→    clientName: '',
+   731→    phone: '',
+   732→    address: '',
+   733→    size: '',
+   734→    wishDate: '',
+   735→    comment: '',
+   736→  });
+   737→
+   738→  const submit = async () => {
+   739→    if (!form.address.trim() && !form.clientName.trim()) {
+   740→      toast({ title: 'Укажите хотя бы адрес или имя клиента', variant: 'destructive' });
+   741→      return;
+   742→    }
+   743→    setSaving(true);
+   744→    try {
+   745→      await api(`/api/bots/${botId}/orders`, {
+   746→        method: 'POST',
+   747→        body: JSON.stringify(form),
+   748→      });
+   749→      toast({ title: 'Заявка создана — координаты подбираются автоматически' });
+   750→      setForm({ type: 'waste', clientName: '', phone: '', address: '', size: '', wishDate: '', comment: '' });
+   751→      onCreated();
+   752→      onClose();
+   753→    } catch {
+   754→      toast({ title: 'Не удалось создать заявку', variant: 'destructive' });
+   755→    } finally {
+   756→      setSaving(false);
+   757→    }
+   758→  };
+   759→
+   760→  return (
+   761→    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+   762→      <DialogContent className="max-w-lg">
+   763→        <DialogHeader>
+   764→          <DialogTitle>Новая заявка</DialogTitle>
+   765→          <DialogDescription>
+   766→            Заявку можно создать вручную — она появится на карте и в списке
+   767→          </DialogDescription>
+   768→        </DialogHeader>
+   769→        <div className="space-y-3">
+   770→          <div className="grid grid-cols-2 gap-3">
+   771→            <div className="space-y-1">
+   772→              <Label className="text-xs text-muted-foreground">Тип</Label>
+   773→              <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
+   774→                <SelectTrigger>
+   775→                  <SelectValue />
+   776→                </SelectTrigger>
+   777→                <SelectContent>
+   778→                  <SelectItem value="waste">🚛 Вывоз отходов</SelectItem>
+   779→                  <SelectItem value="kgm">📦 Вывоз КГМ</SelectItem>
+   780→                  <SelectItem value="other">📋 Другое</SelectItem>
+   781→                </SelectContent>
+   782→              </Select>
+   783→            </div>
+   784→            <div className="space-y-1">
+   785→              <Label className="text-xs text-muted-foreground">Телефон</Label>
+   786→              <Input
+   787→                value={form.phone}
+   788→                placeholder="+7 900 …"
+   789→                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+   790→              />
+   791→            </div>
+   792→          </div>
+   793→          <div className="space-y-1">
+   794→            <Label className="text-xs text-muted-foreground">Клиент</Label>
+   795→            <Input
+   796→              value={form.clientName}
+   797→              placeholder="Имя клиента"
+   798→              onChange={(e) => setForm({ ...form, clientName: e.target.value })}
+   799→            />
+   800→          </div>
+   801→          <div className="space-y-1">
+   802→            <Label className="text-xs text-muted-foreground">Адрес</Label>
+   803→            <Input
+   804→              value={form.address}
+   805→              placeholder="Город, улица, дом"
+   806→              onChange={(e) => setForm({ ...form, address: e.target.value })}
+   807→            />
+   808→          </div>
+   809→          <div className="grid grid-cols-2 gap-3">
+   810→            <div className="space-y-1">
+   811→              <Label className="text-xs text-muted-foreground">Объём / состав</Label>
+   812→              <Input
+   813→                value={form.size}
+   814→                placeholder="8 м³, диван…"
+   815→                onChange={(e) => setForm({ ...form, size: e.target.value })}
+   816→              />
+   817→            </div>
+   818→            <div className="space-y-1">
+   819→              <Label className="text-xs text-muted-foreground">Дата подачи</Label>
+   820→              <Input
+   821→                value={form.wishDate}
+   822→                placeholder="завтра до 12:00"
+   823→                onChange={(e) => setForm({ ...form, wishDate: e.target.value })}
+   824→              />
+   825→            </div>
+   826→          </div>
+   827→          <div className="space-y-1">
+   828→            <Label className="text-xs text-muted-foreground">Комментарий</Label>
+   829→            <Textarea
+   830→              rows={2}
+   831→              value={form.comment}
+   832→              onChange={(e) => setForm({ ...form, comment: e.target.value })}
+   833→            />
+   834→          </div>
+   835→          <div className="flex justify-end gap-2 pt-1">
+   836→            <Button variant="outline" onClick={onClose}>
+   837→              Отмена
+   838→            </Button>
+   839→            <Button onClick={submit} disabled={saving}>
+   840→              {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />} Создать
+   841→            </Button>
+   842→          </div>
+   843→        </div>
+   844→      </DialogContent>
+   845→    </Dialog>
+   846→  );
+   847→}
+   848→
+   849→// ─── Строка списка заявок ────────────────────────────────────────────────────
+   850→
+   851→function OrderRow({
+   852→  order,
+   853→  onOpen,
+   854→}: {
+   855→  order: OrderDto;
+   856→  onOpen: (id: string) => void;
+   857→}) {
+   858→  return (
+   859→    <button
+   860→      onClick={() => onOpen(order.id)}
+   861→      className={cn(
+   862→        'flex w-full flex-col gap-1.5 rounded-xl border bg-card p-3 text-left transition-colors hover:bg-muted/60',
+   863→        order.status === 'new' && 'border-amber-300/70'
+   864→      )}
+   865→    >
+   866→      <div className="flex w-full items-center gap-2">
+   867→        <span
+   868→          className={cn(
+   869→            'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white',
+   870→            markerColor(order)
+   871→          )}
+   872→        >
+   873→          {order.number}
+   874→        </span>
+   875→        <span className="min-w-0 flex-1 truncate text-sm font-medium">
+   876→          {ORDER_TYPE_ICONS[order.type]} {order.address || order.clientName || 'Без адреса'}
+   877→        </span>
+   878→        <Badge
+   879→          variant="outline"
+   880→          className={cn('shrink-0 px-1.5 text-[10px]', ORDER_STATUS_BADGES[order.status])}
+   881→        >
+   882→          {ORDER_STATUS_LABELS[order.status] ?? order.status}
+   883→        </Badge>
+   884→      </div>
+   885→      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-10 text-[11px] text-muted-foreground">
+   886→        {order.clientName && <span className="font-medium">{order.clientName}</span>}
+   887→        {order.phone && <span>{order.phone}</span>}
+   888→        {order.size && <span>{order.size}</span>}
+   889→        {order.wishDate && <span>🗓 {order.wishDate}</span>}
+   890→        {order.lat == null && (
+   891→          <span className="text-amber-600">📍 точка не указана</span>
+   892→        )}
+   893→        {typeof order.messagesCount === 'number' && order.messagesCount > 0 && (
+   894→          <span className="flex items-center gap-0.5">
+   895→            <MessageSquare className="h-3 w-3" /> {order.messagesCount}
+   896→          </span>
+   897→        )}
+   898→        <span className="ml-auto">{fmtDate(order.createdAt)}</span>
+   899→      </div>
+   900→    </button>
+   901→  );
+   902→}
+   903→
+   904→// ─── Главный вид раздела «Заявки» ────────────────────────────────────────────
+   905→
+   906→export default function OrdersView({
+   907→  bot,
+   908→  onBack,
+   909→}: {
+   910→  bot: { id: string; name: string };
+   911→  onBack: () => void;
+   912→}) {
+   913→  const { toast } = useToast();
+   914→  const [orders, setOrders] = useState<OrderDto[]>([]);
+   915→  const [loading, setLoading] = useState(true);
+   916→  const [tab, setTab] = useState<Tab>('map');
+   917→  const [selectedId, setSelectedId] = useState<string | null>(null);
+   918→  const [dialogOpen, setDialogOpen] = useState(false);
+   919→  const [placementId, setPlacementId] = useState<string | null>(null);
+   920→  const [showCompleted, setShowCompleted] = useState(true);
+   921→  const [typeFilter, setTypeFilter] = useState<'all' | 'waste' | 'kgm'>('all');
+   922→  const [search, setSearch] = useState('');
+   923→  const [newOpen, setNewOpen] = useState(false);
+   924→
+   925→  const load = useCallback(async () => {
+   926→    try {
+   927→      const d = await api<{ orders: OrderDto[] }>(`/api/bots/${bot.id}/orders`);
+   928→      setOrders(d.orders);
+   929→    } catch {
+   930→      /* ignore polling errors */
+   931→    } finally {
+   932→      setLoading(false);
+   933→    }
+   934→  }, [bot.id]);
+   935→
+   936→  useEffect(() => {
+   937→    load();
+   938→    const t = setInterval(load, 6000);
+   939→    return () => clearInterval(t);
+   940→  }, [load]);
+   941→
+   942→  const openOrder = useCallback((id: string) => {
+   943→    setSelectedId(id);
+   944→    setDialogOpen(true);
+   945→  }, []);
+   946→
+   947→  const placeRequest = useCallback(
+   948→    (orderId: string) => {
+   949→      const order = orders.find((o) => o.id === orderId);
+   950→      setDialogOpen(false);
+   951→      setPlacementId(orderId);
+   952→      setTab('map');
+   953→      toast({
+   954→        title: `Кликните по карте — укажу точку заявки №${order?.number ?? ''}`,
+   955→      });
+   956→    },
+   957→    [orders, toast]
+   958→  );
+   959→
+   960→  const placeOnMap = useCallback(
+   961→    async (lat: number, lng: number) => {
+   962→      if (!placementId) return;
+   963→      const id = placementId;
+   964→      setPlacementId(null);
+   965→      try {
+   966→        await api(`/api/bots/${bot.id}/orders/${id}`, {
+   967→          method: 'PATCH',
+   968→          body: JSON.stringify({ lat, lng }),
+   969→        });
+   970→        toast({ title: 'Точка заявки сохранена на карте' });
+   971→        load();
+   972→      } catch {
+   973→        toast({ title: 'Не удалось сохранить точку', variant: 'destructive' });
+   974→      }
+   975→    },
+   976→    [placementId, bot.id, load, toast]
+   977→  );
+   978→
+   979→  const active = orders.filter((o) => ACTIVE_STATUSES.includes(o.status));
+   980→  const archive = orders.filter((o) => ARCHIVE_STATUSES.includes(o.status));
+   981→  const newCount = orders.filter((o) => o.status === 'new').length;
+   982→
+   983→  const filtered = (list: OrderDto[]) => {
+   984→    let r = list;
+   985→    if (typeFilter !== 'all') r = r.filter((o) => o.type === typeFilter);
+   986→    const q = search.trim().toLowerCase();
+   987→    if (q) {
+   988→      r = r.filter(
+   989→        (o) =>
+   990→          String(o.number).includes(q) ||
+   991→          (o.address ?? '').toLowerCase().includes(q) ||
+   992→          (o.clientName ?? '').toLowerCase().includes(q) ||
+   993→          (o.phone ?? '').toLowerCase().includes(q)
+   994→      );
+   995→    }
+   996→    return r;
+   997→  };
+   998→
+   999→  const withoutGeo = orders.filter(
+  1000→    (o) => o.lat == null && ACTIVE_STATUSES.includes(o.status)
+  1001→  );
+  1002→
+  1003→  return (
+  1004→    <div className="flex min-h-0 flex-1 flex-col">
+  1005→      {/* Хедер */}
+  1006→      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-3">
+  1007→        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">
+  1008→          <ChevronLeft className="h-4 w-4" />
+  1009→        </Button>
+  1010→        <MapPin className="h-5 w-5 text-primary" />
+  1011→        <h1 className="text-lg font-bold">Заявки</h1>
+  1012→        <Badge variant="secondary" className="max-w-[180px] truncate">
+  1013→          {bot.name}
+  1014→        </Badge>
+  1015→        {newCount > 0 && (
+  1016→          <Badge variant="destructive" className="animate-pulse">
+  1017→            новых: {newCount}
+  1018→          </Badge>
+  1019→        )}
+  1020→        <div className="ml-auto flex items-center gap-2">
+  1021→          <Button variant="outline" size="sm" className="h-8" onClick={load}>
+  1022→            <RefreshCw className="h-3.5 w-3.5" />
+  1023→            <span className="hidden sm:inline">Обновить</span>
+  1024→          </Button>
+  1025→          <Button size="sm" className="h-8" onClick={() => setNewOpen(true)}>
+  1026→            <Plus className="h-4 w-4" /> Заявка
+  1027→          </Button>
+  1028→        </div>
+  1029→      </div>
+  1030→
+  1031→      {/* Фильтры */}
+  1032→      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-2">
+  1033→        <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+  1034→          <TabsList className="h-9">
+  1035→            <TabsTrigger value="map" className="text-xs">
+  1036→              <MapPin className="mr-1 h-3.5 w-3.5" /> Карта
+  1037→            </TabsTrigger>
+  1038→            <TabsTrigger value="active" className="text-xs">
+  1039→              Активные <span className="ml-1 text-muted-foreground">{active.length}</span>
+  1040→            </TabsTrigger>
+  1041→            <TabsTrigger value="archive" className="text-xs">
+  1042→              <Archive className="mr-1 h-3.5 w-3.5" /> Архив{' '}
+  1043→              <span className="ml-1 text-muted-foreground">{archive.length}</span>
+  1044→            </TabsTrigger>
+  1045→          </TabsList>
+  1046→        </Tabs>
+  1047→        <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as 'all' | 'waste' | 'kgm')}>
+  1048→          <SelectTrigger className="h-9 w-[150px]">
+  1049→            <SelectValue />
+  1050→          </SelectTrigger>
+  1051→          <SelectContent>
+  1052→            <SelectItem value="all">Все типы</SelectItem>
+  1053→            <SelectItem value="waste">🚛 отходы</SelectItem>
+  1054→            <SelectItem value="kgm">📦 КГМ</SelectItem>
+  1055→          </SelectContent>
+  1056→        </Select>
+  1057→        {tab === 'map' && (
+  1058→          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+  1059→            <input
+  1060→              type="checkbox"
+  1061→              checked={showCompleted}
+  1062→              onChange={(e) => setShowCompleted(e.target.checked)}
+  1063→              className="accent-emerald-600"
+  1064→            />
+  1065→            выполненные на карте
+  1066→          </label>
+  1067→        )}
+  1068→        <div className="relative ml-auto w-full sm:w-56">
+  1069→          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+  1070→          <Input
+  1071→            className="h-9 pl-8"
+  1072→            placeholder="№, адрес, клиент, телефон…"
+  1073→            value={search}
+  1074→            onChange={(e) => setSearch(e.target.value)}
+  1075→          />
+  1076→        </div>
+  1077→      </div>
+  1078→
+  1079→      {/* Контент */}
+  1080→      <div className="min-h-0 flex-1 overflow-hidden p-3">
+  1081→        {tab === 'map' && (
+  1082→          <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto md:overflow-hidden">
+  1083→            <div className="min-h-[380px] flex-1">
+  1084→              <OrdersMap
+  1085→                orders={filtered(orders)}
+  1086→                showCompleted={showCompleted}
+  1087→                placementOrderId={placementId}
+  1088→                onSelect={openOrder}
+  1089→                onPlace={placeOnMap}
+  1090→              />
+  1091→            </div>
+  1092→            {withoutGeo.length > 0 && (
+  1093→              <div className="rounded-xl border bg-background p-2.5">
+  1094→                <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+  1095→                  Без координат — укажите точку на карте:
+  1096→                </div>
+  1097→                <div className="flex flex-wrap gap-1.5">
+  1098→                  {withoutGeo.slice(0, 8).map((o) => (
+  1099→                    <button
+  1100→                      key={o.id}
+  1101→                      onClick={() => placeRequest(o.id)}
+  1102→                      className="rounded-full border px-2.5 py-1 text-xs transition-colors hover:bg-muted"
+  1103→                    >
+  1104→                      <Crosshair className="mr-1 inline h-3 w-3" />№{o.number} ·{' '}
+  1105→                      {o.address?.slice(0, 30) ?? 'без адреса'}
+  1106→                    </button>
+  1107→                  ))}
+  1108→                </div>
+  1109→              </div>
+  1110→            )}
+  1111→          </div>
+  1112→        )}
+  1113→
+  1114→        {tab !== 'map' && (
+  1115→          <div className="h-full overflow-y-auto pr-1">
+  1116→            {loading ? (
+  1117→              <div className="flex items-center gap-2 p-6 text-muted-foreground">
+  1118→                <Loader2 className="h-4 w-4 animate-spin" /> Загрузка…
+  1119→              </div>
+  1120→            ) : filtered(tab === 'active' ? active : archive).length === 0 ? (
+  1121→              <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-muted-foreground">
+  1122→                {tab === 'active' ? <MapPin className="h-10 w-10 opacity-30" /> : <Archive className="h-10 w-10 opacity-30" />}
+  1123→                <p className="text-sm">
+  1124→                  {tab === 'active'
+  1125→                    ? 'Активных заявок нет. Клиенты оформляют заявки в боте — или создайте вручную.'
+  1126→                    : 'Архив пуст: выполненные и отменённые заявки появятся здесь.'}
+  1127→                </p>
+  1128→              </div>
+  1129→            ) : (
+  1130→              <div className="grid gap-2 lg:grid-cols-2">
+  1131→                {filtered(tab === 'active' ? active : archive).map((o) => (
+  1132→                  <OrderRow key={o.id} order={o} onOpen={openOrder} />
+  1133→                ))}
+  1134→              </div>
+  1135→            )}
+  1136→          </div>
+  1137→        )}
+  1138→      </div>
+  1139→
+  1140→      <OrderDetailDialog
+  1141→        botId={bot.id}
+  1142→        orderId={selectedId}
+  1143→        open={dialogOpen}
+  1144→        onClose={() => setDialogOpen(false)}
+  1145→        onSwitchOrder={openOrder}
+  1146→        onPlaceRequest={placeRequest}
+  1147→        onDataChanged={load}
+  1148→      />
+  1149→      <NewOrderDialog
+  1150→        botId={bot.id}
+  1151→        open={newOpen}
+  1152→        onClose={() => setNewOpen(false)}
+  1153→        onCreated={load}
+  1154→      />
+  1155→    </div>
+  1156→  );
+  1157→}
+  1158→

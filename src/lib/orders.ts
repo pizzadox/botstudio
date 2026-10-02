@@ -36,6 +36,8 @@ export interface CreateOrderInput {
   status?: string;
   lat?: number | null;
   lng?: number | null;
+  /// Как получены координаты: manual — указаны оператором, geocode — по адресу
+  geoSource?: string | null;
 }
 
 /**
@@ -52,30 +54,59 @@ async function nextNumber(botId: string): Promise<number> {
 
 /**
  * Геокодинг адреса через Nominatim (OpenStreetMap) — бесплатные тайлы/поиск
- * без API-ключа, в одной экосистеме с OpenFreeMap. При недоступности сервиса
- * заявка сохраняется без координат — оператор укажет точку на карте вручную.
+ * без API-ключа, в одной экосистеме с OpenFreeMap.
+ * Детерминированность: результаты кэшируются в памяти — повторный геокодинг
+ * того же адреса всегда возвращает те же координаты (не «прыгают»).
+ * Сначала ищем в России (countrycodes=ru — боты обслуживают РФ-адреса),
+ * при пустом результате — повторяем без ограничения по стране.
+ * При недоступности сервиса заявка сохраняется без координат — оператор
+ * укажет точку на карте вручную.
  */
+
+const geoCache = new Map<string, { lat: number; lng: number } | null>();
+
+async function nominatimSearch(q: string, countrycodes?: string) {
+  const url = new URL('https://nominatim.openstreetmap.org/search');
+  url.searchParams.set('format', 'jsonv2');
+  url.searchParams.set('limit', '1');
+  url.searchParams.set('accept-language', 'ru');
+  if (countrycodes) url.searchParams.set('countrycodes', countrycodes);
+  url.searchParams.set('q', q);
+  const res = await fetch(url.toString(), {
+    headers: { 'User-Agent': 'BotStudio/1.0 (bot support orders)' },
+    signal: AbortSignal.timeout(3500),
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { lat?: string; lon?: string }[];
+  const first = data?.[0];
+  const lat = parseFloat(first?.lat ?? '');
+  const lng = parseFloat(first?.lon ?? '');
+  if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  return null;
+}
+
 export async function geocodeAddress(
   address: string
 ): Promise<{ lat: number; lng: number } | null> {
   const q = address.trim();
   if (!q) return null;
+
+  const cacheKey = q.toLowerCase();
+  if (geoCache.has(cacheKey)) return geoCache.get(cacheKey) ?? null;
+
+  let result: { lat: number; lng: number } | null = null;
   try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=ru&q=${encodeURIComponent(q)}`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'BotStudio/1.0 (bot support orders)' },
-      signal: AbortSignal.timeout(3500),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { lat?: string; lon?: string }[];
-    const first = data?.[0];
-    const lat = parseFloat(first?.lat ?? '');
-    const lng = parseFloat(first?.lon ?? '');
-    if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
-    return null;
+    // 1) приоритет — адреса в России; 2) fallback — весь мир
+    result = await nominatimSearch(q, 'ru,ua,kz,by');
+    if (!result) result = await nominatimSearch(q);
   } catch {
-    return null;
+    result = null;
   }
+
+  // Кэшируем и успех, и неудачу (неудача — короче, чтобы retry был возможен)
+  if (geoCache.size > 500) geoCache.clear();
+  geoCache.set(cacheKey, result);
+  return result;
 }
 
 /** Фоновая привязка координат к заявке (не блокирует ответ бота) */
@@ -85,7 +116,10 @@ function geocodeInBackground(orderId: string, address: string | null): void {
     .then((geo) => {
       if (geo) {
         db.order
-          .update({ where: { id: orderId }, data: { lat: geo.lat, lng: geo.lng } })
+          .update({
+            where: { id: orderId },
+            data: { lat: geo.lat, lng: geo.lng, geoSource: 'geocode' },
+          })
           .catch(() => {});
       }
     })
@@ -113,6 +147,7 @@ export async function createOrder(input: CreateOrderInput) {
           status: input.status ?? 'new',
           lat: input.lat ?? null,
           lng: input.lng ?? null,
+          geoSource: input.geoSource ?? null,
         },
       });
     } catch (e) {

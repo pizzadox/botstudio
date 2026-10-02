@@ -137,13 +137,15 @@
   background: oklch(0.78 0 0);
 }
 
-/* React Flow: убираем лишние отступы атрибуции и приглушаем контролы */
+/* React Flow: убираем лишние отступы атрибуции и приглушаем контролы.
+   Хендлы при наведении НЕ масштабируем (scale двигает элементы — «прыгают»),
+   подсвечиваем только тенью и цветом. */
 .react-flow__attribution {
   @apply !text-[9px] !text-muted-foreground/40;
 }
 .react-flow__handle {
-  transition: transform 0.15s ease;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
 }
 .react-flow__handle:hover {
-  transform: scale(1.35);
+  box-shadow: 0 0 0 4px oklch(0.596 0.145 163.225 / 25%);
 }

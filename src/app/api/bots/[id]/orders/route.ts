@@ -45,11 +45,13 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     let lat = typeof body.lat === 'number' && Number.isFinite(body.lat) ? body.lat : null;
     let lng = typeof body.lng === 'number' && Number.isFinite(body.lng) ? body.lng : null;
+    let geoSource: string | null = lat != null && lng != null ? 'manual' : null;
     if (lat == null && lng == null && address) {
       const geo = await geocodeAddress(address);
       if (geo) {
         lat = geo.lat;
         lng = geo.lng;
+        geoSource = 'geocode';
       }
     }
 
@@ -64,6 +66,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       comment: String(body.comment ?? '').trim().slice(0, 1000) || null,
       lat,
       lng,
+      geoSource,
     });
 
     return NextResponse.json({ order }, { status: 201 });

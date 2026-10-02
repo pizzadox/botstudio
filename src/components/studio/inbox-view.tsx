@@ -155,14 +155,16 @@ export default function InboxView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-3 border-b bg-background px-4 py-3">
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">
+      <div className="flex items-center gap-2 border-b bg-background px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onBack} aria-label="Назад">
           <ChevronLeft className="h-4 w-4" />
         </Button>
-        <div className="flex items-center gap-2">
-          <Inbox className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-bold">Входящие диалоги</h1>
-          <Badge variant="secondary">{bot.name}</Badge>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Inbox className="h-5 w-5 shrink-0 text-primary" />
+          <h1 className="shrink-0 text-base font-bold sm:text-lg">Входящие</h1>
+          <Badge variant="secondary" className="min-w-0 max-w-[110px] truncate sm:max-w-[180px]">
+            {bot.name}
+          </Badge>
         </div>
       </div>
 

@@ -87,12 +87,18 @@ function OrdersMap({
   orders,
   showCompleted,
   placementOrderId,
+  selectedId,
+  focusOrderId,
+  focusTick,
   onSelect,
   onPlace,
 }: {
   orders: OrderDto[];
   showCompleted: boolean;
   placementOrderId: string | null;
+  selectedId: string | null;
+  focusOrderId: string | null;
+  focusTick: number;
   onSelect: (id: string) => void;
   onPlace: (lat: number, lng: number) => void;
 }) {
@@ -102,7 +108,6 @@ function OrdersMap({
   const markersRef = useRef<MlMarker[]>([]);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [zoomKey, setZoomKey] = useState(0);
 
   // Инициализация карты (динамический импорт — компонент клиентский)
   useEffect(() => {
@@ -157,9 +162,12 @@ function OrdersMap({
       const el = document.createElement('button');
       el.type = 'button';
       el.title = `Заявка №${o.number} — ${ORDER_TYPE_LABELS[o.type] ?? ''}`;
+      // Без hover:scale — масштабирование сдвигает маркер и «прыгает»;
+      // подсвечиваем тенью и рамкой, размер элемента не меняется
       el.className = cn(
-        'flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-2 border-white text-[11px] font-bold text-white shadow-lg transition-transform hover:scale-110',
-        markerColor(o)
+        'flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-2 text-[11px] font-bold text-white shadow-md transition-[box-shadow,filter,border-color] hover:shadow-xl hover:brightness-110',
+        markerColor(o),
+        o.id === selectedId ? 'border-primary ring-2 ring-primary/50' : 'border-white'
       );
       el.textContent = String(o.number);
       el.addEventListener('click', (e) => {
@@ -172,7 +180,17 @@ function OrdersMap({
       markersRef.current.push(marker);
     }
     // зависимость — сериализованный список видимых маркеров
-  }, [ready, zoomKey, visible.map((o) => `${o.id}:${o.lat}:${o.lng}:${o.status}`).join('|')]);
+  }, [ready, visible.map((o) => `${o.id}:${o.lat}:${o.lng}:${o.status}`).join('|'), selectedId]);
+
+  // Наведение на заявку из списка/карточки: перелетаем к точке (focusTick —
+  // чтобы повторный клик по той же заявке тоже срабатывал)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || !focusOrderId) return;
+    const o = visible.find((x) => x.id === focusOrderId);
+    if (!o || o.lat == null || o.lng == null) return;
+    map.flyTo({ center: [o.lng, o.lat], zoom: Math.max(map.getZoom(), 15), duration: 800 });
+  }, [ready, focusOrderId, focusTick]);
 
   // Режим указания точки: клик по карте → координаты заявки
   const handleMapClick = useCallback(
@@ -205,17 +223,17 @@ function OrdersMap({
   }
 
   return (
-    <div className="relative h-full min-h-[420px] overflow-hidden rounded-xl border bg-muted/30">
+    <div className="relative h-full min-h-[380px] overflow-hidden rounded-xl border bg-muted/30">
       <div ref={containerRef} className="h-full w-full" aria-label="Карта заявок" />
       {!ready && (
         <div className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Загружаю карту OpenFreeMap…
         </div>
       )}
-      {/* Легенда */}
-      <div className="absolute bottom-3 left-3 flex flex-col gap-1 rounded-lg border bg-background/95 px-3 py-2 text-[11px] shadow-sm backdrop-blur">
+      {/* Легенда (компактная, не перекрывает атрибуцию и контролы) */}
+      <div className="absolute bottom-2.5 left-2.5 z-10 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-lg border bg-background/95 px-2.5 py-1.5 text-[10px] leading-tight shadow-sm backdrop-blur sm:bottom-3 sm:left-3 sm:text-[11px]">
         <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> вывоз отходов
+          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> отходы
         </span>
         <span className="flex items-center gap-1.5">
           <span className="h-2.5 w-2.5 rounded-full bg-amber-500" /> КГМ
@@ -225,14 +243,14 @@ function OrdersMap({
         </span>
       </div>
       {/* Счётчик маркеров */}
-      <div className="absolute left-3 top-3 rounded-lg border bg-background/95 px-3 py-1.5 text-xs shadow-sm backdrop-blur">
+      <div className="absolute left-2.5 top-2.5 z-10 rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur sm:left-3 sm:top-3">
         <MapPin className="mr-1 inline h-3 w-3 text-primary" />
         На карте: <b>{visible.length}</b>
       </div>
       {placementOrderId && (
-        <div className="absolute inset-x-3 top-3 z-10 flex items-center justify-between gap-2 rounded-lg border border-primary/40 bg-primary/95 px-3 py-2 text-xs text-primary-foreground shadow-md md:right-auto">
+        <div className="absolute inset-x-2.5 top-12 z-20 flex items-center justify-between gap-2 rounded-lg border border-primary/40 bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md sm:inset-x-auto sm:right-auto sm:left-3 sm:top-12">
           <span className="flex items-center gap-1.5">
-            <Crosshair className="h-3.5 w-3.5" /> Кликните по карте — точка заявки №
+            <Crosshair className="h-3.5 w-3.5 shrink-0" /> Кликните по карте — точка заявки №
             {placementOrderId}
           </span>
         </div>
@@ -347,7 +365,7 @@ function OrderChat({
         })}
       </div>
       <form
-        className="flex items-center gap-2 border-t p-2.5"
+        className="flex items-center gap-2 border-t p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))]"
         onSubmit={(e) => {
           e.preventDefault();
           send();
@@ -386,6 +404,7 @@ function OrderDetailDialog({
   onClose,
   onSwitchOrder,
   onPlaceRequest,
+  onShowOnMap,
   onDataChanged,
 }: {
   botId: string;
@@ -394,6 +413,7 @@ function OrderDetailDialog({
   onClose: () => void;
   onSwitchOrder: (id: string) => void;
   onPlaceRequest: (orderId: string) => void;
+  onShowOnMap: (orderId: string) => void;
   onDataChanged: () => void;
 }) {
   const { toast } = useToast();
@@ -401,9 +421,12 @@ function OrderDetailDialog({
   const [clientOrders, setClientOrders] = useState<OrderDto[]>([]);
   const [loading, setLoading] = useState(false);
   const [assignee, setAssignee] = useState('');
+  const [address, setAddress] = useState('');
   const [wishDate, setWishDate] = useState('');
   const [comment, setComment] = useState('');
   const [saving, setSaving] = useState(false);
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [confirmGeo, setConfirmGeo] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const load = useCallback(async () => {
@@ -416,6 +439,7 @@ function OrderDetailDialog({
       setOrder(d.order);
       setClientOrders(d.clientOrders);
       setAssignee(d.order.assignee ?? '');
+      setAddress(d.order.address ?? '');
       setWishDate(d.order.wishDate ?? '');
       setComment(d.order.comment ?? '');
     } catch {
@@ -431,6 +455,7 @@ function OrderDetailDialog({
       setOrder(null);
       setClientOrders([]);
       setConfirmDelete(false);
+      setConfirmGeo(false);
     }
   }, [open, orderId, load]);
 
@@ -452,6 +477,45 @@ function OrderDetailDialog({
     }
   };
 
+  /**
+   * Геокодирование адреса. Ручная точка защищена: если координаты ставили
+   * вручную — сначала подтверждение; если адрес не нашёлся — прежние
+   * координаты остаются (не «слетают»).
+   */
+  const runGeocode = async () => {
+    if (!orderId || !order) return;
+    setConfirmGeo(false);
+    setGeoLoading(true);
+    try {
+      const d = await api<{ order: OrderDto; geo?: { ok: boolean; lat?: number; lng?: number } }>(
+        `/api/bots/${botId}/orders/${orderId}`,
+        { method: 'PATCH', body: JSON.stringify({ geocode: true }) }
+      );
+      setOrder(d.order);
+      onDataChanged();
+      if (d.geo?.ok) {
+        toast({
+          title: `Координаты обновлены: ${d.geo.lat?.toFixed(5)}, ${d.geo.lng?.toFixed(5)}`,
+        });
+      } else if (d.order.lat != null) {
+        toast({
+          title: 'Адрес не найден на карте',
+          description: 'Прежние координаты сохранены без изменений',
+        });
+      } else {
+        toast({
+          title: 'Адрес не найден на карте',
+          description: 'Уточните адрес или укажите точку кнопкой «Указать на карте»',
+          variant: 'destructive',
+        });
+      }
+    } catch {
+      toast({ title: 'Ошибка геокодирования', variant: 'destructive' });
+    } finally {
+      setGeoLoading(false);
+    }
+  };
+
   const remove = async () => {
     if (!orderId) return;
     try {
@@ -464,13 +528,25 @@ function OrderDetailDialog({
     }
   };
 
+  const hasManualPoint = order?.geoSource === 'manual';
+
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="grid h-[90dvh] max-w-4xl grid-rows-[auto_1fr] gap-0 overflow-hidden p-0 md:h-[85vh]">
-        <DialogHeader className="border-b px-4 py-3 md:px-5">
-          <DialogTitle className="flex items-center gap-2 text-base">
-            <span className="text-lg">{order ? ORDER_TYPE_ICONS[order.type] : '📋'}</span>
-            {order ? `Заявка №${order.number} — ${ORDER_TYPE_LABELS[order.type] ?? ''}` : 'Заявка'}
+      <DialogContent className="grid h-[100dvh] w-screen max-w-none grid-rows-[auto_1fr] gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-[92dvh] sm:w-[calc(100%-2rem)] sm:max-w-4xl sm:rounded-xl sm:border md:h-[85vh]">
+        <DialogHeader className="border-b px-4 py-3 pr-14 md:pl-5 md:pr-16">
+          <DialogTitle className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-base">
+            <span className="shrink-0 text-lg">{order ? ORDER_TYPE_ICONS[order.type] : '📋'}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {order ? `Заявка №${order.number} — ${ORDER_TYPE_LABELS[order.type] ?? ''}` : 'Заявка'}
+            </span>
+            {order && (
+              <Badge
+                variant="outline"
+                className={cn('shrink-0 text-[10px]', ORDER_STATUS_BADGES[order.status])}
+              >
+                {ORDER_STATUS_LABELS[order.status] ?? order.status}
+              </Badge>
+            )}
           </DialogTitle>
           <DialogDescription className="sr-only">
             Карточка заявки: данные клиента, статус и встроенный чат
@@ -486,19 +562,19 @@ function OrderDetailDialog({
             Заявка не найдена
           </div>
         ) : (
-          <div className="grid min-h-0 overflow-y-auto md:grid-cols-2 md:overflow-hidden">
+          <div className="min-h-0 overflow-y-auto pb-[max(1rem,env(safe-area-inset-bottom))] md:grid md:grid-cols-2 md:overflow-hidden md:pb-0">
             {/* Левая колонка: клиент + данные заявки */}
             <div className="min-h-0 space-y-4 border-b p-4 md:border-b-0 md:border-r md:overflow-y-auto">
               {/* Клиент */}
               <div className="rounded-xl border bg-muted/30 p-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <User className="h-3.5 w-3.5" /> Карточка клиента
                   </h3>
                   {order.conversation && (
                     <span
                       className={cn(
-                        'rounded-full px-2 py-0.5 text-[10px] font-medium',
+                        'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium',
                         SOURCE_COLORS[order.conversation.source] ?? 'bg-muted text-muted-foreground'
                       )}
                     >
@@ -507,7 +583,7 @@ function OrderDetailDialog({
                   )}
                 </div>
                 <div className="mt-2 space-y-1 text-sm">
-                  <div className="font-medium">
+                  <div className="break-words font-medium">
                     {order.clientName || order.conversation?.contact || 'Клиент без имени'}
                   </div>
                   {order.phone && (
@@ -519,7 +595,7 @@ function OrderDetailDialog({
                     </a>
                   )}
                   {order.conversation?.externalUserId && (
-                    <div className="text-xs text-muted-foreground">
+                    <div className="break-all text-xs text-muted-foreground">
                       ID клиента: {order.conversation.externalUserId}
                     </div>
                   )}
@@ -540,7 +616,7 @@ function OrderDetailDialog({
                             o.id === order.id && 'border-primary/50 bg-primary/5'
                           )}
                         >
-                          <span>№{o.number}</span>
+                          <span className="shrink-0 font-semibold">№{o.number}</span>
                           <span className="min-w-0 flex-1 truncate text-muted-foreground">
                             {ORDER_TYPE_LABELS[o.type] ?? o.type}
                             {o.address ? ` · ${o.address}` : ''}
@@ -560,14 +636,14 @@ function OrderDetailDialog({
 
               {/* Данные заявки */}
               <div className="space-y-3 rounded-xl border p-3">
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
                     <Label className="text-xs text-muted-foreground">Статус</Label>
                     <Select
                       value={order.status}
                       onValueChange={(v) => patch({ status: v }, 'Статус обновлён')}
                     >
-                      <SelectTrigger className="h-9">
+                      <SelectTrigger className="h-9 w-full">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -599,7 +675,7 @@ function OrderDetailDialog({
                   <Label className="text-xs text-muted-foreground">Исполнитель</Label>
                   <div className="flex gap-2">
                     <Input
-                      className="h-9"
+                      className="h-9 min-w-0"
                       value={assignee}
                       placeholder="Бригада / водитель"
                       onChange={(e) => setAssignee(e.target.value)}
@@ -617,7 +693,16 @@ function OrderDetailDialog({
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Адрес вывоза</Label>
-                  <div className="text-sm">{order.address || '— не указан —'}</div>
+                  <Input
+                    className="h-9"
+                    value={address}
+                    placeholder="Город, улица, дом"
+                    onChange={(e) => setAddress(e.target.value)}
+                    onBlur={() => {
+                      if (address !== (order.address ?? '')) patch({ address }, 'Адрес обновлён');
+                    }}
+                    disabled={saving}
+                  />
                   <div className="flex flex-wrap gap-2 pt-1">
                     <Button
                       size="sm"
@@ -628,25 +713,78 @@ function OrderDetailDialog({
                       <Crosshair className="h-3.5 w-3.5" />
                       {order.lat != null ? 'Перенести точку' : 'Указать на карте'}
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-8"
-                      disabled={saving}
-                      onClick={() => patch({ geocode: true }, order.lat != null ? 'Координаты обновлены' : 'Адрес не найден на карте')}
-                    >
-                      <Globe className="h-3.5 w-3.5" /> Геокодировать
-                    </Button>
+                    {order.lat != null && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        onClick={() => onShowOnMap(order.id)}
+                      >
+                        <MapPin className="h-3.5 w-3.5" /> Показать на карте
+                      </Button>
+                    )}
+                    {hasManualPoint && !confirmGeo ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        disabled={geoLoading || saving}
+                        onClick={() => setConfirmGeo(true)}
+                      >
+                        <Globe className="h-3.5 w-3.5" /> Геокодировать
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        disabled={geoLoading || saving || !address.trim()}
+                        onClick={runGeocode}
+                      >
+                        {geoLoading ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Globe className="h-3.5 w-3.5" />
+                        )}
+                        Геокодировать
+                      </Button>
+                    )}
                   </div>
-                  {order.lat != null && (
+                  {confirmGeo && (
+                    <div className="flex flex-col gap-2 rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-xs text-amber-800 sm:flex-row sm:items-center">
+                      <span className="min-w-0 flex-1">
+                        Точка установлена вручную. Пересчитать координаты по адресу?
+                      </span>
+                      <span className="flex shrink-0 gap-1.5 sm:ml-auto">
+                        <Button size="sm" className="h-7" onClick={runGeocode}>
+                          Заменить
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7"
+                          onClick={() => setConfirmGeo(false)}
+                        >
+                          Оставить
+                        </Button>
+                      </span>
+                    </div>
+                  )}
+                  {order.lat != null ? (
                     <div className="pt-1 text-[11px] text-muted-foreground">
                       Координаты: {order.lat.toFixed(5)}, {order.lng?.toFixed(5)}
+                      {order.geoSource === 'manual' && ' · указано вручную'}
+                      {order.geoSource === 'geocode' && ' · по адресу'}
+                    </div>
+                  ) : (
+                    <div className="pt-1 text-[11px] text-amber-600">
+                      Точка на карте не указана
                     </div>
                   )}
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Состав / объём</Label>
-                  <div className="text-sm">{order.size || '—'}</div>
+                  <div className="break-words text-sm">{order.size || '—'}</div>
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Комментарий оператора</Label>
@@ -666,7 +804,7 @@ function OrderDetailDialog({
                     Сохранить комментарий
                   </Button>
                 </div>
-                <div className="flex items-center justify-between border-t pt-2 text-[11px] text-muted-foreground">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-2 text-[11px] text-muted-foreground">
                   <span>Создана: {fmtDate(order.createdAt)}</span>
                   {confirmDelete ? (
                     <span className="flex items-center gap-1.5">
@@ -695,8 +833,10 @@ function OrderDetailDialog({
               </div>
             </div>
 
-            {/* Правая колонка: встроенный чат с пользователем */}
-            <div className="flex min-h-0 flex-col md:overflow-hidden">
+            {/* Правая колонка: встроенный чат с пользователем.
+                На мобильных — фиксированная высота (иначе область сообщений схлопывается),
+                на десктопе — занимает всю высоту колонки. */}
+            <div className="flex h-[46dvh] min-h-[300px] flex-col md:h-auto md:min-h-0 md:overflow-hidden">
               <OrderChat
                 botId={botId}
                 orderId={order.id}
@@ -759,7 +899,7 @@ function NewOrderDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-h-[92dvh] max-w-lg overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Новая заявка</DialogTitle>
           <DialogDescription>
@@ -887,8 +1027,14 @@ function OrderRow({
         {order.phone && <span>{order.phone}</span>}
         {order.size && <span>{order.size}</span>}
         {order.wishDate && <span>🗓 {order.wishDate}</span>}
-        {order.lat == null && (
-          <span className="text-amber-600">📍 точка не указана</span>
+        {order.lat != null ? (
+          <span className="flex items-center gap-0.5 text-emerald-600">
+            <MapPin className="h-3 w-3" /> на карте
+          </span>
+        ) : (
+          <span className="flex items-center gap-0.5 text-amber-600">
+            <MapPin className="h-3 w-3" /> точка не указана
+          </span>
         )}
         {typeof order.messagesCount === 'number' && order.messagesCount > 0 && (
           <span className="flex items-center gap-0.5">
@@ -917,6 +1063,7 @@ export default function OrdersView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [placementId, setPlacementId] = useState<string | null>(null);
+  const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
   const [showCompleted, setShowCompleted] = useState(true);
   const [typeFilter, setTypeFilter] = useState<'all' | 'waste' | 'kgm'>('all');
   const [search, setSearch] = useState('');
@@ -944,10 +1091,20 @@ export default function OrdersView({
     setDialogOpen(true);
   }, []);
 
+  // Закрыть карточку и перелететь к точке заявки на карте
+  const showOnMap = useCallback((id: string) => {
+    setDialogOpen(false);
+    setSelectedId(null);
+    setPlacementId(null);
+    setTab('map');
+    setFocus((f) => ({ id, tick: (f?.tick ?? 0) + 1 }));
+  }, []);
+
   const placeRequest = useCallback(
     (orderId: string) => {
       const order = orders.find((o) => o.id === orderId);
       setDialogOpen(false);
+      setSelectedId(null);
       setPlacementId(orderId);
       setTab('map');
       toast({
@@ -1003,13 +1160,13 @@ export default function OrdersView({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Хедер */}
-      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-3">
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">
+      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2.5 sm:px-4 sm:py-3">
+        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onBack} aria-label="Назад">
           <ChevronLeft className="h-4 w-4" />
         </Button>
-        <MapPin className="h-5 w-5 text-primary" />
-        <h1 className="text-lg font-bold">Заявки</h1>
-        <Badge variant="secondary" className="max-w-[180px] truncate">
+        <MapPin className="h-5 w-5 shrink-0 text-primary" />
+        <h1 className="shrink-0 text-lg font-bold">Заявки</h1>
+        <Badge variant="secondary" className="max-w-[130px] truncate sm:max-w-[180px]">
           {bot.name}
         </Badge>
         {newCount > 0 && (
@@ -1029,7 +1186,7 @@ export default function OrdersView({
       </div>
 
       {/* Фильтры */}
-      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2 sm:px-4">
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
           <TabsList className="h-9">
             <TabsTrigger value="map" className="text-xs">
@@ -1039,13 +1196,13 @@ export default function OrdersView({
               Активные <span className="ml-1 text-muted-foreground">{active.length}</span>
             </TabsTrigger>
             <TabsTrigger value="archive" className="text-xs">
-              <Archive className="mr-1 h-3.5 w-3.5" /> Архив{' '}
+              <Archive className="mr-1 hidden h-3.5 w-3.5 sm:inline" /> Архив{' '}
               <span className="ml-1 text-muted-foreground">{archive.length}</span>
             </TabsTrigger>
           </TabsList>
         </Tabs>
         <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as 'all' | 'waste' | 'kgm')}>
-          <SelectTrigger className="h-9 w-[150px]">
+          <SelectTrigger className="h-9 w-[140px] sm:w-[150px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1055,7 +1212,7 @@ export default function OrdersView({
           </SelectContent>
         </Select>
         {tab === 'map' && (
-          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+          <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground">
             <input
               type="checkbox"
               checked={showCompleted}
@@ -1077,14 +1234,17 @@ export default function OrdersView({
       </div>
 
       {/* Контент */}
-      <div className="min-h-0 flex-1 overflow-hidden p-3">
+      <div className="min-h-0 flex-1 overflow-hidden p-2 sm:p-3">
         {tab === 'map' && (
           <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto md:overflow-hidden">
-            <div className="min-h-[380px] flex-1">
+            <div className="min-h-[340px] flex-1 sm:min-h-[380px]">
               <OrdersMap
                 orders={filtered(orders)}
                 showCompleted={showCompleted}
                 placementOrderId={placementId}
+                selectedId={selectedId}
+                focusOrderId={focus?.id ?? null}
+                focusTick={focus?.tick ?? 0}
                 onSelect={openOrder}
                 onPlace={placeOnMap}
               />
@@ -1141,9 +1301,13 @@ export default function OrdersView({
         botId={bot.id}
         orderId={selectedId}
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        onClose={() => {
+          setDialogOpen(false);
+          setSelectedId(null);
+        }}
         onSwitchOrder={openOrder}
         onPlaceRequest={placeRequest}
+        onShowOnMap={showOnMap}
         onDataChanged={load}
       />
       <NewOrderDialog
