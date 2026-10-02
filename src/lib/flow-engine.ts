@@ -1,6 +1,6 @@
 import ZAI from 'z-ai-web-dev-sdk';
 import { db } from '@/lib/db';
-import { createOrder } from '@/lib/orders';
+import { createOrder, geocodeAddress } from '@/lib/orders';
 import type {
   ConditionOp,
   EngineMessage,
@@ -26,6 +26,66 @@ export interface EngineContext {
 /** Кнопка/команда возврата в главное меню — доступна пользователю всегда */
 export function isMainMenuCommand(text: string): boolean {
   return /^(🏠\s*)?в главное меню[.!]?\s*$|^(🏠\s*)?главное меню[.!]?\s*$/i.test(text.trim());
+}
+
+/** «Пропустить» — принять ответ без проверки валидации */
+export function isSkipWord(text: string): boolean {
+  return /^(пропустить|пропускаю|skip)[.!]?\s*$/i.test(text.trim());
+}
+
+/**
+ * Валидация телефона РФ: 10–11 цифр (можно с +7/8, скобками, дефисами).
+ * Возвращает true, если телефон похож на настоящий.
+ */
+export function isValidPhone(input: string): boolean {
+  const digits = input.replace(/\D/g, '');
+  if (digits.length === 11 && (digits[0] === '7' || digits[0] === '8')) return true;
+  if (digits.length === 10) return true;
+  return false;
+}
+
+/**
+ * Проверка ответа на вопрос по data.validate.
+ * Возвращает текст ошибки для переспрашивания или null, если ответ корректен.
+ * «пропустить» обрабатывается вызывающим кодом.
+ */
+export async function validateAnswer(
+  data: FlowNode['data'],
+  input: string,
+  vars: Record<string, string>
+): Promise<string | null> {
+  if (data.validate === 'phone') {
+    if (isValidPhone(input)) return null;
+    return (
+      'Телефон выглядит некорректно 🙏 Введите номер в формате +7 900 123-45-67 (10–11 цифр) ' +
+      'или напишите «пропустить».'
+    );
+  }
+
+  if (data.validate === 'address') {
+    const q = input.trim();
+    if (q.length < 3) {
+      return 'Уточните адрес подробнее: улица и номер дома (например: улица Гоголя, 5).';
+    }
+    // Кандидаты адреса: как ввели; с городом из переменных (город шагом раньше)
+    const candidates = [q];
+    for (const cityVar of ['city', 'kgm_city']) {
+      const city = (vars[cityVar] ?? '').trim();
+      if (city && !q.toLowerCase().includes(city.toLowerCase())) {
+        candidates.push(`${city}, ${q}`);
+      }
+    }
+    for (const candidate of candidates) {
+      const geo = await geocodeAddress(candidate);
+      if (geo) return null;
+    }
+    return (
+      'Не нашёл такой адрес на карте 🤔 Проверьте улицу и номер дома ' +
+      '(можно с корпусом: улица Гоголя, 5к2). Либо напишите «пропустить», чтобы продолжить без проверки.'
+    );
+  }
+
+  return null;
 }
 
 /**
@@ -351,7 +411,25 @@ export async function runEngine(
         if (current && current.type === 'start') {
           current = nextNode(flow, current.id);
         }
+      } else if (isSkipWord(input) && node.data.validate) {
+        // «пропустить» — принимаем ответ без проверки (пустая переменная)
+        const v = node.data.variable?.trim() || 'answer';
+        if (!state.vars[v]) state.vars[v] = '';
+        state.history.push({ role: 'user', text: input });
+        state.waiting = 'none';
+        lastInput = '';
+        current = nextNode(flow, node.id);
       } else {
+        // Автопроверка ответа (телефон/адрес): при ошибке переспрашиваем
+        const err = await validateAnswer(node.data, input, state.vars);
+        if (err) {
+          state.history.push({ role: 'user', text: input });
+          state.history.push({ role: 'bot', text: err });
+          messages.push({ text: err, nodeId: node.id });
+          state.waiting = 'input';
+          state.currentNodeId = node.id;
+          return { messages, state, needsOperator };
+        }
         const v = node.data.variable?.trim() || 'answer';
         state.vars[v] = input;
         state.history.push({ role: 'user', text: input });

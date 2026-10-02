@@ -31,6 +31,12 @@ export interface FlowNodeData {
   label?: string;
   text?: string;
   variable?: string;
+  /**
+   * Автопроверка ответа на вопрос:
+   *  phone — телефон РФ (10–11 цифр); address — адрес существует (геокодинг).
+   *  При ошибке бот переспрашивает; «пропустить» принимает ответ без проверки.
+   */
+  validate?: 'phone' | 'address';
   buttons?: FlowButton[];
   /** Сохранить текст выбранной кнопки в переменную (выбор из меню) */
   saveSelection?: string;

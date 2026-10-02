@@ -1,6 +1,6 @@
 'use client';
 
-import { CircleHelp, ClipboardList, MousePointerClick, Plus, Settings2, Trash2, X } from 'lucide-react';
+import { CircleHelp, ClipboardList, MousePointerClick, Plus, Settings2, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { ConditionOp, FlowButton, FlowNode, FlowNodeData } from '@/lib/flow-types';
 import { CONDITION_OP_LABELS, NODE_META } from '@/lib/flow-types';
 import { NODE_ICONS } from './flow-node';
@@ -202,6 +202,27 @@ export default function NodeInspector({
                 {d.variable || 'имя'}
                 {'}}'} в следующих блоках.
               </p>
+              <div className="space-y-1.5 border-t pt-2">
+                <Label htmlFor="insp-validate" className="flex items-center gap-1">
+                  <ShieldCheck className="h-3.5 w-3.5" /> Проверка ответа
+                </Label>
+                <Select
+                  value={d.validate ?? 'none'}
+                  onValueChange={(v) => onChange({ validate: v === 'none' ? undefined : v })}
+                >
+                  <SelectTrigger id="insp-validate" className="h-9 w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Без проверки</SelectItem>
+                    <SelectItem value="phone">📞 Телефон (10–11 цифр)</SelectItem>
+                    <SelectItem value="address">📍 Адрес (есть на карте)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  При ошибке бот переспросит. Пользователь может написать «пропустить».
+                </p>
+              </div>
             </div>
           )}
 
