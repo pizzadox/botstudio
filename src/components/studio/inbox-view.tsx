@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Bot,
   ChevronLeft,
+  ChevronDown,
+  ChevronRight,
   Globe,
   Headset,
   Inbox,
@@ -13,14 +15,28 @@ import {
   MessageSquare,
   Send,
   SearchCheck,
+  Truck,
 } from 'lucide-react';
 import { api } from '@/lib/client-api';
 import type { ChatMessage, ConversationListItem } from '@/lib/studio-types';
-import { SOURCE_COLORS, SOURCE_LABELS } from '@/lib/studio-types';
+import {
+  ORDER_STATUS_BADGES,
+  ORDER_STATUS_LABELS,
+  ORDER_TYPE_LABELS,
+  SOURCE_COLORS,
+  SOURCE_LABELS,
+} from '@/lib/studio-types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
@@ -49,6 +65,144 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)} дн назад`;
 }
 
+interface ConvOrder {
+  id: string;
+  number: number;
+  type: string;
+  status: string;
+  address: string | null;
+  city: string | null;
+  size: string | null;
+  wishDate: string | null;
+  clientName: string | null;
+  phone: string | null;
+  assignee: string | null;
+  createdAt: string;
+}
+
+/** Панель заявок клиента: просмотр и быстрое изменение статуса/исполнителя */
+function ConversationOrdersPanel({
+  conversationId,
+  botId,
+  refreshTick,
+}: {
+  conversationId: string;
+  botId: string;
+  refreshTick: number;
+}) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [orders, setOrders] = useState<ConvOrder[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const d = await api<{ orders: ConvOrder[] }>(`/api/conversations/${conversationId}/orders`);
+      setOrders(d.orders);
+    } catch {
+      /* ignore */
+    } finally {
+      setLoaded(true);
+    }
+  }, [conversationId]);
+
+  useEffect(() => {
+    load();
+  }, [load, refreshTick]);
+
+  const patch = async (orderId: string, data: Record<string, unknown>) => {
+    setSavingId(orderId);
+    try {
+      const d = await api<{ order: { status: string; assignee: string | null } }>(
+        `/api/bots/${botId}/orders/${orderId}`,
+        { method: 'PATCH', body: JSON.stringify(data) }
+      );
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === orderId ? { ...o, status: d.order.status, assignee: d.order.assignee } : o
+        )
+      );
+      toast({ title: 'Заявка обновлена' });
+    } catch {
+      toast({ title: 'Не удалось обновить заявку', variant: 'destructive' });
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <div className="border-b bg-background px-4 py-2">
+      <button
+        className="flex w-full items-center gap-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        <Truck className="h-3.5 w-3.5" />
+        Заявки клиента ({orders.length})
+      </button>
+      {open && loaded && orders.length > 0 && (
+        <div className="mt-2 max-h-56 space-y-1.5 overflow-y-auto pr-1">
+          {orders.map((o) => (
+            <div key={o.id} className="rounded-lg border p-2">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="text-xs font-semibold">№{o.number}</span>
+                <Badge
+                  variant="outline"
+                  className={cn('h-4 px-1 text-[9px]', ORDER_STATUS_BADGES[o.status])}
+                >
+                  {ORDER_STATUS_LABELS[o.status] ?? o.status}
+                </Badge>
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                  {ORDER_TYPE_LABELS[o.type] ?? o.type}
+                  {o.address ? ` · ${o.address}` : ''}
+                </span>
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <Select
+                  value={o.status}
+                  onValueChange={(v) => patch(o.id, { status: v })}
+                  disabled={savingId === o.id}
+                >
+                  <SelectTrigger className="h-7 w-[130px] text-[11px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(ORDER_STATUS_LABELS).map(([k, v]) => (
+                      <SelectItem key={k} value={k} className="text-xs">
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  className="h-7 w-[120px] flex-1 text-[11px] sm:w-[140px]"
+                  defaultValue={o.assignee ?? ''}
+                  placeholder="Исполнитель…"
+                  onBlur={(e) => {
+                    if (e.target.value !== (o.assignee ?? '')) patch(o.id, { assignee: e.target.value });
+                  }}
+                />
+                {o.wishDate && (
+                  <span className="text-[11px] text-muted-foreground">🗓 {o.wishDate}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {open && loaded && orders.length === 0 && (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">У клиента пока нет заявок.</p>
+      )}
+      {open && !loaded && (
+        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin" /> Загрузка…
+        </div>
+      )}
+    </div>
+  );}
+
 export default function InboxView({
   bot,
   onBack,
@@ -67,6 +221,7 @@ export default function InboxView({
   const [reply, setReply] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [ordersTick, setOrdersTick] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const loadList = useCallback(async () => {
@@ -281,6 +436,8 @@ export default function InboxView({
                   )}
                 </div>
               </div>
+
+              <ConversationOrdersPanel conversationId={selected.id} botId={bot.id} refreshTick={ordersTick} />
 
               <div ref={scrollRef} className="flex-1 space-y-2.5 overflow-y-auto bg-muted/30 p-4">
                 {messages.map((m) => (
