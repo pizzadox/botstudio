@@ -303,3 +303,20 @@ Stage Summary:
 - Уведомления больше не повторяются (серверный курсор + дедуп по id), автоматически скрываются и стали кликабельными: клик открывает «Заявки» с перелётом к маркеру или «Входящие» с открытым диалогом.
 - Карта заявок теперь открывается на Новгородской области; разворачиваемый список точек даёт быстрый переход к любой заявке на карте на всех экранах.
 - Артефакты: src/app/api/notifications/route.ts (now-курсор), src/components/studio/app-root.tsx (вотчер: дедуп, клики, openTarget), src/components/studio/orders-view.tsx (центр области, список точек, focusOrderId), src/components/studio/inbox-view.tsx (focusConversationId), src/hooks/use-toast.ts (TOAST_LIMIT 3).
+
+---
+Task ID: 16
+Agent: Z.ai Code (main)
+Task: Исправить выход описания за рамки карточки в блоке «Мои боты» на дашборде
+
+Work Log:
+- Диагностика: в shadcn card.tsx (новая версия) CardHeader — grid (`grid auto-rows-min …`). Внутренняя flex-строка карточки бота является grid-элементом неявной auto-колонки, которая раздувается по min-content длинного nowrap-текста (класс truncate = white-space:nowrap) → описание/название вылезают за границы карточки.
+- Fix в src/components/studio/dashboard.tsx: добавлен min-w-0 к grid-элементу (flex-строка в CardHeader) и к вложенному flex-блоку с иконкой → колонка больше не расширяется содержимым, цепочка min-w-0 → truncate работает (эллипсис внутри карточки).
+- Тот же latent-баг исправлен в src/components/studio/channels-view.tsx (2 места: карточки каналов и шапка интеграции MyTKO) через replace_all `flex items-start justify-between gap-2` → `flex min-w-0 items-start justify-between gap-2`.
+- bun run lint — 0 ошибок.
+- Браузерная верификация (agent-browser, demo/demo123): создан бот с длинным описанием, замеры getBoundingClientRect на 1280px и 390px — overflow:false у всех карточек (title/description), docScrollWidth=winWidth (нет горизонтального скролла); скриншоты .verify/desktop-bots.png, .verify/mobile-bots.png. Проверены также «Каналы» — без переполнений.
+- Тестовый бот удалён с демо-аккаунта через DELETE /api/bots/[id] (200).
+
+Stage Summary:
+- Причина бага: grid-версия CardHeader + truncate без min-w-0 на grid-элементе (auto-колонка растёт по nowrap-тексту).
+- Правки: dashboard.tsx (1 место), channels-view.tsx (2 места) — добавлен min-w-0; UI/карточки теперь корректно обрезают длинные названия/описания эллипсисом на всех экранах.

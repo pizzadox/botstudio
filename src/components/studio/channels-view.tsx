@@ -247,7 +247,7 @@ export default function ChannelsView({
             return (
               <Card key={ch.id}>
                 <CardHeader className="pb-3">
-                  <div className="flex items-start justify-between gap-2">
+                  <div className="flex min-w-0 items-start justify-between gap-2">
                     <div className="flex items-center gap-3 min-w-0">
                       <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-xl', meta.color)}>
                         <Icon className="h-5 w-5" />
@@ -700,7 +700,7 @@ function MytkoCard({ botId }: { botId: string }) {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
               <Truck className="h-5 w-5" />
