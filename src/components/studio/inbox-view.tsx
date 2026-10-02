@@ -206,9 +206,14 @@ function ConversationOrdersPanel({
 export default function InboxView({
   bot,
   onBack,
+  focusConversationId,
+  onFocusConsumed,
 }: {
   bot: { id: string; name: string };
   onBack: () => void;
+  /** id диалога из уведомления — сразу открыть его */
+  focusConversationId?: string | null;
+  onFocusConsumed?: () => void;
 }) {
   const { toast } = useToast();
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
@@ -256,6 +261,13 @@ export default function InboxView({
   useEffect(() => {
     loadList();
   }, [loadList]);
+
+  // Переход из уведомления: сразу открываем нужный диалог
+  useEffect(() => {
+    if (!focusConversationId) return;
+    setSelectedId(focusConversationId);
+    onFocusConsumed?.();
+  }, [focusConversationId, onFocusConsumed]);
 
   useEffect(() => {
     const t = setInterval(loadList, 6000);

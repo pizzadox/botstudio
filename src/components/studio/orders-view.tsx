@@ -5,10 +5,12 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Map as MlMap, Marker as MlMarker } from 'maplibre-gl';
 import {
   Archive,
+  ChevronDown,
   ChevronLeft,
   Crosshair,
   Globe,
   Headset,
+  List,
   Loader2,
   MapPin,
   MessageSquare,
@@ -93,6 +95,7 @@ function OrdersMap({
   focusTick,
   onSelect,
   onPlace,
+  onHighlight,
 }: {
   orders: OrderDto[];
   showCompleted: boolean;
@@ -102,6 +105,8 @@ function OrdersMap({
   focusTick: number;
   onSelect: (id: string) => void;
   onPlace: (lat: number, lng: number) => void;
+  /** Выделить заявку без открытия карточки (клик по списку точек) */
+  onHighlight: (id: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MlMap | null>(null);
@@ -109,6 +114,7 @@ function OrdersMap({
   const markersRef = useRef<MlMarker[]>([]);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [listOpen, setListOpen] = useState(false);
 
   // Инициализация карты (динамический импорт — компонент клиентский)
   useEffect(() => {
@@ -123,8 +129,8 @@ function OrdersMap({
         const map = new ml.Map({
           container: containerRef.current,
           style: 'https://tiles.openfreemap.org/styles/liberty',
-          center: [37.6176, 55.7558], // Москва — стартовый вид
-          zoom: 8.5,
+          center: [32.3, 58.35], // Новгородская область (Великий Новгород — Боровичи — Валдай)
+          zoom: 7,
         });
         map.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
         map.on('load', () => {
@@ -193,6 +199,23 @@ function OrdersMap({
     map.flyTo({ center: [o.lng, o.lat], zoom: Math.max(map.getZoom(), 15), duration: 800 });
   }, [ready, focusOrderId, focusTick]);
 
+  // Во время режима указания точки список скрываем (баннер занимает то же место)
+  useEffect(() => {
+    if (placementOrderId) setListOpen(false);
+  }, [placementOrderId]);
+
+  // Переход к точке из списка: перелёт + выделение, без открытия карточки
+  const jumpToListPoint = useCallback(
+    (o: OrderDto) => {
+      const map = mapRef.current;
+      if (!map || o.lat == null || o.lng == null) return;
+      onHighlight(o.id);
+      map.flyTo({ center: [o.lng, o.lat], zoom: Math.max(map.getZoom(), 15), duration: 800 });
+      setListOpen(false);
+    },
+    [onHighlight]
+  );
+
   // Режим указания точки: клик по карте → координаты заявки
   const handleMapClick = useCallback(
     (lat: number, lng: number) => onPlace(lat, lng),
@@ -243,11 +266,82 @@ function OrdersMap({
           <span className="h-2.5 w-2.5 rounded-full bg-slate-400" /> выполненные
         </span>
       </div>
-      {/* Счётчик маркеров */}
-      <div className="absolute left-2.5 top-2.5 z-10 rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur sm:left-3 sm:top-3">
-        <MapPin className="mr-1 inline h-3 w-3 text-primary" />
-        На карте: <b>{visible.length}</b>
+      {/* Счётчик маркеров + кнопка разворачиваемого списка точек */}
+      <div className="absolute left-2.5 top-2.5 z-10 flex items-start gap-2 sm:left-3 sm:top-3">
+        <div className="rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur">
+          <MapPin className="mr-1 inline h-3 w-3 text-primary" />
+          На карте: <b>{visible.length}</b>
+        </div>
+        {!placementOrderId && visible.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setListOpen((v) => !v)}
+            aria-expanded={listOpen}
+            className={cn(
+              'flex items-center gap-1 rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur transition-colors hover:bg-muted',
+              listOpen && 'bg-muted'
+            )}
+          >
+            <List className="h-3 w-3 text-primary" />
+            Список
+            <ChevronDown
+              className={cn('h-3 w-3 transition-transform duration-200', listOpen && 'rotate-180')}
+            />
+          </button>
+        )}
       </div>
+      {/* Разворачиваемый список точек: клик — перелёт к маркеру */}
+      {listOpen && (
+        <div className="absolute inset-x-2.5 top-12 z-20 flex max-h-[62%] flex-col overflow-hidden rounded-xl border bg-background/95 shadow-lg backdrop-blur sm:inset-x-auto sm:left-3 sm:top-12 sm:w-[340px]">
+          <div className="flex items-center justify-between border-b px-3 py-2 text-[11px] font-medium text-muted-foreground">
+            <span>Точки на карте ({visible.length}) — нажмите для перехода</span>
+            <button
+              type="button"
+              onClick={() => setListOpen(false)}
+              className="rounded px-1 text-[11px] transition-colors hover:bg-muted hover:text-foreground"
+            >
+              Скрыть
+            </button>
+          </div>
+          <ul className="min-h-0 flex-1 divide-y overflow-y-auto">
+            {visible.map((o) => (
+              <li key={o.id}>
+                <button
+                  type="button"
+                  onClick={() => jumpToListPoint(o)}
+                  className={cn(
+                    'flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-muted/70',
+                    o.id === selectedId && 'bg-primary/5'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white',
+                      markerColor(o)
+                    )}
+                  >
+                    {o.number}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium">
+                      {ORDER_TYPE_ICONS[o.type]} {o.address || o.city || 'Без адреса'}
+                    </span>
+                    <span className="block truncate text-[10px] text-muted-foreground">
+                      {[o.city, o.clientName, o.wishDate].filter(Boolean).join(' · ') || '—'}
+                    </span>
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className={cn('h-4 shrink-0 px-1 text-[9px]', ORDER_STATUS_BADGES[o.status])}
+                  >
+                    {ORDER_STATUS_LABELS[o.status] ?? o.status}
+                  </Badge>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {placementOrderId && (
         <div className="absolute inset-x-2.5 top-12 z-20 flex items-center justify-between gap-2 rounded-lg border border-primary/40 bg-primary px-3 py-2 text-xs font-medium text-primary-foreground shadow-md sm:inset-x-auto sm:right-auto sm:left-3 sm:top-12">
           <span className="flex items-center gap-1.5">
@@ -1135,9 +1229,14 @@ function OrderRow({
 export default function OrdersView({
   bot,
   onBack,
+  focusOrderId,
+  onFocusConsumed,
 }: {
   bot: { id: string; name: string };
   onBack: () => void;
+  /** id заявки из уведомления — открыть карту и подсветить её точку */
+  focusOrderId?: string | null;
+  onFocusConsumed?: () => void;
 }) {
   const { toast } = useToast();
   const [orders, setOrders] = useState<OrderDto[]>([]);
@@ -1173,6 +1272,19 @@ export default function OrdersView({
     setSelectedId(id);
     setDialogOpen(true);
   }, []);
+
+  // Переход из уведомления: карта + подсветка точки (без карточки);
+  // выполненные заявки тоже показываем, иначе маркер мог бы быть скрыт
+  useEffect(() => {
+    if (!focusOrderId) return;
+    setShowCompleted(true);
+    setTab('map');
+    setPlacementId(null);
+    setDialogOpen(false);
+    setSelectedId(focusOrderId);
+    setFocus((f) => ({ id: focusOrderId, tick: (f?.tick ?? 0) + 1 }));
+    onFocusConsumed?.();
+  }, [focusOrderId, onFocusConsumed]);
 
   // Закрыть карточку и перелететь к точке заявки на карте
   const showOnMap = useCallback((id: string) => {
@@ -1335,6 +1447,7 @@ export default function OrdersView({
                 focusTick={focus?.tick ?? 0}
                 onSelect={openOrder}
                 onPlace={placeOnMap}
+                onHighlight={setSelectedId}
               />
             </div>
             {withoutGeo.length > 0 && (

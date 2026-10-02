@@ -17,9 +17,19 @@ export async function GET(req: NextRequest) {
   const bots = await db.bot.findMany({ where: { userId: user.id }, select: { id: true, name: true } });
   const botIds = bots.map((b) => b.id);
   if (botIds.length === 0) {
-    return NextResponse.json({ newOrders: [], newChats: [], totals: { newOrders: 0, openConvs: 0 } });
+    return NextResponse.json({
+      now: new Date().toISOString(),
+      newOrders: [],
+      newChats: [],
+      totals: { newOrders: 0, openConvs: 0 },
+    });
   }
   const botName = (id: string) => bots.find((b) => b.id === id)?.name ?? '';
+
+  // Серверный курсор времени: фиксируем ДО запросов, чтобы заявка/диалог,
+  // созданные во время выборки, гарантированно попали в СЛЕДУЮЩИЙ опрос
+  // (курсор-время ответа меньше времени их создания).
+  const now = new Date().toISOString();
 
   const [newOrders, newChats, totalNewOrders, totalOpenConvs] = await Promise.all([
     db.order.findMany({
@@ -38,7 +48,12 @@ export async function GET(req: NextRequest) {
     db.conversation.count({ where: { botId: { in: botIds }, status: 'open' } }),
   ]);
 
+  // Клиент должен использовать `now` как курсор следующего запроса. Раньше
+  // курсор брался из часов браузера — расхождение часов браузера и сервера
+  // делало одно и то же уведомление «новым» на каждом опросе, и тост
+  // вылезал бесконечно.
   return NextResponse.json({
+    now,
     newOrders: newOrders.map((o) => ({ ...o, botName: botName(o.botId) })),
     newChats: newChats.map((c) => ({ ...c, botName: botName(c.botId) })),
     totals: { newOrders: totalNewOrders, openConvs: totalOpenConvs },

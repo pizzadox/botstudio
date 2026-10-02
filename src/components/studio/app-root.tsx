@@ -5,6 +5,7 @@ import { Bot, Loader2 } from 'lucide-react';
 import { api, clearAuthToken } from '@/lib/client-api';
 import type { SessionUser, BotListItem, ViewKey } from '@/lib/studio-types';
 import { useToast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
 import LoginView from './login-view';
 import Shell from './shell';
 import Dashboard from './dashboard';
@@ -15,22 +16,54 @@ import InboxView from './inbox-view';
 import OrdersView from './orders-view';
 
 interface NotificationsResponse {
-  newOrders: { id: string; number: number; type: string; address: string | null; botName: string }[];
-  newChats: { id: string; contact: string | null; source: string; botName: string }[];
+  /** Серверное время ответа — курсор следующего опроса (не часы браузера!) */
+  now: string;
+  newOrders: {
+    id: string;
+    number: number;
+    type: string;
+    address: string | null;
+    botId: string;
+    botName: string;
+  }[];
+  newChats: {
+    id: string;
+    contact: string | null;
+    source: string;
+    botId: string;
+    botName: string;
+  }[];
   totals: { newOrders: number; openConvs: number };
 }
+
+/** Куда ведёт клик по уведомлению */
+export type NotificationTarget = {
+  kind: 'order' | 'chat';
+  botId: string;
+  botName: string;
+  /** null — просто открыть раздел (сводное уведомление) */
+  id: string | null;
+};
 
 /**
  * Фоновый наблюдатель: раз в 12 секунд спрашивает /api/notifications и
  * показывает тосты о новых заявках/диалогах + обновляет бейджи навигации.
+ *
+ * Анти-повторы: (1) курсор — СЕРВЕРНОЕ время из ответа (расхождение часов
+ * браузера и сервера раньше делало одно и то же уведомление «новым» на
+ * каждом опросе); (2) дедупликация по id — показанное уведомление больше
+ * никогда не показывается повторно.
  */
 function NotificationsWatcher({
   onTotals,
+  onOpenTarget,
 }: {
   onTotals: (t: { newOrders: number; openConvs: number }) => void;
+  onOpenTarget: (t: NotificationTarget) => void;
 }) {
   const { toast } = useToast();
   const sinceRef = useRef<string>(new Date().toISOString());
+  const shownRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let stopped = false;
@@ -40,21 +73,60 @@ function NotificationsWatcher({
           `/api/notifications?since=${encodeURIComponent(sinceRef.current)}`
         );
         if (stopped) return;
-        sinceRef.current = new Date().toISOString();
+        sinceRef.current = d.now ?? new Date().toISOString();
         onTotals(d.totals);
-        let shown = 0;
-        for (const o of d.newOrders) {
-          if (shown++ >= 3) break;
+
+        const freshOrders = d.newOrders.filter((o) => !shownRef.current.has(`order:${o.id}`));
+        const freshChats = d.newChats.filter((c) => !shownRef.current.has(`chat:${c.id}`));
+        for (const o of freshOrders) shownRef.current.add(`order:${o.id}`);
+        for (const c of freshChats) shownRef.current.add(`chat:${c.id}`);
+        if (freshOrders.length === 0 && freshChats.length === 0) return;
+
+        const openBtn = (t: NotificationTarget, label = 'Открыть') => (
+          <ToastAction altText={label} onClick={() => onOpenTarget(t)}>
+            {label}
+          </ToastAction>
+        );
+
+        if (freshOrders.length === 1) {
+          const o = freshOrders[0];
           toast({
             title: `🆕 Новая заявка №${o.number}`,
             description: `${o.botName}${o.address ? ` · ${o.address}` : ''}`,
+            duration: 8000,
+            action: openBtn({ kind: 'order', botId: o.botId, botName: o.botName, id: o.id }, 'Открыть заявку'),
+          });
+        } else if (freshOrders.length > 1) {
+          const first = freshOrders[0];
+          toast({
+            title: `🆕 Новых заявок: ${freshOrders.length}`,
+            description: freshOrders
+              .slice(0, 3)
+              .map((o) => `№${o.number}${o.address ? ` — ${o.address}` : ''}`)
+              .join('\n') + (freshOrders.length > 3 ? '\n…' : ''),
+            duration: 8000,
+            action: openBtn({ kind: 'order', botId: first.botId, botName: first.botName, id: first.id }, 'Открыть'),
           });
         }
-        for (const c of d.newChats) {
-          if (shown++ >= 3) break;
+
+        if (freshChats.length === 1) {
+          const c = freshChats[0];
           toast({
             title: '💬 Новый диалог с клиентом',
             description: `${c.contact ?? 'Гость'} · ${c.botName}`,
+            duration: 8000,
+            action: openBtn({ kind: 'chat', botId: c.botId, botName: c.botName, id: c.id }, 'Открыть диалог'),
+          });
+        } else if (freshChats.length > 1) {
+          const first = freshChats[0];
+          toast({
+            title: `💬 Новых диалогов: ${freshChats.length}`,
+            description: freshChats
+              .slice(0, 3)
+              .map((c) => c.contact ?? 'Гость')
+              .join(', '),
+            duration: 8000,
+            action: openBtn({ kind: 'chat', botId: first.botId, botName: first.botName, id: first.id }, 'Открыть'),
           });
         }
       } catch {
@@ -67,7 +139,7 @@ function NotificationsWatcher({
       stopped = true;
       clearInterval(t);
     };
-  }, [onTotals, toast]);
+  }, [onTotals, onOpenTarget, toast]);
 
   return null;
 }
@@ -79,12 +151,46 @@ export default function AppRoot() {
   const [currentBot, setCurrentBot] = useState<BotListItem | null>(null);
   const [botsVersion, setBotsVersion] = useState(0);
   const [badges, setBadges] = useState({ newOrders: 0, openConvs: 0 });
+  // Фокус из уведомления: открыть раздел и подсветить нужную заявку/диалог
+  const [orderFocus, setOrderFocus] = useState<string | null>(null);
+  const [chatFocus, setChatFocus] = useState<string | null>(null);
 
   const refreshBots = useCallback(() => setBotsVersion((v) => v + 1), []);
   const onTotals = useCallback(
     (t: { newOrders: number; openConvs: number }) => setBadges(t),
     []
   );
+
+  // Клик по уведомлению: подбираем настоящий объект бота и открываем
+  // нужный раздел с фокусом на конкретной заявке/диалоге
+  const openTarget = useCallback(async (t: NotificationTarget) => {
+    const fallback: BotListItem = {
+      id: t.botId,
+      name: t.botName,
+      description: null,
+      status: 'published',
+      createdAt: '',
+      updatedAt: '',
+      channelsCount: 0,
+      conversationsCount: 0,
+      channelTypes: [],
+    };
+    let bot: BotListItem = fallback;
+    try {
+      const d = await api<{ bots: BotListItem[] }>('/api/bots');
+      bot = d.bots.find((b) => b.id === t.botId) ?? fallback;
+    } catch {
+      /* останется fallback */
+    }
+    setCurrentBot(bot);
+    if (t.kind === 'order') {
+      setView('orders');
+      if (t.id) setOrderFocus(t.id);
+    } else {
+      setView('inbox');
+      if (t.id) setChatFocus(t.id);
+    }
+  }, []);
 
   useEffect(() => {
     api<{ user: SessionUser }>('/api/auth/me')
@@ -142,7 +248,7 @@ export default function AppRoot() {
         setView('dashboard');
       }}
     >
-      <NotificationsWatcher onTotals={onTotals} />
+      <NotificationsWatcher onTotals={onTotals} onOpenTarget={openTarget} />
       {view === 'dashboard' && (
         <Dashboard
           key={`dash-${botsVersion}`}
@@ -178,12 +284,16 @@ export default function AppRoot() {
         <InboxView
           bot={{ id: currentBot.id, name: currentBot.name }}
           onBack={() => setView('dashboard')}
+          focusConversationId={chatFocus}
+          onFocusConsumed={() => setChatFocus(null)}
         />
       )}
       {view === 'orders' && currentBot && (
         <OrdersView
           bot={{ id: currentBot.id, name: currentBot.name }}
           onBack={() => setView('dashboard')}
+          focusOrderId={orderFocus}
+          onFocusConsumed={() => setOrderFocus(null)}
         />
       )}
       {(view !== 'dashboard' && !currentBot) && (
