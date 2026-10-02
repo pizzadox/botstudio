@@ -12,14 +12,26 @@ export interface DeliverResult {
   error?: string;
 }
 
+/** Кнопки для inline-клавиатуры мессенджера */
+export interface DeliverButton {
+  id: string;
+  text: string;
+}
+
 /** chat_id в мессенджерах — число; плейсхолдеры (user:...) не отправляем */
 function isSendableChatId(id: string | null | undefined): id is string {
   return !!id && /^\d+$/.test(id);
 }
 
+/**
+ * Доставить сообщение (и при желании кнопки) в мессенджер клиента.
+ * Кнопки приходят как inline_keyboard (MAX) / reply_markup (Telegram);
+ * в веб-чате сообщения и кнопки подхватываются polling'ом из БД.
+ */
 export async function deliverTextToConversation(
   conversationId: string,
-  text: string
+  text: string,
+  buttons?: DeliverButton[]
 ): Promise<DeliverResult> {
   const conversation = await db.conversation.findUnique({
     where: { id: conversationId },
@@ -34,7 +46,7 @@ export async function deliverTextToConversation(
     const token = conversation.channel?.token;
     if (!token) return { delivered: false, error: 'no_channel_token' };
     if (!isSendableChatId(chatId)) return { delivered: false, error: 'no_chat_id' };
-    const res = await maxSendMessage(token, chatId, text);
+    const res = await maxSendMessage(token, chatId, text, buttons);
     if (!res.ok) {
       console.error('[deliver→max]', chatId, res.error);
       await db.channel
@@ -54,10 +66,16 @@ export async function deliverTextToConversation(
     if (!token) return { delivered: false, error: 'no_channel_token' };
     if (!isSendableChatId(chatId)) return { delivered: false, error: 'no_chat_id' };
     try {
+      const body: Record<string, unknown> = { chat_id: chatId, text };
+      if (buttons?.length) {
+        body.reply_markup = {
+          inline_keyboard: buttons.map((b) => [{ text: b.text, callback_data: b.text }]),
+        };
+      }
       const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) {

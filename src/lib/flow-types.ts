@@ -54,6 +54,12 @@ export interface FlowNodeData {
     /** Переменная с именем клиента */
     nameVar?: string;
     phoneVar?: string;
+    /** Переменная с городом (выбор города обслуживания) */
+    cityVar?: string;
+    /**
+     * Переменная с адресом или шаблон «{{city}}, {{street}}» —
+     * полный адрес нужен для точного геокодинга на карте.
+     */
     addressVar?: string;
     /** Объём контейнера / состав предметов */
     sizeVar?: string;

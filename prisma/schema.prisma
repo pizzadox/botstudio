@@ -116,6 +116,8 @@ model Order {
   type           String        @default("waste")
   clientName     String?
   phone          String?
+  /// Город обслуживания (выбирается в боте или оператором) — Новгородская область
+  city           String?
   address        String?
   /// Объём контейнера / состав предметов
   size           String?

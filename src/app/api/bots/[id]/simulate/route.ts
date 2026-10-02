@@ -68,7 +68,11 @@ export async function POST(req: NextRequest, { params }: Params) {
       }
 
       const assistant = await loadAssistantConfig(bot.id, bot.aiConfig);
-      const result = await runEngine(flow, input, convState, assistant);
+      const result = await runEngine(flow, input, convState, assistant, {
+        botId: bot.id,
+        conversationId: conversation.id,
+        externalUserId: conversation.externalUserId,
+      });
 
       const messages: SimulateMessage[] = [];
       for (const m of result.messages) {
@@ -97,7 +101,8 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     // ── Обычный stateless-режим симулятора ──
     const assistant = await loadAssistantConfig(bot.id, bot.aiConfig);
-    const result = await runEngine(flow, input, state, assistant);
+    // ctx с botId: узел «Создать заявку» работает и в тест-чате
+    const result = await runEngine(flow, input, state, assistant, { botId: bot.id });
 
     if (result.needsOperator) {
       // Материализуем диалог: оператор должен увидеть его в инбоксе

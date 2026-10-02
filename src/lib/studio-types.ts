@@ -94,6 +94,8 @@ export interface OrderDto {
   number: number;
   type: string;
   clientName: string | null;
+  /** Город обслуживания (выбор города в боте / у оператора) */
+  city: string | null;
   phone: string | null;
   address: string | null;
   size: string | null;

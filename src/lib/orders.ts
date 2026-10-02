@@ -29,6 +29,8 @@ export interface CreateOrderInput {
   type?: string;
   clientName?: string | null;
   phone?: string | null;
+  /// Город обслуживания (выбор города в боте / у оператора)
+  city?: string | null;
   address?: string | null;
   size?: string | null;
   wishDate?: string | null;
@@ -63,7 +65,30 @@ async function nextNumber(botId: string): Promise<number> {
  * укажет точку на карте вручную.
  */
 
-const geoCache = new Map<string, { lat: number; lng: number } | null>();
+const GEO_TTL_OK = 24 * 3600 * 1000; // успех — сутки (адреса не «прыгают»)
+const GEO_TTL_FAIL = 60 * 1000; // неудача — минута (можно повторить)
+
+const geoCache = new Map<string, { lat: number; lng: number; expiresAt: number } | { fail: true; expiresAt: number }>();
+
+function cacheGet(key: string): { lat: number; lng: number } | null | undefined {
+  const hit = geoCache.get(key);
+  if (!hit) return undefined; // нет в кэше
+  if (hit.expiresAt < Date.now()) {
+    geoCache.delete(key);
+    return undefined;
+  }
+  return 'fail' in hit ? null : { lat: hit.lat, lng: hit.lng };
+}
+
+function cachePut(key: string, result: { lat: number; lng: number } | null): void {
+  if (geoCache.size > 500) geoCache.clear();
+  geoCache.set(
+    key,
+    result
+      ? { ...result, expiresAt: Date.now() + GEO_TTL_OK }
+      : { fail: true, expiresAt: Date.now() + GEO_TTL_FAIL }
+  );
+}
 
 async function nominatimSearch(q: string, countrycodes?: string) {
   const url = new URL('https://nominatim.openstreetmap.org/search');
@@ -92,7 +117,8 @@ export async function geocodeAddress(
   if (!q) return null;
 
   const cacheKey = q.toLowerCase();
-  if (geoCache.has(cacheKey)) return geoCache.get(cacheKey) ?? null;
+  const cached = cacheGet(cacheKey);
+  if (cached !== undefined) return cached;
 
   let result: { lat: number; lng: number } | null = null;
   try {
@@ -103,13 +129,11 @@ export async function geocodeAddress(
     result = null;
   }
 
-  // Кэшируем и успех, и неудачу (неудача — короче, чтобы retry был возможен)
-  if (geoCache.size > 500) geoCache.clear();
-  geoCache.set(cacheKey, result);
+  cachePut(cacheKey, result);
   return result;
 }
 
-/** Фоновая привязка координат к заявке (не блокирует ответ бота) */
+/** Фоновая привязка координат к заявке (повторный попытка после сбоя) */
 function geocodeInBackground(orderId: string, address: string | null): void {
   if (!address || !address.trim()) return;
   void geocodeAddress(address)
@@ -126,7 +150,46 @@ function geocodeInBackground(orderId: string, address: string | null): void {
     .catch(() => {});
 }
 
+/**
+ * Отложенная повторная попытка геокодинга: сбой при создании заявки
+ * (сервис недоступен/таймаут) не должен оставлять заявку без точки навсегда.
+ * Через 90 секунд сбрасываем кэш неудачи и пробуем снова.
+ */
+const geoRetryKeys = new Set<string>();
+function geocodeRetryLater(orderId: string, address: string): void {
+  const key = `${orderId}:${address.toLowerCase()}`;
+  if (geoRetryKeys.has(key)) return; // повтор уже запланирован
+  geoRetryKeys.add(key);
+  setTimeout(() => {
+    geoRetryKeys.delete(key);
+    geoCache.delete(address.trim().toLowerCase());
+    geocodeInBackground(orderId, address);
+  }, 90 * 1000);
+}
+
 export async function createOrder(input: CreateOrderInput) {
+  // Координаты — сразу при создании (метка появляется на карте моментально):
+  // геокодим до вставки, кэш делает результат детерминированным.
+  let lat = input.lat ?? null;
+  let lng = input.lng ?? null;
+  let geoSource = input.geoSource ?? null;
+  const fullAddress = input.address?.trim() ? input.address : null;
+  let needsGeoRetry = false;
+  if (lat == null && lng == null && fullAddress) {
+    try {
+      const geo = await geocodeAddress(fullAddress);
+      if (geo) {
+        lat = geo.lat;
+        lng = geo.lng;
+        geoSource = 'geocode';
+      } else {
+        needsGeoRetry = true; // «не найдено» — попробуем позже
+      }
+    } catch {
+      needsGeoRetry = true; // сбой сети/таймаут — попробуем позже
+    }
+  }
+
   let order = null;
   // До 3 попыток: unique(botId, number) может нарушиться при гонке
   for (let attempt = 0; attempt < 3 && !order; attempt++) {
@@ -140,14 +203,15 @@ export async function createOrder(input: CreateOrderInput) {
           type: input.type ?? 'waste',
           clientName: input.clientName ?? null,
           phone: input.phone ?? null,
+          city: input.city ?? null,
           address: input.address ?? null,
           size: input.size ?? null,
           wishDate: input.wishDate ?? null,
           comment: input.comment ?? null,
           status: input.status ?? 'new',
-          lat: input.lat ?? null,
-          lng: input.lng ?? null,
-          geoSource: input.geoSource ?? null,
+          lat,
+          lng,
+          geoSource,
         },
       });
     } catch (e) {
@@ -159,9 +223,9 @@ export async function createOrder(input: CreateOrderInput) {
   }
   if (!order) throw new Error('order_number_race');
 
-  // Координаты по адресу — в фоне, чтобы не задерживать ответ бота
-  if (input.lat == null && input.lng == null) {
-    geocodeInBackground(order.id, input.address);
+  // Геокодинг не удался — отложенная повторная попытка для созданной заявки
+  if (needsGeoRetry && lat == null && lng == null && fullAddress) {
+    geocodeRetryLater(order.id, fullAddress);
   }
   return order;
 }

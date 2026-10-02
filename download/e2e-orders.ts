@@ -80,9 +80,12 @@ async function main() {
     );
 
     r = await send(channel.id, '🗑 8 м³ (бункер)');
-    check('вопрос адреса', r.ok && r.messages.some((m) => m.text.includes('адрес вывоза')));
+    check('выбор города после контейнера', r.ok && r.messages.some((m) => m.text.includes('выберите ваш город')));
 
-    r = await send(channel.id, 'Москва, Ленинградский проспект, 30');
+    r = await send(channel.id, 'Великий Новгород');
+    check('вопрос улицы (город подставлен)', r.ok && r.messages.some((m) => m.text.includes('Великий Новгород') && m.text.includes('улицу')));
+
+    r = await send(channel.id, 'Большая Санкт-Петербургская улица, 25');
     check('вопрос даты', r.ok && r.messages.some((m) => m.text.includes('дату подать')));
 
     r = await send(channel.id, 'завтра до 12:00');
@@ -100,13 +103,19 @@ async function main() {
     });
     check('заявка создана в БД', !!created);
     check(
-      'данные заявки заполнены',
+      'данные заявки заполнены (город + полный адрес)',
       !!created &&
         created.type === 'waste' &&
+        created.city === 'Великий Новгород' &&
         (created.size ?? '').includes('8 м³') &&
-        (created.address ?? '').includes('Ленинградский') &&
+        (created.address ?? '').includes('Великий Новгород, Большая Санкт-Петербургская') &&
         (created.phone ?? '').includes('999'),
       created ? JSON.stringify(created) : 'нет заявки'
+    );
+    check(
+      'координаты поставлены сразу (геокинг при создании)',
+      !!created && created.lat != null && created.lng != null && created.geoSource === 'geocode',
+      created ? `lat=${created.lat} geo=${created.geoSource}` : 'нет заявки'
     );
     check(
       'статус новая',

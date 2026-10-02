@@ -60,6 +60,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       type: ['waste', 'kgm', 'other'].includes(body.type) ? body.type : 'other',
       clientName: String(body.clientName ?? '').trim().slice(0, 120) || null,
       phone: String(body.phone ?? '').trim().slice(0, 40) || null,
+      city: String(body.city ?? '').trim().slice(0, 120) || null,
       address,
       size: String(body.size ?? '').trim().slice(0, 200) || null,
       wishDate: String(body.wishDate ?? '').trim().slice(0, 120) || null,

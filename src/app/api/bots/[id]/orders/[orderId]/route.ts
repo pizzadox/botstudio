@@ -80,6 +80,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     if (typeof body.clientName === 'string') data.clientName = body.clientName.trim().slice(0, 120) || null;
     if (typeof body.size === 'string') data.size = body.size.trim().slice(0, 200) || null;
     if (typeof body.address === 'string') data.address = body.address.trim().slice(0, 300) || null;
+    if (typeof body.city === 'string') data.city = body.city.trim().slice(0, 120) || null;
 
     if (typeof body.lat === 'number' && Number.isFinite(body.lat)) {
       data.lat = body.lat;

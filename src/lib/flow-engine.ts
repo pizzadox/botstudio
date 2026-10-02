@@ -100,6 +100,32 @@ function findMenuNode(flow: Flow, lastMenuId?: string): FlowNode | null {
 }
 
 /**
+ * Главное меню сценария: первый узел «Кнопки» на пути от старта
+ * (BFS), иначе — первый узел «Кнопки» в сценарии. Используется,
+ * чтобы вернуть пользователя в меню (например, после закрытия обращения).
+ */
+export function findMainMenu(flow: Flow): FlowNode | null {
+  const start = findStart(flow);
+  if (start) {
+    const visited = new Set<string>([start.id]);
+    const queue: string[] = [start.id];
+    while (queue.length) {
+      const id = queue.shift() as string;
+      const node = findNode(flow, id);
+      if (!node) continue;
+      if (node.type === 'buttons') return node;
+      for (const e of flow.edges) {
+        if (e.source === id && !visited.has(e.target)) {
+          visited.add(e.target);
+          queue.push(e.target);
+        }
+      }
+    }
+  }
+  return flow.nodes.find((n) => n.type === 'buttons') ?? null;
+}
+
+/**
  * Команда старта сценария (/start, «старт», «начать») — детерминированный вход
  * в сценарий, минуя ИИ-ассистента (мессенджеры шлют /start при первом открытии бота).
  */
@@ -412,8 +438,12 @@ export async function runEngine(
         if (node.data.createOrder && ctx?.botId) {
           try {
             const cfg = node.data.createOrder;
-            const pick = (v?: string) =>
-              v && v.trim() ? (state.vars[v.trim()] ?? '').trim() : '';
+            // Значение переменной; «{{city}}, {{street}}» — подстановка шаблона
+            const pick = (v?: string) => {
+              if (!v || !v.trim()) return '';
+              if (v.includes('{{')) return interpolate(v, state.vars).trim();
+              return (state.vars[v.trim()] ?? '').trim();
+            };
             const order = await createOrder({
               botId: ctx.botId,
               conversationId: ctx.conversationId,
@@ -421,6 +451,7 @@ export async function runEngine(
               type: cfg.type ?? 'waste',
               clientName: pick(cfg.nameVar) || null,
               phone: pick(cfg.phoneVar) || null,
+              city: pick(cfg.cityVar) || null,
               address: pick(cfg.addressVar) || null,
               size: pick(cfg.sizeVar) || null,
               wishDate: pick(cfg.dateVar) || null,

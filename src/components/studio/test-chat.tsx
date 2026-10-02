@@ -212,11 +212,13 @@ export default function TestChat({
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold leading-tight">Тестовый чат</div>
           <div className="text-[11px] text-muted-foreground">
-            {conversationId
+            {conversationId && !convClosed
               ? 'диалог ведёт оператор'
               : typing
                 ? 'бот печатает…'
-                : 'сценарий выполняется как в живом боте'}
+                : convClosed
+                  ? 'бот снова отвечает — сценарий продолжается'
+                  : 'сценарий выполняется как в живом боте'}
           </div>
         </div>
         <Button
@@ -240,7 +242,7 @@ export default function TestChat({
             <Headset className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <div className="min-w-0 flex-1">
               {convClosed
-                ? 'Оператор закрыл обращение — бот снова отвечает сам. Нажмите «Сбросить», чтобы начать новый тест.'
+                ? 'Оператор закрыл обращение — бот снова отвечает сам. Продолжайте диалог или нажмите «Сбросить».'
                 : 'Диалог передан оператору — он появился во «Входящих». Ответы оператора появятся здесь.'}
             </div>
             {onOpenInbox && !convClosed && (
@@ -314,7 +316,9 @@ export default function TestChat({
         }}
       >
         <Input
-          placeholder={conversationId ? 'Сообщение оператору…' : 'Введите сообщение…'}
+          placeholder={
+            conversationId && !convClosed ? 'Сообщение оператору…' : 'Введите сообщение…'
+          }
           value={input}
           onChange={(e) => setInput(e.target.value)}
           disabled={typing}

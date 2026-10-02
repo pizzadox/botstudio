@@ -613,7 +613,10 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
       externalUserId: conversation.externalUserId,
     });
     for (const m of result.messages) messages.push({ text: m.text, buttons: m.buttons });
-    if (!result.needsOperator) {
+    // handoff-узел сценария — поднимаем флаг оператора и в БД (не только в state)
+    if (result.needsOperator) {
+      needsOperator = true;
+    } else {
       appendPersistentButtons(messages);
     }
     await persistBotMessages();

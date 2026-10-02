@@ -21,6 +21,7 @@ import {
   User,
 } from 'lucide-react';
 import { api } from '@/lib/client-api';
+import { cityButtons, composeAddress, SERVICE_CITIES } from '@/lib/cities';
 import type { OrderDto, OrderMessageDto } from '@/lib/studio-types';
 import {
   ORDER_STATUS_BADGES,
@@ -692,17 +693,37 @@ function OrderDetailDialog({
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Адрес вывоза</Label>
-                  <Input
-                    className="h-9"
-                    value={address}
-                    placeholder="Город, улица, дом"
-                    onChange={(e) => setAddress(e.target.value)}
-                    onBlur={() => {
-                      if (address !== (order.address ?? '')) patch({ address }, 'Адрес обновлён');
-                    }}
-                    disabled={saving}
-                  />
+                  <Label className="text-xs text-muted-foreground">Город и адрес вывоза</Label>
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,190px)_minmax(0,1fr)]">
+                    <Select
+                      value={order.city ?? '__none'}
+                      onValueChange={(v) =>
+                        patch({ city: v === '__none' ? null : v }, 'Город обновлён')
+                      }
+                    >
+                      <SelectTrigger className="h-9 w-full">
+                        <SelectValue placeholder="Город" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none">Город не указан</SelectItem>
+                        {SERVICE_CITIES.map((c) => (
+                          <SelectItem key={c} value={c}>
+                            {c}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      className="h-9"
+                      value={address}
+                      placeholder="Улица, дом"
+                      onChange={(e) => setAddress(e.target.value)}
+                      onBlur={() => {
+                        if (address !== (order.address ?? '')) patch({ address }, 'Адрес обновлён');
+                      }}
+                      disabled={saving}
+                    />
+                  </div>
                   <div className="flex flex-wrap gap-2 pt-1">
                     <Button
                       size="sm"
@@ -865,18 +886,23 @@ function NewOrderDialog({
 }) {
   const { toast } = useToast();
   const [saving, setSaving] = useState(false);
+  const OTHER_CITY = '__other';
   const [form, setForm] = useState({
     type: 'waste',
     clientName: '',
     phone: '',
-    address: '',
+    city: cityButtons()[0] ?? '',
+    cityOther: '',
+    street: '',
     size: '',
     wishDate: '',
     comment: '',
   });
 
   const submit = async () => {
-    if (!form.address.trim() && !form.clientName.trim()) {
+    const city = (form.city === OTHER_CITY ? form.cityOther : form.city).trim();
+    const address = composeAddress(city, form.street);
+    if (!address.trim() && !form.clientName.trim()) {
       toast({ title: 'Укажите хотя бы адрес или имя клиента', variant: 'destructive' });
       return;
     }
@@ -884,10 +910,29 @@ function NewOrderDialog({
     try {
       await api(`/api/bots/${botId}/orders`, {
         method: 'POST',
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          type: form.type,
+          clientName: form.clientName,
+          phone: form.phone,
+          city,
+          address,
+          size: form.size,
+          wishDate: form.wishDate,
+          comment: form.comment,
+        }),
       });
       toast({ title: 'Заявка создана — координаты подбираются автоматически' });
-      setForm({ type: 'waste', clientName: '', phone: '', address: '', size: '', wishDate: '', comment: '' });
+      setForm({
+        type: 'waste',
+        clientName: '',
+        phone: '',
+        city: cityButtons()[0] ?? '',
+        cityOther: '',
+        street: '',
+        size: '',
+        wishDate: '',
+        comment: '',
+      });
       onCreated();
       onClose();
     } catch {
@@ -938,13 +983,51 @@ function NewOrderDialog({
               onChange={(e) => setForm({ ...form, clientName: e.target.value })}
             />
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Адрес</Label>
-            <Input
-              value={form.address}
-              placeholder="Город, улица, дом"
-              onChange={(e) => setForm({ ...form, address: e.target.value })}
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Город обслуживания</Label>
+              <Select
+                value={form.city}
+                onValueChange={(v) => setForm({ ...form, city: v })}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Выберите город" />
+                </SelectTrigger>
+                <SelectContent>
+                  {[...cityButtons(), ...SERVICE_CITIES.slice(cityButtons().length)].map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value={OTHER_CITY}>Другой…</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">
+                {form.city === OTHER_CITY ? 'Название города' : 'Улица и дом'}
+              </Label>
+              {form.city === OTHER_CITY ? (
+                <div className="flex flex-col gap-2">
+                  <Input
+                    value={form.cityOther}
+                    placeholder="Например: Чудово"
+                    onChange={(e) => setForm({ ...form, cityOther: e.target.value })}
+                  />
+                  <Input
+                    value={form.street}
+                    placeholder="Улица и дом"
+                    onChange={(e) => setForm({ ...form, street: e.target.value })}
+                  />
+                </div>
+              ) : (
+                <Input
+                  value={form.street}
+                  placeholder="Улица и дом"
+                  onChange={(e) => setForm({ ...form, street: e.target.value })}
+                />
+              )}
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
