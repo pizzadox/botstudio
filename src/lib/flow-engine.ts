@@ -1,6 +1,6 @@
 import ZAI from 'z-ai-web-dev-sdk';
 import { db } from '@/lib/db';
-import { createOrder, geocodeAddress } from '@/lib/orders';
+import { createOrder, geocodeVerify } from '@/lib/orders';
 import type {
   ConditionOp,
   EngineMessage,
@@ -67,18 +67,20 @@ export async function validateAnswer(
     if (q.length < 3) {
       return 'Уточните адрес подробнее: улица и номер дома (например: улица Гоголя, 5).';
     }
-    // Кандидаты адреса: как ввели; с городом из переменных (город шагом раньше)
-    const candidates = [q];
-    for (const cityVar of ['city', 'kgm_city']) {
-      const city = (vars[cityVar] ?? '').trim();
-      if (city && !q.toLowerCase().includes(city.toLowerCase())) {
-        candidates.push(`${city}, ${q}`);
-      }
-    }
-    for (const candidate of candidates) {
-      const geo = await geocodeAddress(candidate);
-      if (geo) return null;
-    }
+    // Город шагом раньше (выбор города обслуживания)
+    const city = ['city', 'kgm_city']
+      .map((k) => (vars[k] ?? '').trim())
+      .find((c) => c.length > 0);
+
+    // Строгий режим: только РФ + при известном городе проверяем, что найденный
+    // объект действительно в этом городе (мусорные совпадения не проходят)
+    const ok = city
+      ? q.toLowerCase().includes(city.toLowerCase())
+        ? await geocodeVerify(q, city)
+        : await geocodeVerify(`${city}, ${q}`, city)
+      : await geocodeVerify(q);
+
+    if (ok) return null;
     return (
       'Не нашёл такой адрес на карте 🤔 Проверьте улицу и номер дома ' +
       '(можно с корпусом: улица Гоголя, 5к2). Либо напишите «пропустить», чтобы продолжить без проверки.'
@@ -129,11 +131,15 @@ export function interpolate(
   input?: string
 ): string {
   if (!text) return '';
-  return text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, key: string) => {
+  let out = text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, key: string) => {
     if (key === 'input' && input !== undefined) return input;
     const v = vars[key];
     return v !== undefined ? v : '';
   });
+  // Приглаживаем пустые подстановки: «Завтра, » → «Завтра», «Боровичи,» → «Боровичи»
+  out = out.replace(/,\s*,+/g, ', ');
+  out = out.replace(/,\s*$/gm, '');
+  return out;
 }
 
 function findNode(flow: Flow, id: string): FlowNode | null {

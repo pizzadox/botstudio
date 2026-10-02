@@ -102,11 +102,12 @@ async function nominatimSearch(q: string, countrycodes?: string) {
     signal: AbortSignal.timeout(3500),
   });
   if (!res.ok) return null;
-  const data = (await res.json()) as { lat?: string; lon?: string }[];
+  const data = (await res.json()) as { lat?: string; lon?: string; display_name?: string }[];
   const first = data?.[0];
   const lat = parseFloat(first?.lat ?? '');
   const lng = parseFloat(first?.lon ?? '');
-  if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+  if (Number.isFinite(lat) && Number.isFinite(lng))
+    return { lat, lng, display: first?.display_name ?? '' };
   return null;
 }
 
@@ -131,6 +132,40 @@ export async function geocodeAddress(
 
   cachePut(cacheKey, result);
   return result;
+}
+
+/**
+ * Строгая проверка адреса (для автопроверки при вводе клиентом):
+ * поиск только по России (без мирового fallback — он ловит мусорные совпадения),
+ * при необходимости проверяем, что найденный объект действительно в нужном городе.
+ * Кэш общий, но ключ отдельный (verify:).
+ */
+export async function geocodeVerify(
+  address: string,
+  mustInclude?: string
+): Promise<boolean> {
+  const q = address.trim();
+  if (!q) return false;
+
+  const cacheKey = `verify:${q.toLowerCase()}:${(mustInclude ?? '').toLowerCase()}`;
+  const cached = cacheGet(cacheKey);
+  if (cached !== undefined) return cached !== null;
+
+  let hit: Awaited<ReturnType<typeof nominatimSearch>> = null;
+  try {
+    hit = await nominatimSearch(q, 'ru');
+  } catch {
+    hit = null;
+  }
+
+  let ok = false;
+  if (hit) {
+    const display = hit.display.toLowerCase();
+    const need = (mustInclude ?? '').trim().toLowerCase();
+    ok = !need || display.includes(need);
+  }
+  cachePut(cacheKey, ok && hit ? { lat: hit.lat, lng: hit.lng } : null);
+  return ok;
 }
 
 /** Фоновая привязка координат к заявке (повторный попытка после сбоя) */
