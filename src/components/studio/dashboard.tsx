@@ -293,6 +293,23 @@ export default function Dashboard({
                         </Badge>
                       ))
                     )}
+                    {bot.mytko && (
+                      <Badge
+                        variant="outline"
+                        title={
+                          bot.mytko.hasToken
+                            ? 'Синхронизировано с MyTKO (Чистая логистика) — токен получен'
+                            : 'Интеграция MyTKO включена, токен ещё не получен (раздел «Каналы»)'
+                        }
+                        className={
+                          bot.mytko.hasToken
+                            ? 'border-emerald-200 bg-emerald-100 text-emerald-800'
+                            : 'border-amber-200 bg-amber-100 text-amber-800'
+                        }
+                      >
+                        MyTKO {bot.mytko.hasToken ? '✓' : '…'}
+                      </Badge>
+                    )}
                   </div>
                 </CardContent>
                 <CardFooter className="gap-2 border-t pt-3">

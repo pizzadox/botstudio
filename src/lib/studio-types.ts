@@ -13,6 +13,8 @@ export interface BotListItem {
   status: string;
   createdAt: string;
   updatedAt: string;
+  /// Состояние интеграции MyTKO (для бейджа на карточке бота); null — интеграция не настроена
+  mytko?: { enabled: boolean; hasToken: boolean } | null;
   channelsCount: number;
   conversationsCount: number;
   channelTypes: string[];

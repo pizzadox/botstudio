@@ -31,11 +31,24 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Интеграция MyTKO выключена в разделе «Каналы»' }, { status: 400 });
   }
 
-  const res = await mytkoSyncOrder(cfg, {
-    city: order.city,
-    address: order.address,
-    createdAt: order.createdAt,
-  });
+  // Коды КП: реестр («все возможные») + ручной список
+  const areas = await db.mytkoArea.findMany({ where: { botId: bot.id }, select: { lkCode: true } });
+  const areaCodes = [
+    ...new Set([
+      ...areas.map((a) => a.lkCode),
+      ...(cfg.lkCodes ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+    ]),
+  ];
+
+  const res = await mytkoSyncOrder(
+    cfg,
+    {
+      city: order.city,
+      address: order.address,
+      createdAt: order.createdAt,
+    },
+    areaCodes
+  );
 
   const updated = await db.order.update({
     where: { id: order.id },

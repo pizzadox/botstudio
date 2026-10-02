@@ -36,7 +36,7 @@ model Bot {
   flow          String          @default("{}")
   /// Настройки ИИ-ассистента: { enabled, prompt, reaskMenu }
   aiConfig      String          @default("{}")
-  /// Настройки интеграции MyTKO: { enabled, apiUrl, username, password, lkCodes, token, tokenIssuedAt }
+  /// Настройки интеграции MyTKO: { enabled, apiUrl, username, password, lkCodes, token, tokenIssuedAt, directions, useAllAreas, areasSyncedAt }
   mytkoConfig   String          @default("{}")
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -44,6 +44,26 @@ model Bot {
   conversations Conversation[]
   knowledge     KnowledgeItem[]
   orders        Order[]
+  /// Реестр КП (контейнерных площадок), загруженный из MyTKO — «все возможные КОДЫ КП»
+  mytkoAreas    MytkoArea[]
+}
+
+/// Контейнерная площадка из реестра MyTKO (кэш справочника КП проекта)
+model MytkoArea {
+  id        String   @id @default(cuid())
+  botId     String
+  bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  /// Код КП (lk_code), например 53900003
+  lkCode    String
+  /// Полный адрес площадки (address.view из MyTKO)
+  address   String?
+  lat       Float?
+  lng       Float?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([botId, lkCode])
+  @@index([botId])
 }
 
 model Channel {

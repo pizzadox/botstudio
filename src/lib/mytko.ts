@@ -3,21 +3,48 @@
  *
  * Официальная документация: https://docs.mytko.ru/docs/disp/API/
  *
- * Проверено живым запросом (октябрь 2026):
+ * Проверено живыми запросами (октябрь 2026), инстанс https://ecovn.mytko.ru:
  *  - У каждого проекта/города СВОЙ адрес API, схема путей одинаковая.
  *    Примеры: https://disp.t2.groupstp.ru (из документации),
  *    https://ecovn.mytko.ru (Великий Новгород) — оба отвечают по /app/api/v1/*.
- *  1. REST API с Bearer-авторизацией:
- *     POST {apiUrl}/app/api/v1/authenticate  { username, password } → { token }
- *  2. Отчёты водителей (назначенные машины и факт вывоза):
- *     GET {apiUrl}/app/api/v1/admin/task/getReportsForLk
- *         ?dateAppTzFrom=...&dateAppTzTo=...&lkCodes=38012345,38105858
- *     → [{ vehicleNumber, removalTs, factContainersAmount, pickedUpVolume, area:{lkCode}, photos }]
- *  3. Передача заявок (REMOVAL_REQUEST) и полная синхронизация — через Apache Kafka:
- *     импорт в ЧЛ: топик EXTERNAL_SYNC_DSP_IMPORT_{server_name}
- *     экспорт из ЧЛ: топик EXTERNAL_SYNC_DSP_EXPORT_{server_name}
- *     (доступ выдаётся техподдержкой mytko@groupstp.ru под конкретную интеграцию)
+ *  1. Авторизация: POST {apiUrl}/app/api/v1/authenticate { username, password }
+ *     → { id_token }  ← именно поле id_token (не token!) — JWT, ~20 часов.
+ *  2. Основной API данных — GraphQL на {apiUrl}/app/graphql (Bearer-токен).
+ *     REST /app/api/v1/admin/task/getReportsForLk из документации доступен
+ *     не всем ролям (например, REG_OPERATOR_ADMIN получает 403), а GraphQL
+ *     запросы ниже работают под той же учёткой:
+ *       - containerAreas(searchQuery: { page: { number, size } })
+ *         → реестр ВСЕХ КП проекта: lkCode, address.view, geoData.center
+ *         (ecovn: 10 952 КП по Новгородской области).
+ *       - reportsFromDriverByAreaCodesAndPeriod(areaCodes, from, to)
+ *         → отчёты водителей по кодам КП (Date = ISO с миллисекундами!).
+ *       - currentEmployee → кто подключился (проверка доступа).
+ *       - removalRequestFindPage → заявки на вывоз (чтение).
+ *  3. Передача заявок (REMOVAL_REQUEST) и полная двусторонняя синхронизация —
+ *     через Apache Kafka: топики EXTERNAL_SYNC_DSP_IMPORT_{server_name} /
+ *     EXTERNAL_SYNC_DSP_EXPORT_{server_name} (доступ выдаёт mytko@groupstp.ru).
  */
+
+// ─── Конфигурация ─────────────────────────────────────────────────────────────
+
+/** Направления обмена данными с MyTKO (чекбоксы в настройках интеграции) */
+export interface MytkoDirections {
+  /** Получаем: реестр КП — все контейнерные площадки проекта (коды, адреса, координаты) */
+  areas: boolean;
+  /** Получаем: отчёты водителей — факты вывоза по КП */
+  driverReports: boolean;
+  /** Получаем: заявки на вывоз из MyTKO (чтение removalRequestFindPage) */
+  requests: boolean;
+  /** Отправляем: заявки на вывоз в MyTKO (REMOVAL_REQUEST, через Kafka) */
+  sendRequests: boolean;
+}
+
+export const DEFAULT_MYTKO_DIRECTIONS: MytkoDirections = {
+  areas: true,
+  driverReports: true,
+  requests: false,
+  sendRequests: false,
+};
 
 export interface MytkoConfig {
   enabled: boolean;
@@ -25,28 +52,44 @@ export interface MytkoConfig {
   apiUrl?: string;
   username?: string;
   password?: string;
-  /** Коды КП (лицевые коды контейнерных площадок), через запятую */
+  /** Коды КП (лицевые коды контейнерных площадок), через запятую — ручной режим */
   lkCodes?: string;
+  /** Использовать ВСЕ возможные КП из реестра MyTKO (таблица MytkoArea) */
+  useAllAreas?: boolean;
+  /** Направления обмена (чекбоксы) */
+  directions?: MytkoDirections;
   /** Сохранённый Bearer-токен (получен кнопкой «Войти и получить токен») */
   token?: string;
   /** Когда получен токен (ISO) */
   tokenIssuedAt?: string;
+  /** Когда последний раз загружался реестр КП (ISO) */
+  areasSyncedAt?: string;
 }
 
 export function parseMytkoConfig(raw: string | null | undefined): MytkoConfig {
+  const empty = { enabled: false, apiUrl: '', username: '', password: '', lkCodes: '', useAllAreas: false, token: '', tokenIssuedAt: '', areasSyncedAt: '' };
   try {
-    const parsed = raw ? JSON.parse(raw) : {};
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    const d = (parsed.directions ?? {}) as Record<string, unknown>;
     return {
       enabled: parsed.enabled === true,
       apiUrl: typeof parsed.apiUrl === 'string' ? parsed.apiUrl : '',
       username: typeof parsed.username === 'string' ? parsed.username : '',
       password: typeof parsed.password === 'string' ? parsed.password : '',
       lkCodes: typeof parsed.lkCodes === 'string' ? parsed.lkCodes : '',
+      useAllAreas: parsed.useAllAreas === true,
+      directions: {
+        areas: d.areas !== false, // по умолчанию включено
+        driverReports: d.driverReports !== false,
+        requests: d.requests === true,
+        sendRequests: d.sendRequests === true,
+      },
       token: typeof parsed.token === 'string' ? parsed.token : '',
       tokenIssuedAt: typeof parsed.tokenIssuedAt === 'string' ? parsed.tokenIssuedAt : '',
+      areasSyncedAt: typeof parsed.areasSyncedAt === 'string' ? parsed.areasSyncedAt : '',
     };
   } catch {
-    return { enabled: false, apiUrl: '', username: '', password: '', lkCodes: '', token: '', tokenIssuedAt: '' };
+    return { ...empty, directions: { ...DEFAULT_MYTKO_DIRECTIONS } };
   }
 }
 
@@ -69,24 +112,6 @@ export function maskToken(token: string | null | undefined): string | null {
   if (!t) return null;
   if (t.length <= 12) return `${t.slice(0, 3)}…`;
   return `${t.slice(0, 8)}…${t.slice(-4)}`;
-}
-
-export interface MytkoDriverReport {
-  id: string;
-  /** Дата и время вывоза */
-  removalTs: string | null;
-  /** Номер транспортного средства (машина, назначенная/выполнявшая вывоз) */
-  vehicleNumber: string | null;
-  /** Код контейнерной площадки */
-  lkCode: string | null;
-  /** Название/адрес площадки, если отдан сервером */
-  areaName: string | null;
-  /** Фактическое количество вывезенных контейнеров */
-  factContainersAmount: number | null;
-  /** Собранный объём, м³ */
-  pickedUpVolume: number | null;
-  /** Не вывезенные контейнеры */
-  notRemoved: number;
 }
 
 // ─── Авторизация (токен кэшируется в памяти на 20 часов) ─────────────────────
@@ -133,9 +158,14 @@ export async function mytkoAuthenticate(
       }
       return { ok: false, error: `MyTKO HTTP ${res.status}` };
     }
-    const json = (await res.json()) as { token?: string } | string;
+    const json = (await res.json()) as Record<string, unknown> | string;
+    // ВАЖНО: MyTKO возвращает токен в поле id_token (проверено на ecovn.mytko.ru)
     const token =
-      typeof json === 'string' ? json : (json.token ?? (json as { access_token?: string }).access_token);
+      typeof json === 'string'
+        ? json
+        : ((json.id_token as string) ??
+          (json.token as string) ??
+          (json.access_token as string));
     if (!token) return { ok: false, error: 'MyTKO не вернул токен' };
     tokenCache.set(key, { token, expiresAt: Date.now() + 20 * 3600 * 1000 });
     return { ok: true, token };
@@ -144,26 +174,29 @@ export async function mytkoAuthenticate(
   }
 }
 
-/** Универсальный GET к MyTKO: сохранённый токен, при 401 — реавторизация и повтор */
-async function mytkoGetJson(
+// ─── GraphQL-клиент (/app/graphql) ────────────────────────────────────────────
+
+async function mytkoGraphQL<T>(
   cfg: MytkoConfig,
-  path: string,
-  search?: Record<string, string>
-): Promise<{ ok: true; data: unknown } | { ok: false; error: string }> {
+  query: string,
+  variables?: Record<string, unknown>
+): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   const base = normalizeApiUrl(cfg.apiUrl);
   if (!base) return { ok: false, error: 'Не указан адрес API MyTKO' };
 
   let auth = await mytkoAuthenticate(cfg);
   if (!auth.ok) return auth;
 
-  const url = new URL(`${base}${path}`);
-  for (const [k, v] of Object.entries(search ?? {})) url.searchParams.set(k, v);
-
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const res = await fetch(url.toString(), {
-        headers: { Authorization: `Bearer ${auth.token}` },
-        signal: AbortSignal.timeout(15000),
+      const res = await fetch(`${base}/app/graphql`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${auth.token}`,
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: AbortSignal.timeout(90_000),
       });
       // Токен протух — получаем новый и повторяем один раз
       if (res.status === 401 && attempt === 0) {
@@ -172,7 +205,15 @@ async function mytkoGetJson(
         continue;
       }
       if (!res.ok) return { ok: false, error: `MyTKO HTTP ${res.status}` };
-      return { ok: true, data: await res.json() };
+      const json = (await res.json()) as {
+        data?: T;
+        errors?: Array<{ message?: string }>;
+      };
+      if (json.errors?.length) {
+        return { ok: false, error: json.errors.map((e) => e.message ?? 'ошибка').join('; ').slice(0, 300) };
+      }
+      if (!json.data) return { ok: false, error: 'MyTKO вернул пустой ответ' };
+      return { ok: true, data: json.data };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : 'ошибка сети' };
     }
@@ -180,53 +221,182 @@ async function mytkoGetJson(
   return { ok: false, error: 'MyTKO: не удалось выполнить запрос' };
 }
 
-// ─── Отчёты водителей (факт вывоза по КП) ────────────────────────────────────
-
-function mapReport(r: Record<string, unknown>): MytkoDriverReport {
-  const removal = r.removalTs;
-  const removalTs =
-    typeof removal === 'number'
-      ? new Date(removal).toISOString()
-      : typeof removal === 'string'
-        ? removal
-        : null;
-  const area = r.area as { lkCode?: string; name?: string; address?: string } | undefined;
-  const notRemoved = Array.isArray(r.notRemovedContainers) ? r.notRemovedContainers.length : 0;
+/** Кто подключен — для проверки доступа (роль/регионы) */
+export async function mytkoWhoAmI(
+  cfg: MytkoConfig
+): Promise<{ ok: true; name: string; regions: string[] } | { ok: false; error: string }> {
+  const q = `{ currentEmployee { id person { fullName } regions { name } } }`;
+  const res = await mytkoGraphQL<{ currentEmployee: { person?: { fullName?: string | null } | null; regions?: Array<{ name?: string | null } | null> | null } | null }>(cfg, q);
+  if (!res.ok) return res;
+  const emp = res.data.currentEmployee;
+  if (!emp) return { ok: false, error: 'MyTKO не вернул данные сотрудника' };
   return {
-    id: String(r.id ?? ''),
-    removalTs,
-    vehicleNumber: (r.vehicleNumber as string) ?? null,
-    lkCode: area?.lkCode ?? (r.lkCode as string) ?? null,
-    areaName: area?.name ?? area?.address ?? (r.areaName as string) ?? null,
-    factContainersAmount: typeof r.factContainersAmount === 'number' ? r.factContainersAmount : null,
-    pickedUpVolume: typeof r.pickedUpVolume === 'number' ? r.pickedUpVolume : null,
-    notRemoved,
+    ok: true,
+    name: emp.person?.fullName ?? cfg.username ?? '',
+    regions: (emp.regions ?? []).map((r) => r?.name ?? '').filter(Boolean),
   };
 }
 
+// ─── Реестр КП: все возможные коды контейнерных площадок ─────────────────────
+
+export interface MytkoArea {
+  lkCode: string;
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+}
+
+const CONTAINER_AREAS_QUERY = `
+query($q: SearchQuery!) {
+  containerAreas(searchQuery: $q) {
+    page { number size totalElements }
+    content {
+      id
+      lkCode
+      address { view }
+      geoData { center { latitude longitude } }
+    }
+  }
+}`;
+
+/**
+ * Полный реестр КП проекта (все возможные КОДЫ КП).
+ * Сервер ограничивает запрос 30 секундами, поэтому идём страницами по 2000.
+ */
+export async function mytkoFetchAllAreas(
+  cfg: MytkoConfig,
+  opts?: { pageSize?: number; onPage?: (loaded: number, total: number) => void }
+): Promise<{ ok: true; areas: MytkoArea[] } | { ok: false; error: string }> {
+  const pageSize = opts?.pageSize ?? 2000;
+  const areas: MytkoArea[] = [];
+  let number = 0;
+  let total = Infinity;
+
+  while (areas.length < total && number < 50) {
+    const res = await mytkoGraphQL<{
+      containerAreas: {
+        page: { number: number; size: number; totalElements: number };
+        content: Array<{
+          lkCode?: string | null;
+          address?: { view?: string | null } | null;
+          geoData?: { center?: { latitude?: number | null; longitude?: number | null } | null } | null;
+        } | null>;
+      } | null;
+    }>(cfg, CONTAINER_AREAS_QUERY, { q: { page: { number, size: pageSize } } });
+    if (!res.ok) return res;
+
+    const page = res.data.containerAreas;
+    if (!page) return { ok: false, error: 'MyTKO не вернул страницу реестра КП' };
+    total = page.page.totalElements ?? areas.length;
+    for (const a of page.content ?? []) {
+      if (!a?.lkCode) continue;
+      areas.push({
+        lkCode: a.lkCode,
+        address: a.address?.view ?? null,
+        lat: a.geoData?.center?.latitude ?? null,
+        lng: a.geoData?.center?.longitude ?? null,
+      });
+    }
+    opts?.onPage?.(areas.length, total);
+    const size = page.page.size ?? pageSize;
+    if ((page.content ?? []).length < size) break; // последняя страница
+    number += 1;
+  }
+
+  // Дедупликация по lkCode
+  const map = new Map<string, MytkoArea>();
+  for (const a of areas) map.set(a.lkCode, a);
+  return { ok: true, areas: [...map.values()] };
+}
+
+// ─── Отчёты водителей (факт вывоза по КП) — GraphQL ───────────────────────────
+
+export interface MytkoDriverReport {
+  id: string;
+  /** Дата и время вывоза */
+  removalTs: string | null;
+  /** Номер транспортного средства (машина, назначенная/выполнявшая вывоз) */
+  vehicleNumber: string | null;
+  /** Код контейнерной площадки */
+  lkCode: string | null;
+  /** Название/адрес площадки, если отдан сервером */
+  areaName: string | null;
+  /** Фактическое количество вывезенных контейнеров */
+  factContainersAmount: number | null;
+  /** Собранный объём, м³ */
+  pickedUpVolume: number | null;
+  /** Не вывезенные контейнеры */
+  notRemoved: number;
+}
+
+const REPORTS_QUERY = `
+query($areaCodes: [String!]!, $from: Date, $to: Date) {
+  reportsFromDriverByAreaCodesAndPeriod(areaCodes: $areaCodes, from: $from, to: $to) {
+    area { lkCode address { view } }
+    reports {
+      id
+      removalDate
+      containersAmountFact
+      containersAmountPickedUp
+      containersAmountPlan
+      vehicle { number { full } }
+    }
+  }
+}`;
+
+/**
+ * Отчёты водителей за период по списку кодов КП.
+ * areaCodes — коды КП из реестра (см. mytkoFetchAllAreas) или ручного списка.
+ * Сервер ограничивает время выполнения 30 сек, поэтому запросы идут чанками.
+ */
 export async function mytkoGetDriverReports(
   cfg: MytkoConfig,
-  opts?: { fromIso?: string; toIso?: string }
+  opts?: { areaCodes?: string[]; fromIso?: string; toIso?: string }
 ): Promise<{ ok: true; reports: MytkoDriverReport[] } | { ok: false; error: string }> {
-  const to = opts?.toIso ?? new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const from = opts?.fromIso ?? new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const lk = (cfg.lkCodes ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const to = opts?.toIso ?? new Date().toISOString();
+  const from = opts?.fromIso ?? new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+  const codes = opts?.areaCodes ?? [];
 
-  const res = await mytkoGetJson(cfg, '/app/api/v1/admin/task/getReportsForLk', {
-    dateAppTzFrom: from,
-    dateAppTzTo: to,
-    ...(lk.length ? { lkCodes: lk.join(',') } : {}),
-  });
-  if (!res.ok) return res;
+  const reports: MytkoDriverReport[] = [];
+  const CHUNK = 800;
+  if (codes.length === 0) return { ok: true, reports };
 
-  const data = res.data as Array<Record<string, unknown>>;
-  const reports = (Array.isArray(data) ? data : [])
-    .map(mapReport)
-    .sort((a, b) => (b.removalTs ?? '').localeCompare(a.removalTs ?? ''))
-    .slice(0, 50);
+  for (let i = 0; i < codes.length; i += CHUNK) {
+    const chunk = codes.slice(i, i + CHUNK);
+    const res = await mytkoGraphQL<{
+      reportsFromDriverByAreaCodesAndPeriod: Array<{
+        area?: { lkCode?: string | null; address?: { view?: string | null } | null } | null;
+        reports?: Array<{
+          id?: string | null;
+          removalDate?: string | null;
+          containersAmountFact?: number | null;
+          containersAmountPickedUp?: number | null;
+          vehicle?: { number?: { full?: string | null } | null } | null;
+        } | null> | null;
+      } | null> | null;
+    }>(cfg, REPORTS_QUERY, { areaCodes: chunk, from, to });
+    if (!res.ok) return res;
+
+    for (const item of res.data.reportsFromDriverByAreaCodesAndPeriod ?? []) {
+      const lkCode = item?.area?.lkCode ?? null;
+      const areaName = item?.area?.address?.view ?? null;
+      for (const r of item?.reports ?? []) {
+        if (!r?.id) continue;
+        reports.push({
+          id: r.id,
+          removalTs: r.removalDate ?? null,
+          vehicleNumber: r.vehicle?.number?.full ?? null,
+          lkCode,
+          areaName,
+          factContainersAmount: r.containersAmountFact ?? null,
+          pickedUpVolume: r.containersAmountPickedUp ?? null,
+          notRemoved: 0,
+        });
+      }
+    }
+  }
+
+  reports.sort((a, b) => (b.removalTs ?? '').localeCompare(a.removalTs ?? ''));
   return { ok: true, reports };
 }
 
@@ -234,10 +404,10 @@ export async function mytkoGetDriverReports(
 //
 // Заявки на вывоз (REMOVAL_REQUEST) по документации передаются в ЧЛ через Kafka
 // (доступ выдаёт поддержка). Пока доступ к Kafka не выдан, «синхронизация»
-// заявки — это сверка с MyTKO по REST: проверяем токен (логин/пароль),
-// получаем отчёты водителей за период заявки и ищем факт вывоза по адресу/КП.
-// Найден факт → статус synced + сводка (машина, дата); нет факта — synced
-// «вывоз не подтверждён»; связь/доступы не работают → error + текст ошибки.
+// заявки — это сверка с MyTKO по REST/GraphQL: проверяем токен (логин/пароль),
+// получаем отчёты водителей за период заявки по ВСЕМ возможным КП и ищем факт
+// вывоза по адресу/КП. Найден факт → статус synced + сводка (машина, дата);
+// нет факта — synced «вывоз не подтверждён»; связь/доступы не работают → error.
 
 export interface MytkoOrderSyncResult {
   ok: boolean;
@@ -273,10 +443,11 @@ function matchReport(
 
 export async function mytkoSyncOrder(
   cfg: MytkoConfig,
-  order: { city: string | null; address: string | null; createdAt: Date }
+  order: { city: string | null; address: string | null; createdAt: Date },
+  areaCodes: string[]
 ): Promise<MytkoOrderSyncResult> {
   const fromIso = new Date(order.createdAt.getTime() - 24 * 3600 * 1000).toISOString();
-  const res = await mytkoGetDriverReports(cfg, { fromIso });
+  const res = await mytkoGetDriverReports(cfg, { fromIso, areaCodes });
   if (!res.ok) return { ok: false, status: 'error', info: null, error: res.error };
 
   const matched = matchReport(order, res.reports);

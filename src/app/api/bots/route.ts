@@ -8,12 +8,20 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });
 
   const bots = await db.bot.findMany({
-    where: { userId: user.id },
-    orderBy: { updatedAt: 'desc' },
-    include: {
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
+      /// Настройки MyTKO — для бейджа «синхронизировано с MyTKO» на карточке
+      mytkoConfig: true,
       channels: { select: { id: true, type: true, active: true } },
       _count: { select: { conversations: true, channels: true } },
     },
+    where: { userId: user.id },
+    orderBy: { updatedAt: 'desc' },
   });
 
   const botIds = bots.map((b) => b.id);
@@ -25,17 +33,35 @@ export async function GET(req: NextRequest) {
   ]);
 
   return NextResponse.json({
-    bots: bots.map((b) => ({
-      id: b.id,
-      name: b.name,
-      description: b.description,
-      status: b.status,
-      createdAt: b.createdAt,
-      updatedAt: b.updatedAt,
-      channelsCount: b._count.channels,
-      conversationsCount: b._count.conversations,
-      channelTypes: b.channels.map((c) => c.type),
-    })),
+    bots: bots.map((b) => {
+      let mytko: { enabled: boolean; hasToken: boolean } | null = null;
+      try {
+        const cfg = JSON.parse(b.mytkoConfig ?? '{}') as {
+          enabled?: boolean;
+          token?: string;
+        };
+        if (cfg.enabled || cfg.token) {
+          mytko = {
+            enabled: cfg.enabled === true,
+            hasToken: !!cfg.token,
+          };
+        }
+      } catch {
+        mytko = null;
+      }
+      return {
+        id: b.id,
+        name: b.name,
+        description: b.description,
+        status: b.status,
+        createdAt: b.createdAt,
+        updatedAt: b.updatedAt,
+        mytko,
+        channelsCount: b._count.channels,
+        conversationsCount: b._count.conversations,
+        channelTypes: b.channels.map((c) => c.type),
+      };
+    }),
     stats: {
       bots: bots.length,
       conversations,

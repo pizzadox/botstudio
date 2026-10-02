@@ -3,10 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 import {
+  ArrowDownToLine,
+  ArrowUpFromLine,
   Bot,
   Check,
   ChevronLeft,
   Copy,
+  Database,
+  Eye,
+  EyeOff,
   Globe,
   Info,
   KeyRound,
@@ -48,6 +53,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
@@ -621,6 +627,45 @@ interface MytkoReportItem {
   notRemoved: number;
 }
 
+interface MytkoDirectionsUi {
+  areas: boolean;
+  driverReports: boolean;
+  requests: boolean;
+  sendRequests: boolean;
+}
+
+const MYTKO_DIRECTION_ITEMS: Array<{
+  key: keyof MytkoDirectionsUi;
+  dir: 'in' | 'out';
+  label: string;
+  hint: string;
+}> = [
+  {
+    key: 'areas',
+    dir: 'in',
+    label: 'Реестр КП',
+    hint: 'Все контейнерные площадки проекта: коды, адреса, координаты',
+  },
+  {
+    key: 'driverReports',
+    dir: 'in',
+    label: 'Отчёты водителей',
+    hint: 'Факты вывоза по КП: машина, дата, объём',
+  },
+  {
+    key: 'requests',
+    dir: 'in',
+    label: 'Заявки на вывоз',
+    hint: 'Чтение заявок из MyTKO',
+  },
+  {
+    key: 'sendRequests',
+    dir: 'out',
+    label: 'Заявки на вывоз',
+    hint: 'Передача заявок из чат-бота в MyTKO (через Kafka, доступ выдаёт ТП MyTKO)',
+  },
+];
+
 function MytkoCard({ botId }: { botId: string }) {
   const { toast } = useToast();
   const [cfg, setCfg] = useState({
@@ -628,14 +673,25 @@ function MytkoCard({ botId }: { botId: string }) {
     apiUrl: '',
     username: '',
     lkCodes: '',
+    useAllAreas: false,
+    directions: {
+      areas: true,
+      driverReports: true,
+      requests: false,
+      sendRequests: false,
+    } as MytkoDirectionsUi,
     hasPassword: false,
     tokenMasked: null as string | null,
     tokenIssuedAt: null as string | null,
+    areasSyncedAt: null as string | null,
+    areasCount: 0,
   });
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [busy, setBusy] = useState<'login' | 'test' | 'reports' | 'save' | null>(null);
+  const [busy, setBusy] = useState<'login' | 'test' | 'reports' | 'save' | 'areas' | null>(null);
   const [reports, setReports] = useState<MytkoReportItem[] | null>(null);
+  const [connectionName, setConnectionName] = useState<string | null>(null);
 
   useEffect(() => {
     api<{ config: typeof cfg }>(`/api/bots/${botId}/mytko`)
@@ -645,7 +701,6 @@ function MytkoCard({ botId }: { botId: string }) {
   }, [botId]);
 
   const save = async (patch?: Record<string, unknown>) => {
-    setBusy('save');
     try {
       await api(`/api/bots/${botId}/mytko`, {
         method: 'POST',
@@ -655,8 +710,6 @@ function MytkoCard({ botId }: { botId: string }) {
     } catch {
       toast({ title: 'Не удалось сохранить настройки', variant: 'destructive' });
       return false;
-    } finally {
-      setBusy(null);
     }
   };
 
@@ -672,6 +725,7 @@ function MytkoCard({ botId }: { botId: string }) {
             action: 'login',
             apiUrl: cfg.apiUrl,
             username: cfg.username,
+            // Введённый пароль уходит прямо в запрос — ничего не теряется
             ...(password.trim() ? { password: password.trim() } : {}),
           }),
         }
@@ -698,16 +752,51 @@ function MytkoCard({ botId }: { botId: string }) {
   const test = async () => {
     setBusy('test');
     try {
-      const d = await api<{ ok: boolean; error?: string }>(`/api/bots/${botId}/mytko`, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'test' }),
-      });
-      toast({
-        title: d.ok ? 'Подключение к MyTKO установлено ✅' : `Ошибка: ${d.error ?? 'unknown'}`,
-        variant: d.ok ? 'default' : 'destructive',
-      });
+      const d = await api<{ ok: boolean; name?: string; regions?: string[]; error?: string }>(
+        `/api/bots/${botId}/mytko`,
+        { method: 'POST', body: JSON.stringify({ action: 'test' }) }
+      );
+      if (d.ok) {
+        setConnectionName(d.name ?? null);
+        toast({
+          title: 'Подключение к MyTKO установлено ✅',
+          description: d.name ? `${d.name}${d.regions?.length ? ` · ${d.regions.length} рег.` : ''}` : undefined,
+        });
+      } else {
+        setConnectionName(null);
+        toast({ title: `Ошибка: ${d.error ?? 'unknown'}`, variant: 'destructive' });
+      }
     } catch (e) {
       toast({ title: 'Ошибка проверки', description: e instanceof Error ? e.message : '', variant: 'destructive' });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Загрузить реестр всех КП проекта («все возможные КОДЫ КП») */
+  const syncAreas = async () => {
+    setBusy('areas');
+    try {
+      const d = await api<{ ok: boolean; count?: number; error?: string }>(`/api/bots/${botId}/mytko`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'sync-areas' }),
+      });
+      if (d.ok) {
+        setCfg((c) => ({
+          ...c,
+          areasCount: d.count ?? c.areasCount,
+          useAllAreas: true,
+          areasSyncedAt: new Date().toISOString(),
+        }));
+        toast({
+          title: `Реестр КП загружен: ${d.count ?? 0} площадок`,
+          description: 'В сверке используются все возможные КОДЫ КП',
+        });
+      } else {
+        toast({ title: `Ошибка: ${d.error ?? 'unknown'}`, variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Не удалось загрузить реестр КП', variant: 'destructive' });
     } finally {
       setBusy(null);
     }
@@ -716,13 +805,16 @@ function MytkoCard({ botId }: { botId: string }) {
   const loadReports = async () => {
     setBusy('reports');
     try {
-      const d = await api<{ ok: boolean; reports?: MytkoReportItem[]; error?: string }>(
+      const d = await api<{ ok: boolean; reports?: MytkoReportItem[]; areaCodes?: number; error?: string }>(
         `/api/bots/${botId}/mytko`,
         { method: 'POST', body: JSON.stringify({ action: 'reports' }) }
       );
       if (d.ok && d.reports) {
         setReports(d.reports);
-        toast({ title: `Загружено отчётов: ${d.reports.length}` });
+        toast({
+          title: `Загружено отчётов: ${d.reports.length}`,
+          description: d.areaCodes ? `Проверено КП: ${d.areaCodes}` : undefined,
+        });
       } else {
         toast({ title: `Ошибка: ${d.error ?? 'unknown'}`, variant: 'destructive' });
       }
@@ -734,6 +826,12 @@ function MytkoCard({ botId }: { botId: string }) {
   };
 
   if (!loaded) return null;
+
+  const toggleDirection = (key: keyof MytkoDirectionsUi) => {
+    const next = { ...cfg.directions, [key]: !cfg.directions[key] };
+    setCfg((c) => ({ ...c, directions: next }));
+    save({ directions: next });
+  };
 
   return (
     <Card>
@@ -751,7 +849,7 @@ function MytkoCard({ botId }: { botId: string }) {
                     className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium text-emerald-800"
                     title={`Токен получен: ${cfg.tokenMasked}`}
                   >
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" /> токен есть
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" /> синхронизировано
                   </span>
                 ) : (
                   <span
@@ -763,7 +861,7 @@ function MytkoCard({ botId }: { botId: string }) {
                 )}
               </CardTitle>
               <CardDescription className="truncate">
-                «Чистая логистика»: токен по логину/паролю, факты вывоза и машины-водители
+                «Чистая логистика»: токен по логину/паролю, реестр КП и факты вывоза
               </CardDescription>
             </div>
           </div>
@@ -778,7 +876,7 @@ function MytkoCard({ botId }: { botId: string }) {
         </div>
       </CardHeader>
       {cfg.enabled && (
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">Адрес API вашего проекта</Label>
@@ -804,32 +902,60 @@ function MytkoCard({ botId }: { botId: string }) {
             </div>
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">
-                Пароль {cfg.hasPassword && <span className="text-emerald-600">••• сохранён</span>}
+                Пароль{' '}
+                {cfg.hasPassword ? (
+                  <span className="text-emerald-600">••• сохранён</span>
+                ) : (
+                  <span className="text-amber-600">не задан</span>
+                )}
               </Label>
-              <Input
-                type="password"
-                value={password}
-                placeholder={cfg.hasPassword ? 'введите новый, чтобы заменить' : 'пароль MyTKO'}
-                onChange={(e) => setPassword(e.target.value)}
-                onBlur={() => {
-                  if (password.trim()) {
-                    save({ password: password.trim() });
-                    setCfg((c) => ({ ...c, hasPassword: true }));
-                    setPassword('');
-                  }
-                }}
-              />
+              <div className="relative">
+                <Input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  placeholder={cfg.hasPassword ? 'введён — введите новый, чтобы заменить' : 'пароль MyTKO'}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onBlur={() => {
+                    // Сохраняем сразу при уходе с поля, но НЕ стираем введённое:
+                    // кнопка «Войти» также отправит пароль напрямую
+                    if (password.trim()) {
+                      save({ password: password.trim() });
+                      setCfg((c) => ({ ...c, hasPassword: true }));
+                    }
+                  }}
+                  className="pr-9"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <p className="text-[10px] leading-snug text-muted-foreground">
+                Пароль хранится только в настройках бота и нужен, чтобы получать токен MyTKO автоматически.
+              </p>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Коды КП (через запятую)</Label>
+              <Label className="text-xs text-muted-foreground">Коды КП вручную (через запятую)</Label>
               <Input
                 value={cfg.lkCodes}
                 placeholder="38012345, 38105858"
+                disabled={cfg.useAllAreas}
                 onChange={(e) => setCfg((c) => ({ ...c, lkCodes: e.target.value }))}
                 onBlur={() => save({ lkCodes: cfg.lkCodes })}
               />
+              {cfg.useAllAreas && (
+                <p className="text-[10px] leading-snug text-emerald-700">
+                  Используются все возможные КП из реестра MyTKO ({cfg.areasCount} шт.) — ручной список не нужен.
+                </p>
+              )}
             </div>
           </div>
+
           {/* Токен: получение по логину/паролю и статус */}
           <div className="space-y-1 rounded-lg border bg-muted/30 p-2.5">
             <Label className="text-xs text-muted-foreground">
@@ -868,6 +994,117 @@ function MytkoCard({ botId }: { botId: string }) {
               </Button>
             </div>
           </div>
+
+          {/* Обмен данными: что получаем и что отправляем */}
+          <div className="rounded-lg border p-3">
+            <Label className="text-xs font-medium">Обмен данными с MyTKO</Label>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">
+              Отметьте, какие данные получаем из MyTKO и какие отправляем туда
+            </p>
+            <div className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+              <div>
+                <p className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <ArrowDownToLine className="h-3 w-3" /> Получаем из MyTKO
+                </p>
+                <div className="space-y-1.5">
+                  {MYTKO_DIRECTION_ITEMS.filter((d) => d.dir === 'in').map((d) => (
+                    <label
+                      key={d.key}
+                      className="flex cursor-pointer items-start gap-2 rounded-md p-1 transition-colors hover:bg-muted/50"
+                    >
+                      <Checkbox
+                        checked={cfg.directions[d.key]}
+                        onCheckedChange={() => toggleDirection(d.key)}
+                        className="mt-0.5"
+                        aria-label={`Получать: ${d.label}`}
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-xs font-medium leading-tight">{d.label}</span>
+                        <span className="block text-[10px] leading-snug text-muted-foreground">{d.hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <ArrowUpFromLine className="h-3 w-3" /> Отправляем в MyTKO
+                </p>
+                <div className="space-y-1.5">
+                  {MYTKO_DIRECTION_ITEMS.filter((d) => d.dir === 'out').map((d) => (
+                    <label
+                      key={d.key}
+                      className="flex cursor-pointer items-start gap-2 rounded-md p-1 transition-colors hover:bg-muted/50"
+                    >
+                      <Checkbox
+                        checked={cfg.directions[d.key]}
+                        onCheckedChange={() => toggleDirection(d.key)}
+                        className="mt-0.5"
+                        aria-label={`Отправлять: ${d.label}`}
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-xs font-medium leading-tight">{d.label}</span>
+                        <span className="block text-[10px] leading-snug text-muted-foreground">{d.hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* КОДЫ КП: все возможные из реестра MyTKO */}
+          <div className="rounded-lg border p-3">
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <Database className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0">
+                  <p className="text-xs font-medium leading-tight">Все возможные КОДЫ КП</p>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    {cfg.areasCount > 0 ? (
+                      <>
+                        В реестре: <b>{cfg.areasCount.toLocaleString('ru-RU')} КП</b>
+                        {cfg.areasSyncedAt &&
+                          ` · обновлено ${new Date(cfg.areasSyncedAt).toLocaleString('ru-RU', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}`}
+                      </>
+                    ) : (
+                      'Реестр ещё не загружен — нажмите «Загрузить все КП»'
+                    )}
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Switch
+                  checked={cfg.useAllAreas}
+                  onCheckedChange={(v) => {
+                    setCfg((c) => ({ ...c, useAllAreas: v }));
+                    save({ useAllAreas: v });
+                  }}
+                  disabled={cfg.areasCount === 0}
+                  aria-label="Использовать все возможные КП"
+                />
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="outline" onClick={syncAreas} disabled={busy !== null}>
+                {busy === 'areas' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Database className="h-3.5 w-3.5" />
+                )}
+                {cfg.areasCount > 0 ? 'Обновить реестр КП' : 'Загрузить все КП из MyTKO'}
+              </Button>
+              <span className="text-[10px] leading-snug text-muted-foreground">
+                Загружает весь справочник контейнерных площадок проекта (может занять ~минуту)
+              </span>
+            </div>
+          </div>
+
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="outline" onClick={test} disabled={busy !== null}>
               {busy === 'test' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
@@ -881,6 +1118,11 @@ function MytkoCard({ botId }: { botId: string }) {
               )}
               Отчёты водителей
             </Button>
+            {connectionName && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-800">
+                <Check className="h-3 w-3" /> {connectionName}
+              </span>
+            )}
           </div>
           {reports && (
             <div className="max-h-64 overflow-y-auto rounded-lg border">
@@ -929,13 +1171,13 @@ function MytkoCard({ botId }: { botId: string }) {
           <details>
             <summary className="cursor-pointer text-xs font-medium text-primary">Как работает интеграция</summary>
             <p className="mt-2 rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
-              Доступы выдаёт техподдержка MyTKO (mytko@groupstp.ru). API у каждого проекта свой
-              (у вас — ecovn.mytko.ru), пути /app/api/v1/* одинаковые. Введите логин и пароль от
-              приложения MyTKO — студия получит Bearer-токен (POST /app/api/v1/authenticate) и
-              сохранит его; при протухании токен обновится автоматически. Отчёты водителей
-              (машина, время, факт вывоза по КП) — кнопка «Отчёты водителей». Синхронизация
-              заявок — кнопкой «Синхронизировать с MyTKO» в карточке заявки; полная передача
-              REMOVAL_REQUEST идёт через Kafka (доступ выдаётся под конкретную интеграцию).
+              Введите адрес API (у вас — <b>ecovn.mytko.ru</b>), логин и пароль от приложения MyTKO — студия
+              получит Bearer-токен (POST /app/api/v1/authenticate) и сохранит его; при протухании токен
+              обновится автоматически. Данные читаются через GraphQL (/app/graphql): реестр КП
+              (containerAreas — все возможные КОДЫ КП), отчёты водителей
+              (reportsFromDriverByAreaCodesAndPeriod), заявки. Синхронизация заявок — кнопкой
+              «Синхронизировать с MyTKO» в карточке заявки; полная передача REMOVAL_REQUEST идёт через
+              Kafka (доступ выдаёт техподдержка mytko@groupstp.ru).
             </p>
           </details>
         </CardContent>

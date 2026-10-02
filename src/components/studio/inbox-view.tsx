@@ -413,7 +413,7 @@ export default function InboxView({
             {(
               [
                 { key: 'all', label: 'Все', count: conversations.length },
-                { key: 'operator', label: 'Оператор', count: operatorCount },
+                { key: 'operator', label: 'Требуют внимания', count: operatorCount },
                 { key: 'unread', label: 'Новые', count: unreadCount },
                 { key: 'closed', label: 'Закрытые', count: closedCount },
               ] as const
@@ -481,10 +481,10 @@ export default function InboxView({
                       <span
                         className={cn(
                           'h-2 w-2 shrink-0 rounded-full transition-colors',
-                          c.unread && c.status === 'open'
-                            ? 'bg-primary'
-                            : c.needsOperator && c.status === 'open'
-                              ? 'bg-destructive'
+                          c.needsOperator && c.status === 'open' // красная точка важнее
+                            ? 'bg-destructive'
+                            : c.unread && c.status === 'open'
+                              ? 'bg-primary'
                               : 'bg-transparent'
                         )}
                         aria-hidden
@@ -518,7 +518,7 @@ export default function InboxView({
                     <div className="flex flex-wrap gap-1.5">
                       {c.needsOperator && c.status === 'open' && (
                         <Badge variant="destructive" className="h-4 animate-pulse px-1.5 text-[9px]">
-                          <Headset className="mr-0.5 h-2.5 w-2.5" /> нужен оператор
+                          <Headset className="mr-0.5 h-2.5 w-2.5" /> требует внимания
                         </Badge>
                       )}
                       {c.unread && c.status === 'open' && (
