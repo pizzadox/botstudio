@@ -16,6 +16,7 @@ import {
   Plus,
   Send,
   Trash2,
+  Truck,
   Zap,
 } from 'lucide-react';
 import { api } from '@/lib/client-api';
@@ -325,6 +326,9 @@ export default function ChannelsView({
         </div>
       )}
 
+      {/* Интеграция MyTKO (mytko.ru — «Чистая логистика») */}
+      <MytkoCard botId={bot.id} />
+
       {/* Диалог добавления канала */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent>
@@ -601,5 +605,241 @@ function DemoChat({ secret }: { secret: string }) {
         </Button>
       </form>
     </div>
+  );
+}
+
+// ─── Интеграция MyTKO (mytko.ru «Чистая логистика») ──────────────────────────
+
+interface MytkoReportItem {
+  id: string;
+  removalTs: string | null;
+  vehicleNumber: string | null;
+  lkCode: string | null;
+  factContainersAmount: number | null;
+  pickedUpVolume: number | null;
+  notRemoved: number;
+}
+
+function MytkoCard({ botId }: { botId: string }) {
+  const { toast } = useToast();
+  const [cfg, setCfg] = useState({
+    enabled: false,
+    apiUrl: '',
+    username: '',
+    lkCodes: '',
+    hasPassword: false,
+  });
+  const [password, setPassword] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState<'test' | 'reports' | 'save' | null>(null);
+  const [reports, setReports] = useState<MytkoReportItem[] | null>(null);
+
+  useEffect(() => {
+    api<{ config: typeof cfg }>(`/api/bots/${botId}/mytko`)
+      .then((d) => setCfg(d.config))
+      .catch(() => {})
+      .finally(() => setLoaded(true));
+  }, [botId]);
+
+  const save = async (patch?: Record<string, unknown>) => {
+    setBusy('save');
+    try {
+      await api(`/api/bots/${botId}/mytko`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'save', ...patch }),
+      });
+      return true;
+    } catch {
+      toast({ title: 'Не удалось сохранить настройки', variant: 'destructive' });
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const test = async () => {
+    setBusy('test');
+    try {
+      const d = await api<{ ok: boolean; error?: string }>(`/api/bots/${botId}/mytko`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'test' }),
+      });
+      toast({
+        title: d.ok ? 'Подключение к MyTKO установлено ✅' : `Ошибка: ${d.error ?? 'unknown'}`,
+        variant: d.ok ? 'default' : 'destructive',
+      });
+    } catch (e) {
+      toast({ title: 'Ошибка проверки', description: e instanceof Error ? e.message : '', variant: 'destructive' });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const loadReports = async () => {
+    setBusy('reports');
+    try {
+      const d = await api<{ ok: boolean; reports?: MytkoReportItem[]; error?: string }>(
+        `/api/bots/${botId}/mytko`,
+        { method: 'POST', body: JSON.stringify({ action: 'reports' }) }
+      );
+      if (d.ok && d.reports) {
+        setReports(d.reports);
+        toast({ title: `Загружено отчётов: ${d.reports.length}` });
+      } else {
+        toast({ title: `Ошибка: ${d.error ?? 'unknown'}`, variant: 'destructive' });
+      }
+    } catch {
+      toast({ title: 'Не удалось загрузить отчёты', variant: 'destructive' });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!loaded) return null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+              <Truck className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <CardTitle className="text-base">Интеграция MyTKO</CardTitle>
+              <CardDescription className="truncate">
+                mytko.ru «Чистая логистика»: факты вывоза и машины-водители
+              </CardDescription>
+            </div>
+          </div>
+          <Switch
+            checked={cfg.enabled}
+            onCheckedChange={(v) => {
+              setCfg((c) => ({ ...c, enabled: v }));
+              save({ enabled: v });
+            }}
+            aria-label="Включить интеграцию MyTKO"
+          />
+        </div>
+      </CardHeader>
+      {cfg.enabled && (
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">API-адрес</Label>
+              <Input
+                value={cfg.apiUrl}
+                placeholder="https://disp.t2.groupstp.ru"
+                onChange={(e) => setCfg((c) => ({ ...c, apiUrl: e.target.value }))}
+                onBlur={() => save({ apiUrl: cfg.apiUrl })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Логин</Label>
+              <Input
+                value={cfg.username}
+                placeholder="выдаёт поддержка mytko@groupstp.ru"
+                onChange={(e) => setCfg((c) => ({ ...c, username: e.target.value }))}
+                onBlur={() => save({ username: cfg.username })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">
+                Пароль {cfg.hasPassword && <span className="text-emerald-600">••• сохранён</span>}
+              </Label>
+              <Input
+                type="password"
+                value={password}
+                placeholder={cfg.hasPassword ? 'введите новый, чтобы заменить' : 'пароль MyTKO'}
+                onChange={(e) => setPassword(e.target.value)}
+                onBlur={() => {
+                  if (password.trim()) {
+                    save({ password: password.trim() });
+                    setPassword('');
+                  }
+                }}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Коды КП (через запятую)</Label>
+              <Input
+                value={cfg.lkCodes}
+                placeholder="38012345, 38105858"
+                onChange={(e) => setCfg((c) => ({ ...c, lkCodes: e.target.value }))}
+                onBlur={() => save({ lkCodes: cfg.lkCodes })}
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={test} disabled={busy !== null}>
+              {busy === 'test' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+              Проверить подключение
+            </Button>
+            <Button size="sm" variant="outline" onClick={loadReports} disabled={busy !== null}>
+              {busy === 'reports' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Truck className="h-3.5 w-3.5" />
+              )}
+              Отчёты водителей
+            </Button>
+          </div>
+          {reports && (
+            <div className="max-h-64 overflow-y-auto rounded-lg border">
+              {reports.length === 0 ? (
+                <div className="p-3 text-xs text-muted-foreground">
+                  Отчётов за последние 7 дней по указанным КП нет.
+                </div>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-muted/70 text-left text-muted-foreground">
+                    <tr>
+                      <th className="px-2 py-1.5 font-medium">Дата вывоза</th>
+                      <th className="px-2 py-1.5 font-medium">КП</th>
+                      <th className="px-2 py-1.5 font-medium">Машина</th>
+                      <th className="px-2 py-1.5 font-medium">Факт</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reports.map((r) => (
+                      <tr key={r.id} className="border-t">
+                        <td className="whitespace-nowrap px-2 py-1.5">
+                          {r.removalTs
+                            ? new Date(r.removalTs).toLocaleString('ru-RU', {
+                                day: '2-digit',
+                                month: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })
+                            : '—'}
+                        </td>
+                        <td className="px-2 py-1.5">{r.lkCode ?? '—'}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5 font-medium">{r.vehicleNumber ?? '—'}</td>
+                        <td className="whitespace-nowrap px-2 py-1.5">
+                          {r.factContainersAmount ?? '—'}
+                          {r.notRemoved > 0 && (
+                            <span className="ml-1 text-destructive">(-{r.notRemoved})</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+          <details>
+            <summary className="cursor-pointer text-xs font-medium text-primary">Как работает интеграция</summary>
+            <p className="mt-2 rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
+              Доступы выдаёт техподдержка MyTKO (mytko@groupstp.ru). Отчёты водителей
+              (машина, время, факт вывоза по КП) студия получает по REST —
+              кнопка «Отчёты водителей». Передача заявок в MyTKO — через очередь
+              Kafka (топик EXTERNAL_SYNC_DSP_IMPORT), доступ к брокеру выдаётся
+              под конкретную интеграцию; контракт сообщения уже подготовлен в коде.
+            </p>
+          </details>
+        </CardContent>
+      )}
+    </Card>
   );
 }

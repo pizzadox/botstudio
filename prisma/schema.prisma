@@ -36,6 +36,8 @@ model Bot {
   flow          String          @default("{}")
   /// Настройки ИИ-ассистента: { enabled, prompt, reaskMenu }
   aiConfig      String          @default("{}")
+  /// Настройки интеграции MyTKO: { enabled, apiUrl, username, password, lkCodes }
+  mytkoConfig   String          @default("{}")
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
   channels      Channel[]
