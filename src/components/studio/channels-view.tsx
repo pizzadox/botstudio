@@ -9,6 +9,7 @@ import {
   Copy,
   Globe,
   Info,
+  KeyRound,
   Loader2,
   MessageCircle,
   MessageSquare,
@@ -628,10 +629,12 @@ function MytkoCard({ botId }: { botId: string }) {
     username: '',
     lkCodes: '',
     hasPassword: false,
+    tokenMasked: null as string | null,
+    tokenIssuedAt: null as string | null,
   });
   const [password, setPassword] = useState('');
   const [loaded, setLoaded] = useState(false);
-  const [busy, setBusy] = useState<'test' | 'reports' | 'save' | null>(null);
+  const [busy, setBusy] = useState<'login' | 'test' | 'reports' | 'save' | null>(null);
   const [reports, setReports] = useState<MytkoReportItem[] | null>(null);
 
   useEffect(() => {
@@ -652,6 +655,41 @@ function MytkoCard({ botId }: { botId: string }) {
     } catch {
       toast({ title: 'Не удалось сохранить настройки', variant: 'destructive' });
       return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Вход по логину/паролю: получаем Bearer-токен у MyTKO и сохраняем в настройках */
+  const login = async () => {
+    setBusy('login');
+    try {
+      const d = await api<{ ok: boolean; tokenMasked?: string; tokenIssuedAt?: string; error?: string }>(
+        `/api/bots/${botId}/mytko`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'login',
+            apiUrl: cfg.apiUrl,
+            username: cfg.username,
+            ...(password.trim() ? { password: password.trim() } : {}),
+          }),
+        }
+      );
+      if (d.ok) {
+        setCfg((c) => ({
+          ...c,
+          tokenMasked: d.tokenMasked ?? null,
+          tokenIssuedAt: d.tokenIssuedAt ?? null,
+          hasPassword: true,
+        }));
+        setPassword('');
+        toast({ title: 'Токен MyTKO получен ✅', description: 'Сохранён в настройках интеграции' });
+      } else {
+        toast({ title: 'Не удалось получить токен', description: d.error ?? 'unknown', variant: 'destructive' });
+      }
+    } catch (e) {
+      toast({ title: 'Ошибка входа', description: e instanceof Error ? e.message : '', variant: 'destructive' });
     } finally {
       setBusy(null);
     }
@@ -706,9 +744,26 @@ function MytkoCard({ botId }: { botId: string }) {
               <Truck className="h-5 w-5" />
             </div>
             <div className="min-w-0">
-              <CardTitle className="text-base">Интеграция MyTKO</CardTitle>
+              <CardTitle className="flex items-center gap-2 text-base">
+                Интеграция MyTKO
+                {cfg.tokenMasked ? (
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium text-emerald-800"
+                    title={`Токен получен: ${cfg.tokenMasked}`}
+                  >
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" /> токен есть
+                  </span>
+                ) : (
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-800"
+                    title="Токен ещё не получен — введите логин и пароль и нажмите «Войти и получить токен»"
+                  >
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" /> нет токена
+                  </span>
+                )}
+              </CardTitle>
               <CardDescription className="truncate">
-                mytko.ru «Чистая логистика»: факты вывоза и машины-водители
+                «Чистая логистика»: токен по логину/паролю, факты вывоза и машины-водители
               </CardDescription>
             </div>
           </div>
@@ -726,19 +781,23 @@ function MytkoCard({ botId }: { botId: string }) {
         <CardContent className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">API-адрес</Label>
+              <Label className="text-xs text-muted-foreground">Адрес API вашего проекта</Label>
               <Input
                 value={cfg.apiUrl}
-                placeholder="https://disp.t2.groupstp.ru"
+                placeholder="ecovn.mytko.ru"
                 onChange={(e) => setCfg((c) => ({ ...c, apiUrl: e.target.value }))}
                 onBlur={() => save({ apiUrl: cfg.apiUrl })}
               />
+              <p className="text-[10px] leading-snug text-muted-foreground">
+                У каждого города/проекта свой адрес (у вас — <b>ecovn.mytko.ru</b>), пути API одинаковые.
+                Можно с https:// или без — студия нормализует.
+              </p>
             </div>
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">Логин</Label>
               <Input
                 value={cfg.username}
-                placeholder="выдаёт поддержка mytko@groupstp.ru"
+                placeholder="логин от приложения MyTKO"
                 onChange={(e) => setCfg((c) => ({ ...c, username: e.target.value }))}
                 onBlur={() => save({ username: cfg.username })}
               />
@@ -755,6 +814,7 @@ function MytkoCard({ botId }: { botId: string }) {
                 onBlur={() => {
                   if (password.trim()) {
                     save({ password: password.trim() });
+                    setCfg((c) => ({ ...c, hasPassword: true }));
                     setPassword('');
                   }
                 }}
@@ -768,6 +828,44 @@ function MytkoCard({ botId }: { botId: string }) {
                 onChange={(e) => setCfg((c) => ({ ...c, lkCodes: e.target.value }))}
                 onBlur={() => save({ lkCodes: cfg.lkCodes })}
               />
+            </div>
+          </div>
+          {/* Токен: получение по логину/паролю и статус */}
+          <div className="space-y-1 rounded-lg border bg-muted/30 p-2.5">
+            <Label className="text-xs text-muted-foreground">
+              Bearer-токен
+              {cfg.tokenIssuedAt && (
+                <span className="font-normal">
+                  {' '}· получен{' '}
+                  {new Date(cfg.tokenIssuedAt).toLocaleString('ru-RU', {
+                    day: '2-digit',
+                    month: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
+              )}
+            </Label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                readOnly
+                value={cfg.tokenMasked ?? ''}
+                placeholder="ещё не получен — войдите по логину и паролю"
+                className="min-w-0 flex-1 font-mono text-xs"
+              />
+              <Button
+                size="sm"
+                onClick={login}
+                disabled={busy !== null || !cfg.username.trim() || (!cfg.hasPassword && !password.trim())}
+                className="shrink-0"
+              >
+                {busy === 'login' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <KeyRound className="h-3.5 w-3.5" />
+                )}
+                Войти и получить токен
+              </Button>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -831,11 +929,13 @@ function MytkoCard({ botId }: { botId: string }) {
           <details>
             <summary className="cursor-pointer text-xs font-medium text-primary">Как работает интеграция</summary>
             <p className="mt-2 rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
-              Доступы выдаёт техподдержка MyTKO (mytko@groupstp.ru). Отчёты водителей
-              (машина, время, факт вывоза по КП) студия получает по REST —
-              кнопка «Отчёты водителей». Передача заявок в MyTKO — через очередь
-              Kafka (топик EXTERNAL_SYNC_DSP_IMPORT), доступ к брокеру выдаётся
-              под конкретную интеграцию; контракт сообщения уже подготовлен в коде.
+              Доступы выдаёт техподдержка MyTKO (mytko@groupstp.ru). API у каждого проекта свой
+              (у вас — ecovn.mytko.ru), пути /app/api/v1/* одинаковые. Введите логин и пароль от
+              приложения MyTKO — студия получит Bearer-токен (POST /app/api/v1/authenticate) и
+              сохранит его; при протухании токен обновится автоматически. Отчёты водителей
+              (машина, время, факт вывоза по КП) — кнопка «Отчёты водителей». Синхронизация
+              заявок — кнопкой «Синхронизировать с MyTKO» в карточке заявки; полная передача
+              REMOVAL_REQUEST идёт через Kafka (доступ выдаётся под конкретную интеграцию).
             </p>
           </details>
         </CardContent>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   ChevronLeft,
@@ -13,6 +13,7 @@ import {
   MessageCircle,
   MessagesSquare,
   MessageSquare,
+  Search,
   Send,
   SearchCheck,
   Truck,
@@ -38,6 +39,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { MytkoBadge } from '@/components/studio/mytko-badge';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
@@ -77,6 +79,9 @@ interface ConvOrder {
   clientName: string | null;
   phone: string | null;
   assignee: string | null;
+  mytkoStatus: string | null;
+  mytkoInfo: string | null;
+  mytkoSyncAt: string | null;
   createdAt: string;
 }
 
@@ -93,13 +98,17 @@ function ConversationOrdersPanel({
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [orders, setOrders] = useState<ConvOrder[]>([]);
+  const [mytkoEnabled, setMytkoEnabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const d = await api<{ orders: ConvOrder[] }>(`/api/conversations/${conversationId}/orders`);
+      const d = await api<{ orders: ConvOrder[]; mytkoEnabled?: boolean }>(
+        `/api/conversations/${conversationId}/orders`
+      );
       setOrders(d.orders);
+      setMytkoEnabled(!!d.mytkoEnabled);
     } catch {
       /* ignore */
     } finally {
@@ -154,6 +163,7 @@ function ConversationOrdersPanel({
                 >
                   {ORDER_STATUS_LABELS[o.status] ?? o.status}
                 </Badge>
+                {mytkoEnabled && <MytkoBadge status={o.mytkoStatus} />}
                 <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                   {ORDER_TYPE_LABELS[o.type] ?? o.type}
                   {o.address ? ` · ${o.address}` : ''}
@@ -227,6 +237,9 @@ export default function InboxView({
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [ordersTick, setOrdersTick] = useState(0);
+  /** Фильтр списка: все / нужен оператор / новые / закрытые */
+  const [filter, setFilter] = useState<'all' | 'operator' | 'unread' | 'closed'>('all');
+  const [query, setQuery] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const loadList = useCallback(async () => {
@@ -258,6 +271,12 @@ export default function InboxView({
     }
   }, []);
 
+  /** Открыть диалог: выделяем и сразу помечаем прочитанным (сервер запоминает operatorReadAt) */
+  const openConversation = useCallback((id: string) => {
+    setSelectedId(id);
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, unread: false } : c)));
+  }, []);
+
   useEffect(() => {
     loadList();
   }, [loadList]);
@@ -265,9 +284,9 @@ export default function InboxView({
   // Переход из уведомления: сразу открываем нужный диалог
   useEffect(() => {
     if (!focusConversationId) return;
-    setSelectedId(focusConversationId);
+    openConversation(focusConversationId);
     onFocusConsumed?.();
-  }, [focusConversationId, onFocusConsumed]);
+  }, [focusConversationId, openConversation, onFocusConsumed]);
 
   useEffect(() => {
     const t = setInterval(loadList, 6000);
@@ -320,6 +339,44 @@ export default function InboxView({
 
   const selected = conversations.find((c) => c.id === selectedId) ?? null;
 
+  const operatorCount = useMemo(
+    () => conversations.filter((c) => c.needsOperator && c.status === 'open').length,
+    [conversations]
+  );
+  const unreadCount = useMemo(
+    () => conversations.filter((c) => c.unread && c.status === 'open').length,
+    [conversations]
+  );
+  const closedCount = useMemo(
+    () => conversations.filter((c) => c.status === 'closed').length,
+    [conversations]
+  );
+
+  /** Сортировка: нуждаются в операторе → непрочитанные → по времени; плюс поиск и фильтр */
+  const visibleList = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let list = conversations.filter((c) => {
+      if (filter === 'operator') return c.needsOperator && c.status === 'open';
+      if (filter === 'unread') return c.unread && c.status === 'open';
+      if (filter === 'closed') return c.status === 'closed';
+      return true;
+    });
+    if (q) {
+      list = list.filter(
+        (c) =>
+          (c.contact ?? '').toLowerCase().includes(q) ||
+          (c.lastMessage?.text ?? '').toLowerCase().includes(q)
+      );
+    }
+    const weight = (c: ConversationListItem) =>
+      c.needsOperator && c.status === 'open' ? 0 : c.unread && c.status === 'open' ? 1 : 2;
+    return [...list].sort((a, b) => {
+      const w = weight(a) - weight(b);
+      if (w !== 0) return w;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+  }, [conversations, filter, query]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-2 border-b bg-background px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
@@ -332,12 +389,65 @@ export default function InboxView({
           <Badge variant="secondary" className="min-w-0 max-w-[110px] truncate sm:max-w-[180px]">
             {bot.name}
           </Badge>
+          {operatorCount > 0 && (
+            <Badge variant="destructive" className="shrink-0 animate-pulse">
+              <Headset className="mr-1 h-3 w-3" />
+              <span className="hidden sm:inline">оператор: </span>
+              {operatorCount}
+            </Badge>
+          )}
+          {unreadCount > 0 && (
+            <Badge className="shrink-0 bg-primary/15 text-primary hover:bg-primary/15">
+              <span className="hidden sm:inline">новые: </span>
+              {unreadCount}
+            </Badge>
+          )}
         </div>
       </div>
 
       <div className="grid min-h-0 flex-1 md:grid-cols-[340px_1fr]">
         {/* Список диалогов */}
         <div className={cn('flex min-h-0 flex-col border-r', selected && 'hidden md:flex')}>
+          {/* Фильтры: все / нужен оператор / новые / закрытые + поиск */}
+          <div className="flex flex-wrap items-center gap-1.5 border-b bg-background px-2.5 py-2 sm:px-3">
+            {(
+              [
+                { key: 'all', label: 'Все', count: conversations.length },
+                { key: 'operator', label: 'Оператор', count: operatorCount },
+                { key: 'unread', label: 'Новые', count: unreadCount },
+                { key: 'closed', label: 'Закрытые', count: closedCount },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setFilter(f.key)}
+                aria-pressed={filter === f.key}
+                className={cn(
+                  'rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors',
+                  filter === f.key
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                )}
+              >
+                {f.label}
+                {f.count > 0 && (
+                  <span className={cn('ml-1', filter === f.key ? 'opacity-80' : 'opacity-60')}>
+                    {f.count}
+                  </span>
+                )}
+              </button>
+            ))}
+            <div className="relative ml-auto w-full sm:w-40">
+              <Search className="absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="h-8 pl-7 text-xs"
+                placeholder="Поиск по имени…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+          </div>
           {loading ? (
             <div className="flex items-center gap-2 p-6 text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" /> Загрузка…
@@ -349,19 +459,36 @@ export default function InboxView({
                 Диалогов пока нет. Опубликуйте бота и напишите ему в демо-чате или мессенджере.
               </p>
             </div>
+          ) : visibleList.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 p-8 text-center text-muted-foreground">
+              <SearchCheck className="h-8 w-8 opacity-30" />
+              <p className="text-sm">В этой категории диалогов нет</p>
+            </div>
           ) : (
             <ScrollArea className="flex-1">
               <div className="divide-y">
-                {conversations.map((c) => (
+                {visibleList.map((c) => (
                   <button
                     key={c.id}
-                    onClick={() => setSelectedId(c.id)}
+                    onClick={() => openConversation(c.id)}
                     className={cn(
                       'flex w-full flex-col gap-1 p-3 text-left transition-colors hover:bg-muted/60',
-                      selectedId === c.id && 'bg-primary/5'
+                      selectedId === c.id && 'bg-primary/5',
+                      c.unread && c.status === 'open' && 'bg-primary/[0.04]'
                     )}
                   >
                     <div className="flex w-full items-center gap-2">
+                      <span
+                        className={cn(
+                          'h-2 w-2 shrink-0 rounded-full transition-colors',
+                          c.unread && c.status === 'open'
+                            ? 'bg-primary'
+                            : c.needsOperator && c.status === 'open'
+                              ? 'bg-destructive'
+                              : 'bg-transparent'
+                        )}
+                        aria-hidden
+                      />
                       <span
                         className={cn(
                           'inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
@@ -371,7 +498,12 @@ export default function InboxView({
                         <SourceIcon source={c.source} className="h-3 w-3" />
                         {SOURCE_LABELS[c.source] ?? c.source}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                      <span
+                        className={cn(
+                          'min-w-0 flex-1 truncate text-sm',
+                          c.unread && c.status === 'open' ? 'font-semibold' : 'font-medium'
+                        )}
+                      >
                         {c.contact || 'Без имени'}
                       </span>
                       <span className="shrink-0 text-[10px] text-muted-foreground">
@@ -383,10 +515,15 @@ export default function InboxView({
                         ? `${c.lastMessage.role === 'user' ? '' : 'Вы: '}${c.lastMessage.text}`
                         : 'Нет сообщений'}
                     </p>
-                    <div className="flex gap-1.5">
+                    <div className="flex flex-wrap gap-1.5">
                       {c.needsOperator && c.status === 'open' && (
                         <Badge variant="destructive" className="h-4 animate-pulse px-1.5 text-[9px]">
                           <Headset className="mr-0.5 h-2.5 w-2.5" /> нужен оператор
+                        </Badge>
+                      )}
+                      {c.unread && c.status === 'open' && (
+                        <Badge className="h-4 bg-primary/15 px-1.5 text-[9px] text-primary hover:bg-primary/15">
+                          новое
                         </Badge>
                       )}
                       {c.status === 'closed' && (

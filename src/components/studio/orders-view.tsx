@@ -20,6 +20,7 @@ import {
   Search,
   Send,
   Trash2,
+  Truck,
   User,
 } from 'lucide-react';
 import { api } from '@/lib/client-api';
@@ -36,6 +37,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { MytkoBadge } from '@/components/studio/mytko-badge';
 import {
   Dialog,
   DialogContent,
@@ -89,6 +91,7 @@ function fmtDate(iso: string): string {
 function OrdersMap({
   orders,
   showCompleted,
+  mytkoEnabled,
   placementOrderId,
   selectedId,
   focusOrderId,
@@ -99,6 +102,7 @@ function OrdersMap({
 }: {
   orders: OrderDto[];
   showCompleted: boolean;
+  mytkoEnabled: boolean;
   placementOrderId: string | null;
   selectedId: string | null;
   focusOrderId: string | null;
@@ -336,6 +340,7 @@ function OrdersMap({
                   >
                     {ORDER_STATUS_LABELS[o.status] ?? o.status}
                   </Badge>
+                  {mytkoEnabled && <MytkoBadge status={o.mytkoStatus} />}
                 </button>
               </li>
             ))}
@@ -501,6 +506,7 @@ function OrderDetailDialog({
   onPlaceRequest,
   onShowOnMap,
   onDataChanged,
+  mytkoEnabled,
 }: {
   botId: string;
   orderId: string | null;
@@ -510,6 +516,7 @@ function OrderDetailDialog({
   onPlaceRequest: (orderId: string) => void;
   onShowOnMap: (orderId: string) => void;
   onDataChanged: () => void;
+  mytkoEnabled: boolean;
 }) {
   const { toast } = useToast();
   const [order, setOrder] = useState<OrderDto | null>(null);
@@ -523,6 +530,7 @@ function OrderDetailDialog({
   const [geoLoading, setGeoLoading] = useState(false);
   const [confirmGeo, setConfirmGeo] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [mytkoBusy, setMytkoBusy] = useState(false);
 
   const load = useCallback(async () => {
     if (!orderId) return;
@@ -623,6 +631,33 @@ function OrderDetailDialog({
     }
   };
 
+  /** Синхронизация заявки с MyTKO: токен + сверка с отчётами водителей */
+  const syncMytko = async () => {
+    if (!orderId) return;
+    setMytkoBusy(true);
+    try {
+      const d = await api<{ ok: boolean; order: OrderDto }>(
+        `/api/bots/${botId}/orders/${orderId}/mytko`,
+        { method: 'POST' }
+      );
+      setOrder(d.order);
+      onDataChanged();
+      if (d.order.mytkoStatus === 'synced') {
+        toast({ title: 'Синхронизировано с MyTKO ✅', description: d.order.mytkoInfo ?? undefined });
+      } else {
+        toast({
+          title: 'Ошибка синхронизации с MyTKO',
+          description: d.order.mytkoError ?? undefined,
+          variant: 'destructive',
+        });
+      }
+    } catch (e) {
+      toast({ title: 'Ошибка синхронизации', description: e instanceof Error ? e.message : '', variant: 'destructive' });
+    } finally {
+      setMytkoBusy(false);
+    }
+  };
+
   const hasManualPoint = order?.geoSource === 'manual';
 
   return (
@@ -642,6 +677,7 @@ function OrderDetailDialog({
                 {ORDER_STATUS_LABELS[order.status] ?? order.status}
               </Badge>
             )}
+            {mytkoEnabled && order && <MytkoBadge status={order.mytkoStatus} className="text-[10px] h-5" />}
           </DialogTitle>
           <DialogDescription className="sr-only">
             Карточка заявки: данные клиента, статус и встроенный чат
@@ -722,6 +758,7 @@ function OrderDetailDialog({
                           >
                             {ORDER_STATUS_LABELS[o.status] ?? o.status}
                           </Badge>
+                          {mytkoEnabled && <MytkoBadge status={o.mytkoStatus} />}
                         </button>
                       ))}
                     </div>
@@ -897,6 +934,42 @@ function OrderDetailDialog({
                     </div>
                   )}
                 </div>
+                {/* MyTKO «Чистая логистика» */}
+                {mytkoEnabled && (
+                  <div className="space-y-1.5 rounded-xl border border-emerald-200/70 bg-emerald-50/40 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <Truck className="h-3.5 w-3.5" /> MyTKO · синхронизация
+                      </h3>
+                      <MytkoBadge status={order.mytkoStatus} className="h-5 px-1.5 text-[10px]" />
+                    </div>
+                    {order.mytkoInfo && <p className="break-words text-xs text-muted-foreground">{order.mytkoInfo}</p>}
+                    {order.mytkoError && (
+                      <p className="break-words text-xs font-medium text-destructive">Ошибка: {order.mytkoError}</p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        disabled={mytkoBusy}
+                        onClick={syncMytko}
+                      >
+                        {mytkoBusy ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        Синхронизировать с MyTKO
+                      </Button>
+                      {order.mytkoSyncAt && (
+                        <span className="text-[11px] text-muted-foreground">
+                          последняя сверка: {fmtDate(order.mytkoSyncAt)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Состав / объём</Label>
                   <div className="break-words text-sm">{order.size || '—'}</div>
@@ -1168,9 +1241,11 @@ function NewOrderDialog({
 function OrderRow({
   order,
   onOpen,
+  mytkoEnabled,
 }: {
   order: OrderDto;
   onOpen: (id: string) => void;
+  mytkoEnabled: boolean;
 }) {
   return (
     <button
@@ -1198,6 +1273,7 @@ function OrderRow({
         >
           {ORDER_STATUS_LABELS[order.status] ?? order.status}
         </Badge>
+        {mytkoEnabled && <MytkoBadge status={order.mytkoStatus} />}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-10 text-[11px] text-muted-foreground">
         {order.clientName && <span className="font-medium">{order.clientName}</span>}
@@ -1250,11 +1326,13 @@ export default function OrdersView({
   const [typeFilter, setTypeFilter] = useState<'all' | 'waste' | 'kgm'>('all');
   const [search, setSearch] = useState('');
   const [newOpen, setNewOpen] = useState(false);
+  const [mytkoEnabled, setMytkoEnabled] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const d = await api<{ orders: OrderDto[] }>(`/api/bots/${bot.id}/orders`);
+      const d = await api<{ orders: OrderDto[]; mytkoEnabled?: boolean }>(`/api/bots/${bot.id}/orders`);
       setOrders(d.orders);
+      setMytkoEnabled(!!d.mytkoEnabled);
     } catch {
       /* ignore polling errors */
     } finally {
@@ -1441,6 +1519,7 @@ export default function OrdersView({
               <OrdersMap
                 orders={filtered(orders)}
                 showCompleted={showCompleted}
+                mytkoEnabled={mytkoEnabled}
                 placementOrderId={placementId}
                 selectedId={selectedId}
                 focusOrderId={focus?.id ?? null}
@@ -1488,9 +1567,9 @@ export default function OrdersView({
                 </p>
               </div>
             ) : (
-              <div className="grid gap-2 lg:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
                 {filtered(tab === 'active' ? active : archive).map((o) => (
-                  <OrderRow key={o.id} order={o} onOpen={openOrder} />
+                  <OrderRow key={o.id} order={o} onOpen={openOrder} mytkoEnabled={mytkoEnabled} />
                 ))}
               </div>
             )}
@@ -1510,6 +1589,7 @@ export default function OrdersView({
         onPlaceRequest={placeRequest}
         onShowOnMap={showOnMap}
         onDataChanged={load}
+        mytkoEnabled={mytkoEnabled}
       />
       <NewOrderDialog
         botId={bot.id}

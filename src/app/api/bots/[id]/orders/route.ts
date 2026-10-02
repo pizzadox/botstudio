@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { createOrder, geocodeAddress } from '@/lib/orders';
+import { parseMytkoConfig } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -16,16 +17,19 @@ export async function GET(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Бот не найден' }, { status: 404 });
   }
 
-  const orders = await db.order.findMany({
-    where: { botId: id },
-    include: {
-      conversation: { select: { contact: true, source: true, externalUserId: true } },
-      _count: { select: { messages: true } },
-    },
-    orderBy: { createdAt: 'desc' },
-  });
+  const [orders, cfg] = await Promise.all([
+    db.order.findMany({
+      where: { botId: id },
+      include: {
+        conversation: { select: { contact: true, source: true, externalUserId: true } },
+        _count: { select: { messages: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+    Promise.resolve(parseMytkoConfig(bot.mytkoConfig)),
+  ]);
 
-  return NextResponse.json({ orders });
+  return NextResponse.json({ orders, mytkoEnabled: cfg.enabled });
 }
 
 /** Создать заявку вручную (оператор из ЛК) */

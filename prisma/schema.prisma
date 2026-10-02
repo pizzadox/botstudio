@@ -36,7 +36,7 @@ model Bot {
   flow          String          @default("{}")
   /// Настройки ИИ-ассистента: { enabled, prompt, reaskMenu }
   aiConfig      String          @default("{}")
-  /// Настройки интеграции MyTKO: { enabled, apiUrl, username, password, lkCodes }
+  /// Настройки интеграции MyTKO: { enabled, apiUrl, username, password, lkCodes, token, tokenIssuedAt }
   mytkoConfig   String          @default("{}")
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -76,6 +76,8 @@ model Conversation {
   state          String?
   needsOperator  Boolean   @default(false)
   status         String    @default("open")
+  /// Когда оператор последний раз открывал диалог — для счётчика непрочитанных
+  operatorReadAt DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   messages       Message[]
@@ -134,6 +136,13 @@ model Order {
   lng            Float?
   /// Как получены координаты: manual — оператор указал на карте, geocode — по адресу
   geoSource      String?
+  /// Синхронизация с MyTKO: synced — данные сверены, error — ошибка связи; null — не синхронизировано
+  mytkoStatus    String?
+  mytkoSyncAt    DateTime?
+  /// Краткая сводка из MyTKO (например, машина и факт вывоза)
+  mytkoInfo      String?
+  /// Текст последней ошибки синхронизации
+  mytkoError     String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   completedAt    DateTime?

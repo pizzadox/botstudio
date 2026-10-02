@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { parseMytkoConfig } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -40,9 +41,15 @@ export async function GET(req: NextRequest, { params }: Params) {
       clientName: true,
       phone: true,
       assignee: true,
+      mytkoStatus: true,
+      mytkoInfo: true,
+      mytkoSyncAt: true,
       createdAt: true,
     },
   });
 
-  return NextResponse.json({ orders });
+  return NextResponse.json({
+    orders,
+    mytkoEnabled: parseMytkoConfig(bot.mytkoConfig).enabled,
+  });
 }

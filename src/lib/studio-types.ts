@@ -54,6 +54,8 @@ export interface ConversationListItem {
   externalId: string | null;
   needsOperator: boolean;
   status: string;
+  /** Есть непрочитанное сообщение от клиента (для бейджа «новое») */
+  unread: boolean;
   messagesCount: number;
   updatedAt: string;
   lastMessage: { role: string; text: string; createdAt: string } | null;
@@ -107,6 +109,12 @@ export interface OrderDto {
   lng: number | null;
   /** Как получены координаты: manual — указаны оператором, geocode — по адресу */
   geoSource: 'manual' | 'geocode' | null;
+  /** Синхронизация с MyTKO: synced — сверено, error — ошибка, null — ещё не синхронизировалось */
+  mytkoStatus: 'synced' | 'error' | null;
+  mytkoSyncAt: string | null;
+  /** Сводка из MyTKO (машина/факт вывоза или пояснение) */
+  mytkoInfo: string | null;
+  mytkoError: string | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -126,6 +134,30 @@ export interface OrderMessageDto {
   nodeId?: string | null;
   orderId?: string | null;
   createdAt: string;
+}
+
+/** Метки синхронизации с MyTKO (везде, где видна заявка) */
+export const MYTKO_BADGES: Record<string, { label: string; cls: string; title: string }> = {
+  synced: {
+    label: 'MyTKO ✓',
+    cls: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+    title: 'Синхронизировано с MyTKO (Чистая логистика)',
+  },
+  error: {
+    label: 'MyTKO !',
+    cls: 'bg-rose-100 text-rose-800 border-rose-200',
+    title: 'Ошибка синхронизации с MyTKO — нажмите «Синхронизировать» в карточке заявки',
+  },
+  none: {
+    label: 'MyTKO —',
+    cls: 'bg-slate-100 text-slate-500 border-slate-200',
+    title: 'Не синхронизировано с MyTKO',
+  },
+};
+
+export function mytkoBadgeKey(status: string | null | undefined): 'synced' | 'error' | 'none' {
+  if (status === 'synced' || status === 'error') return status;
+  return 'none';
 }
 
 export const ORDER_STATUS_LABELS: Record<string, string> = {

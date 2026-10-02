@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { geocodeAddress, reverseGeocode } from '@/lib/orders';
+import { parseMytkoConfig } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
 
@@ -50,7 +51,12 @@ export async function GET(req: NextRequest, { params }: Params) {
     }),
   ]);
 
-  return NextResponse.json({ order, clientOrders, messages });
+  return NextResponse.json({
+    order,
+    clientOrders,
+    messages,
+    mytkoEnabled: parseMytkoConfig(loaded.bot.mytkoConfig).enabled,
+  });
 }
 
 /** Обновление заявки: статус, исполнитель, координаты, данные клиента */

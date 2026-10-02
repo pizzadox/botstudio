@@ -27,6 +27,12 @@ export async function GET(req: NextRequest, { params }: Params) {
     take: 200,
   });
 
+  // Оператор открыл диалог — помечаем прочитанным (для счётчика «новые»)
+  await db.conversation.update({
+    where: { id: conversation.id },
+    data: { operatorReadAt: new Date() },
+  });
+
   return NextResponse.json({
     conversation: {
       id: conversation.id,

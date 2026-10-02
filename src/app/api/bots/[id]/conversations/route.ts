@@ -26,16 +26,24 @@ export async function GET(req: NextRequest, { params }: Params) {
   });
 
   return NextResponse.json({
-    conversations: conversations.map((c) => ({
-      id: c.id,
-      source: c.source,
-      contact: c.contact,
-      externalId: c.externalId,
-      needsOperator: c.needsOperator,
-      status: c.status,
-      messagesCount: c._count.messages,
-      updatedAt: c.updatedAt,
-      lastMessage: c.messages[0] ?? null,
-    })),
+    conversations: conversations.map((c) => {
+      const last = c.messages[0] ?? null;
+      // Непрочитано оператором: была активность после последнего открытия диалога
+      const unread =
+        c.status === 'open' &&
+        (!c.operatorReadAt || new Date(c.updatedAt) > new Date(c.operatorReadAt));
+      return {
+        id: c.id,
+        source: c.source,
+        contact: c.contact,
+        externalId: c.externalId,
+        needsOperator: c.needsOperator,
+        status: c.status,
+        unread,
+        messagesCount: c._count.messages,
+        updatedAt: c.updatedAt,
+        lastMessage: last,
+      };
+    }),
   });
 }
