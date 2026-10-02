@@ -283,7 +283,7 @@ const E = (source, target, handle, idx) => ({
   }
   for (const [nodeId, from, to] of TEXT_PATCH) {
     const n = flow.nodes.find((x) => x.id === nodeId);
-    if (n?.data?.text && n.data.text.includes(from)) {
+    if (n?.data?.text && n.data.text.includes(from) && !n.data.text.includes(to)) {
       n.data.text = n.data.text.replace(from, to);
     }
   }
