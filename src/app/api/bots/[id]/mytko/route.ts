@@ -9,10 +9,27 @@ import {
   mytkoWhoAmI,
   normalizeApiUrl,
   parseMytkoConfig,
+  getFreshToken,
   type MytkoDirections,
+  type MytkoConfig,
 } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string }> };
+
+/**
+ * Авто-реавторизация в mytkoGraphQL могла обновить токен (старый истёк).
+ * Сохраняем свежий токен в bot.mytkoConfig — иначе после перезапуска сервера
+ * каждый первый запрос снова падает на протухшем токене.
+ */
+async function persistFreshToken(botId: string, cfg: MytkoConfig) {
+  if (!cfg.enabled) return;
+  const fresh = getFreshToken(cfg.apiUrl, cfg.username);
+  if (fresh && fresh !== cfg.token) {
+    cfg.token = fresh;
+    cfg.tokenIssuedAt = new Date().toISOString();
+    await db.bot.update({ where: { id: botId }, data: { mytkoConfig: JSON.stringify(cfg) } });
+  }
+}
 
 async function loadOwnedBot(req: NextRequest, botId: string) {
   const user = await getSessionUser(req);
@@ -137,6 +154,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (body.action === 'test') {
       if (!cfg.enabled) return NextResponse.json({ ok: false, error: 'Интеграция выключена' }, { status: 400 });
       const res = await mytkoWhoAmI(cfg);
+      await persistFreshToken(bot.id, cfg);
       if (res.ok) {
         return NextResponse.json({ ok: true, name: res.name, regions: res.regions });
       }
@@ -157,6 +175,7 @@ export async function POST(req: NextRequest, { params }: Params) {
         areaCodes,
       });
       if (!res.ok) return NextResponse.json({ ok: false, error: res.error }, { status: 400 });
+      await persistFreshToken(bot.id, cfg);
       return NextResponse.json({ ok: true, reports: res.reports, areaCodes: areaCodes.length });
     }
 
@@ -165,6 +184,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       if (!cfg.enabled) return NextResponse.json({ ok: false, error: 'Интеграция выключена' }, { status: 400 });
       const res = await mytkoFetchAllAreas(cfg);
       if (!res.ok) return NextResponse.json({ ok: false, error: res.error }, { status: 400 });
+      await persistFreshToken(bot.id, cfg);
 
       //Upsert порциями — SQLite не любит огромные пакеты
       const areas = res.areas;

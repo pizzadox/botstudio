@@ -115,7 +115,10 @@ function OrdersMap({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MlMap | null>(null);
   const mlRef = useRef<typeof import('maplibre-gl') | null>(null);
-  const markersRef = useRef<MlMarker[]>([]);
+  /** маркеры по id заявки — чтобы сдвигать их при «spiderfy» совпадающих точек */
+  const markersRef = useRef<Map<string, MlMarker>>(new Map());
+  /** исходные координаты заявки (без сдвига) — для пересчёта раскладки на каждом move */
+  const baseCoordsRef = useRef<Map<string, { lat: number; lng: number }>>(new Map());
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [listOpen, setListOpen] = useState(false);
@@ -163,12 +166,59 @@ function OrdersMap({
     (o) => o.lat != null && o.lng != null && (showCompleted || ACTIVE_STATUSES.includes(o.status))
   );
 
+  /**
+   * «Spiderfy» совпадающих точек: несколько заявок с одним адресом геокодятся
+   * в идентичные координаты и ложатся маркерами друг на друга — видна только
+   * одна. Группируем их по округлённым координатам и раскладываем кружком
+   * с ПОСТОЯННЫМ пиксельным радиусом (пересчёт на каждом move/zoom), чтобы
+   * все точки были видны и кликабельны на любом масштабе карты.
+   */
+  const spreadMarkers = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // группы совпадающих координат (6 знаков ≈ 0.1 м — попадают и «почти равные»)
+    const groups = new Map<string, string[]>();
+    for (const [id, c] of baseCoordsRef.current) {
+      const key = `${c.lat.toFixed(6)}|${c.lng.toFixed(6)}`;
+      const g = groups.get(key);
+      if (g) g.push(id);
+      else groups.set(key, [id]);
+    }
+
+    const zoom = map.getZoom();
+    // пикселей на градус долготы в Web Mercator (тайл MapLibre = 512px!)
+    const pxPerDegLng = 512 * Math.pow(2, zoom) / 360;
+    const SPREAD_PX = 44; // диаметр раскладки вокруг истинной точки
+
+    for (const ids of groups.values()) {
+      const n = ids.length;
+      ids.forEach((id, i) => {
+        const marker = markersRef.current.get(id);
+        const base = baseCoordsRef.current.get(id);
+        if (!marker || !base) return;
+        if (n === 1) {
+          marker.setLngLat([base.lng, base.lat]);
+          return;
+        }
+        // равномерно по окружности; при 2 точках — слева и справа от истинной
+        const angle = (2 * Math.PI * i) / n + (n === 2 ? Math.PI / 2 : Math.PI / 6);
+        const dxPx = Math.cos(angle) * (SPREAD_PX / 2);
+        const dyPx = Math.sin(angle) * (SPREAD_PX / 2);
+        const dLng = dxPx / pxPerDegLng;
+        const dLat = (dyPx / pxPerDegLng) * Math.cos((base.lat * Math.PI) / 180);
+        marker.setLngLat([base.lng + dLng, base.lat + dLat]);
+      });
+    }
+  }, []);
+
   useEffect(() => {
     const map = mapRef.current;
     const ml = mlRef.current;
     if (!map || !ml || !ready) return;
-    for (const m of markersRef.current) m.remove();
-    markersRef.current = [];
+    for (const m of markersRef.current.values()) m.remove();
+    markersRef.current = new Map();
+    baseCoordsRef.current = new Map();
     for (const o of visible) {
       const el = document.createElement('button');
       el.type = 'button';
@@ -188,10 +238,17 @@ function OrdersMap({
       const marker = new ml.Marker({ element: el })
         .setLngLat([o.lng as number, o.lat as number])
         .addTo(map);
-      markersRef.current.push(marker);
+      markersRef.current.set(o.id, marker);
+      baseCoordsRef.current.set(o.id, { lat: o.lat as number, lng: o.lng as number });
     }
+    // раскладываем совпадающие точки и обновляем раскладку при движении/зуме
+    spreadMarkers();
+    map.on('move', spreadMarkers);
+    return () => {
+      map.off('move', spreadMarkers);
+    };
     // зависимость — сериализованный список видимых маркеров
-  }, [ready, visible.map((o) => `${o.id}:${o.lat}:${o.lng}:${o.status}`).join('|'), selectedId]);
+  }, [ready, visible.map((o) => `${o.id}:${o.lat}:${o.lng}:${o.status}`).join('|'), selectedId, spreadMarkers]);
 
   // Наведение на заявку из списка/карточки: перелетаем к точке (focusTick —
   // чтобы повторный клик по той же заявке тоже срабатывал)

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { mytkoSyncOrder, parseMytkoConfig } from '@/lib/mytko';
+import { mytkoSyncOrder, parseMytkoConfig, getFreshToken } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
 
@@ -49,6 +49,17 @@ export async function POST(req: NextRequest, { params }: Params) {
     },
     areaCodes
   );
+
+  // Авто-реавторизация могла обновить истёкший токен — сохраняем его в конфиг бота,
+  // чтобы следующие запросы не начинались с протухшего токена
+  if (cfg.enabled && cfg.apiUrl) {
+    const fresh = getFreshToken(cfg.apiUrl, cfg.username);
+    if (fresh && fresh !== cfg.token) {
+      cfg.token = fresh;
+      cfg.tokenIssuedAt = new Date().toISOString();
+      await db.bot.update({ where: { id: bot.id }, data: { mytkoConfig: JSON.stringify(cfg) } });
+    }
+  }
 
   const updated = await db.order.update({
     where: { id: order.id },

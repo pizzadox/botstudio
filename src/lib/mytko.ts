@@ -207,9 +207,26 @@ async function mytkoGraphQL<T>(
       if (!res.ok) return { ok: false, error: `MyTKO HTTP ${res.status}` };
       const json = (await res.json()) as {
         data?: T;
-        errors?: Array<{ message?: string }>;
+        errors?: Array<{ message?: string; extensions?: { code?: number | string } | null }>;
       };
       if (json.errors?.length) {
+        // ВАЖНО: на невалидный/протухший токен MyTKO отвечает HTTP 200 с
+        // GraphQL-ошибкой { message: "Access is denied", extensions: { code: 401 } }
+        // (проверено на ecovn.mytko.ru). Реавторизуемся и повторяем один раз —
+        // иначе пользователь видит «Ошибка: Access is denied».
+        const authError =
+          json.errors.some((e) => e.extensions?.code === 401 || e.extensions?.code === '401') ||
+          json.errors.some((e) => /access (is )?denied/i.test(e.message ?? ''));
+        if (authError && attempt === 0) {
+          auth = await mytkoAuthenticate(cfg, { force: true });
+          if (!auth.ok) {
+            return {
+              ok: false,
+              error: `Токен MyTKO истёк, повторный вход не удался: ${auth.error}`,
+            };
+          }
+          continue;
+        }
         return { ok: false, error: json.errors.map((e) => e.message ?? 'ошибка').join('; ').slice(0, 300) };
       }
       if (!json.data) return { ok: false, error: 'MyTKO вернул пустой ответ' };
@@ -219,6 +236,17 @@ async function mytkoGraphQL<T>(
     }
   }
   return { ok: false, error: 'MyTKO: не удалось выполнить запрос' };
+}
+
+/**
+ * Свежий токен из кэша авторизации (после авто-реавторизации в mytkoGraphQL).
+ * Роуты используют его, чтобы перезаписать протухший токен в bot.mytkoConfig —
+ * иначе после перезапуска сервера каждый первый запрос снова идёт с протухшим токеном.
+ */
+export function getFreshToken(apiUrl: string, username?: string): string | null {
+  const key = `${normalizeApiUrl(apiUrl)}|${username ?? ''}`;
+  const cached = tokenCache.get(key);
+  return cached && cached.expiresAt > Date.now() ? cached.token : null;
 }
 
 /** Кто подключен — для проверки доступа (роль/регионы) */
