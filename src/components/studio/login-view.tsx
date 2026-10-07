@@ -59,13 +59,13 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-br from-emerald-50 via-background to-teal-50">
-      <main className="flex-1 flex items-center justify-center p-4 sm:p-8">
+    <div className="min-h-screen flex flex-col bg-gradient-to-br from-emerald-50 via-background to-teal-50 dark:from-emerald-950/40 dark:via-background dark:to-teal-950/40">
+      <main className="flex-1 flex items-center justify-center p-4 sm:p-6 lg:p-8">
         <div className="w-full max-w-4xl grid lg:grid-cols-2 gap-8 items-center">
           {/* Брендовая часть */}
           <div className="hidden lg:block space-y-8">
             <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-emerald-600/20">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-lg shadow-emerald-600/20">
                 <Bot className="h-6 w-6" />
               </div>
               <div>
@@ -99,9 +99,9 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
                 <Bot className="h-5 w-5" />
               </div>
-              <div className="text-xl font-bold">BotStudio</div>
+              <div className="text-xl font-bold tracking-tight">BotStudio</div>
             </div>
-            <div className="rounded-2xl border bg-card p-6 shadow-xl shadow-emerald-900/5">
+            <div className="rounded-xl border bg-card p-6 shadow-sm">
               <Tabs defaultValue="login">
                 <TabsList className="grid w-full grid-cols-2 mb-6">
                   <TabsTrigger value="login">Вход</TabsTrigger>
@@ -122,10 +122,15 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                         id="login-username"
                         placeholder="ваш_логин"
                         autoComplete="username"
+                        aria-describedby="login-username-hint"
                         value={login}
                         onChange={(e) => setLogin(e.target.value)}
+                        disabled={busy}
                         required
                       />
+                      <p id="login-username-hint" className="text-xs text-muted-foreground">
+                        Логин, который вы указали при регистрации
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="login-password">Пароль</Label>
@@ -134,15 +139,32 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                         type="password"
                         placeholder="••••••••"
                         autoComplete="current-password"
+                        aria-describedby="login-password-hint"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
+                        disabled={busy}
                         required
                       />
+                      <p id="login-password-hint" className="text-xs text-muted-foreground">
+                        Пароль от вашей учётной записи
+                      </p>
                     </div>
-                    {error && <p className="text-sm text-destructive">{error}</p>}
+                    {error && (
+                      <p
+                        role="alert"
+                        aria-live="assertive"
+                        className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                      >
+                        {error}
+                      </p>
+                    )}
                     <Button type="submit" className="w-full" disabled={busy}>
-                      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LockKeyhole className="h-4 w-4" />}
-                      Войти в студию
+                      {busy ? (
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <LockKeyhole className="h-4 w-4" aria-hidden="true" />
+                      )}
+                      {busy ? 'Вхожу…' : 'Войти в студию'}
                     </Button>
                   </form>
                 </TabsContent>
@@ -160,9 +182,14 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                       <Input
                         id="reg-name"
                         placeholder="Как к вам обращаться"
+                        aria-describedby="reg-name-hint"
                         value={name}
                         onChange={(e) => setName(e.target.value)}
+                        disabled={busy}
                       />
+                      <p id="reg-name-hint" className="text-xs text-muted-foreground">
+                        Его увидят клиенты в чате
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="reg-username">Логин</Label>
@@ -170,10 +197,15 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                         id="reg-username"
                         placeholder="латиница и цифры"
                         autoComplete="username"
+                        aria-describedby="reg-username-hint"
                         value={login}
                         onChange={(e) => setLogin(e.target.value)}
+                        disabled={busy}
                         required
                       />
+                      <p id="reg-username-hint" className="text-xs text-muted-foreground">
+                        Латиница и цифры, без пробелов
+                      </p>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="reg-password">Пароль</Label>
@@ -182,15 +214,32 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                         type="password"
                         placeholder="минимум 6 символов"
                         autoComplete="new-password"
+                        aria-describedby="reg-password-hint"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
+                        disabled={busy}
                         required
                       />
+                      <p id="reg-password-hint" className="text-xs text-muted-foreground">
+                        От 6 символов — латиница, цифры, знаки
+                      </p>
                     </div>
-                    {error && <p className="text-sm text-destructive">{error}</p>}
+                    {error && (
+                      <p
+                        role="alert"
+                        aria-live="assertive"
+                        className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                      >
+                        {error}
+                      </p>
+                    )}
                     <Button type="submit" className="w-full" disabled={busy}>
-                      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}
-                      Создать аккаунт
+                      {busy ? (
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Bot className="h-4 w-4" aria-hidden="true" />
+                      )}
+                      {busy ? 'Создаю…' : 'Создать аккаунт'}
                     </Button>
                   </form>
                 </TabsContent>

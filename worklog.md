@@ -378,3 +378,105 @@ Work Log:
 Stage Summary:
 - «Access is denied» больше не показывается: протухший токен MyTKO автоматически обновляется по логину/паролю (и в GraphQL-теле, и по HTTP 401), новый токен сохраняется в БД — запросы после перезапуска сервера тоже стартуют с валидного токена.
 - Заявки с одинаковым адресом на карте разложены «паучком» (44px, постоянный пиксельный диаметр на любом зуме), обе точки видны и кликабельны, каждая открывает свою заявку.
+
+---
+Task ID: 19-d
+Agent: frontend-styling-expert D
+Task: UI/UX pass editor-view + shell + app-root
+
+Work Log:
+- shell.tsx: активному пункту навигации добавлен aria-current="page" (моб. + десктоп), тонкий индикатор — абсолютная полоска h-5 w-1 rounded-full bg-primary слева от активного пункта (внутри px-3 гаттера, не ломает layout), всем пунктам focus-visible:ring-2 focus-visible:ring-ring фокус-стили.
+- shell.tsx: бейдж-счётчик получил tabular-nums; оба <nav> получили aria-label="Разделы студии"; в мобильном хедере gap-0.5 + px-3 и разделитель-полоска перед «Выйти» — 7 кнопок гарантированно влезают на 390px (тач-таргеты h-10 w-10 сохранены).
+- shell.tsx: блок «Текущий бот» — иконка Bot, min-w-0 + truncate + title у имени; аватар пользователя aria-hidden + shrink-0; кнопка «Выйти» — transition-colors + focus-ring.
+- app-root.tsx: экран «Сначала выберите бота» заменён на центрированный пустой блок: иконка Bot в h-14 w-14 rounded-2xl bg-primary/10 text-primary, заголовок «Бот не выбран» (h2 font-medium), пояснение text-sm text-muted-foreground, Button «Перейти к списку ботов» с иконкой LayoutDashboard вместо голой подчёркнутой ссылки; всё в flex-1 по центру.
+- app-root.tsx: экран загрузки получил aria-busy="true" (и aria-hidden на декоративном логотипе).
+- editor-view.tsx: тулбар сгруппирован (имя+бейдж / статус сохранения / публикация+тест) с разделителями border-l pl-2; Input имени — aria-label="Название бота" + min-w-0; кнопка «Назад» — aria-label «Назад к дашборду»; кнопка «Тест» — aria-pressed={testOpen}; Label у switch теперь показывает явное состояние («Опубликован»/«Черновик»).
+- editor-view.tsx: пустой канвас-хинт переведён на bg-card/95 backdrop-blur rounded-xl border shadow-lg (панель поверх канваса); загрузка сценария — role="status"; индикатор сохранения — aria-hidden иконки + dark-пара text-emerald-600 dark:text-emerald-400; фон точек канваса получил dark:bg-emerald-500/5 (тёмная тема).
+- Логика (useState/useEffect/handlers/ReactFlow) не тронута; только className/aria/обёртки/иконки.
+- Проверки: bun run lint — 0 ошибок; tsc --noEmit — чисто по всем трём файлам (предупреждения только в стороннем download/, вне src).
+
+Stage Summary:
+- Shell/editor/app-root прошли a11y- и визуальный проход: фокус-стили и aria-current/aria-pressed/aria-label, tabular-nums счётчики, тёмная тема без «голых» светлых фонов, центрированный empty-state «Бот не выбран» и сгруппированный тулбар конструктора — без изменения логики.
+
+---
+Task ID: 19-a
+Agent: frontend-styling-expert A
+Task: UI/UX pass login-view + dashboard
+
+Work Log:
+- login-view: градиент фона получил dark-пару (dark:from-emerald-950/40 dark:via-background dark:to-teal-950/40), карточка формы приведена к конвенции rounded-xl + shadow-sm (было rounded-2xl + shadow-xl), padding страницы p-4 sm:p-6 lg:p-8, логотип-плитка rounded-xl, мобильный бренд +tracking-tight.
+- login-view: кнопки в busy-состоянии показывают «Вхожу…» / «Создаю…», все 5 инпутов получили disabled={busy}; Loader2/иконки кнопок aria-hidden.
+- login-view: блоки ошибок (оба таба) стали заметными плашками rounded-lg border-destructive/30 bg-destructive/10 с role="alert" aria-live="assertive".
+- login-view: добавлены подсказки полей (text-xs text-muted-foreground) с aria-describedby у всех инпутов — подсказки читаются скринридерами.
+- dashboard: все 5 statCards получили dark-пары цветов иконок (bg-emerald-100 → +dark:bg-emerald-500/15 dark:text-emerald-400 и т.д. для teal/amber/violet/rose); числа value получили tabular-nums.
+- dashboard: «<Loader2/> Загрузка…» заменена на скелетоны: 5 × Skeleton h-[72px] rounded-xl для статистики и 3 × Skeleton h-[180px] rounded-xl для списка ботов; сетки вынесены в константы STATS_GRID_CLASSES/BOTS_GRID_CLASSES — скелетоны гарантированно совпадают с реальными сетками; контейнеры с role="status" + aria-label.
+- dashboard: карточка бота — клавиатурная доступность: role="button" tabIndex={0} onKeyDown (Enter/Space → открыть) + focus-visible:ring-2 ring-ring ring-offset-2, aria-label «Открыть бота „…“»; сохранён hover:shadow-md + transition-shadow (без hover:scale/hover:w-*).
+- dashboard: a11y-лейблы: DropdownMenuTrigger aria-label=«Меню бота», счётные кнопки футера — aria-label «Каналы: N» / «Диалоги: N» + tabular-nums у чисел; MyTKO-бейджи получили dark-пары (dark:border-*/30 dark:bg-*/15 dark:text-*-300).
+- dashboard: типографика секции «Мои боты» +tracking-tight; пустое состояние — плитка rounded-xl (была rounded-2xl); кнопка «Создать» в диалоге показывает «Создаю…» при busy.
+- Проверки: bun run lint — 0 ошибок; tsc --noEmit — в login-view.tsx/dashboard.tsx ошибок нет (имеющиеся ошибки tsc только в src/lib/webhook.ts — вне зоны задачи, существовали до). Логика (useState/useEffect/handlers/api/props) не менялась.
+
+Stage Summary:
+- Единый полированный проход по экрану входа и дашборду: скелетоны вместо спиннера, тёмная тема (dark-пары всех цветных бейджей/иконок/градиента), a11y (role="button" + клавиатура на карточке бота, aria-labels, role="alert" на ошибках, подсказки полей), консистентная типографика (tabular-nums, tracking-tight) и радиусы/тени по конвенции — без изменения логики.
+
+---
+Task ID: 19-b
+Agent: frontend-styling-expert B
+Task: UI/UX pass inbox-view + test-chat + ai-assistant-view
+
+Work Log:
+- Инбокс, фильтры-чипы (Все/Требуют внимания/Новые/Закрытые): единый стиль h-8 rounded-full px-3 text-xs font-medium transition-colors; активный border-transparent bg-primary text-primary-foreground, неактивный border bg-background text-muted-foreground hover:bg-muted; счётчики внутри чипов и бейджей шапки — tabular-nums; фокус-кольца focus-visible:ring-2.
+- Строки диалогов: цепочка min-w-0 → truncate (имя/превью) не даёт nowrap-тексту разрывать layout, aria-current="true" у выбранной строки, focus-visible:outline-none+ring-2+ring-offset-2, время/счётчик сообщений — text-xs/tabular-nums text-muted-foreground (иерархия text-sm font-medium / text-xs muted).
+- Заголовок инбокса: «Входящие» text-lg sm:text-2xl font-bold tracking-tight; чипы источников получили dark-пары (новая константа SOURCE_DARK: dark:bg-sky-500/15 и т.п. — светлые классы SOURCE_COLORS не тронуты, studio-types не менялся); fallback-класс для неизвестного source; бейдж диалога унифицирован: «нужен оператор» → «требует внимания».
+- Пузыри инбокса: клиент слева bg-muted rounded-2xl rounded-bl-md, бот справа border bg-card rounded-br-md (отличим от оператора), оператор bg-primary text-primary-foreground rounded-br-md + метка Headset; max-w-[85%] sm:max-w-[75%]; время text-[10px] (в операторском пузыре text-primary-foreground/70); space-y-2; фон переписки bg-muted/40 + min-h-0 + aria-live="polite".
+- Скелетоны вместо «Загрузка…»: список диалогов — 7 строк Skeleton (ConversationRowSkeleton, role="status"+aria-label), панель заявок клиента — 2 Skeleton-карточки; Loader2 остался только в кнопке отправки; мёртвые импорты Card/CardContent удалены.
+- Пустые состояния инбокса: общий EmptyState (иконка в h-12 w-12 rounded-xl bg-primary/10 text-primary + font-medium заголовок + text-sm muted пояснение) и СВОЙ текст для каждого фильтра («Нет диалогов, требующих внимания», «Новых диалогов нет», «Закрытых обращений нет»), отдельное состояние поиска «Ничего не найдено» (SearchCheck), «Выберите диалог» и «Сообщений пока нет» тоже переведены на EmptyState.
+- A11y: aria-label у поиска («Поиск диалогов»), поля ответа оператора, статуса/исполнителя заявки, кнопок «Назад»/«К списку диалогов»/«Отправить»/раскрытия панели заявок (+aria-controls); aria-expanded уже был.
+- test-chat: баннер оператора — dark-пары (dark:bg-amber-500/10 dark:text-amber-200), метка «оператор» dark:text-amber-300; пузыри унифицированы (юзер bg-primary rounded-br-md, бот bg-muted rounded-bl-md без border, max-w-[85%] sm:max-w-[75%], space-y-2, bg-muted/40, min-h-0, aria-live); пустое состояние — иконка в bg-primary/10 + «Диалог ещё не начат» + CTA «Начать диалог» (существующий reset); aria-label у поля ввода и кнопки «Отправить»; focus-visible на кнопках быстрых ответов и «Открыть».
+- ai-assistant-view: загрузка страницы заменена на Skeleton-макет (шапка + две колонки, role="status"); секционные CardTitle text-base → text-lg font-semibold; бейдж «Бот не опубликован» и «Есть несохранённые изменения» получили dark-пары amber; баннер «Диалог передан оператору» — dark-пары rose.
+- ai-assistant-view, база знаний: список переведён на divide-y-строки в одном rounded-lg border контейнере (max-h-96 + overflow-y-auto, role="list"/listitem), aria-label кнопок Изменить/Удалить с названием записи + focus-within:opacity-100; пустое состояние — иконка BookOpen в bg-primary/10 + «Записей пока нет» + CTA «Добавить запись»; форма редактирования p-4, aria-label у заголовка/содержимого, Textarea rows=4.
+- Тест-чат ассистента: контейнер aria-live="polite" + aria-label, пузыри как в test-chat (bg-primary/bg-muted, rounded-br-md/rounded-bl-md), пустое состояние с иконкой Sparkles в bg-primary/10 и подсказками-чипами (+focus-visible), aria-label у поля вопроса; проверено: bun run lint — 0 ошибок, tsc --noEmit — 0 ошибок в трёх правленых файлах (ошибки только в предсуществующих download/e2e-*.ts).
+
+Stage Summary:
+- «Входящие», тестовый чат и ИИ-ассистент приведены к единой UI-системе: унифицированные пузыри/чипы/пустые состояния/скелетоны, тёмная тема с dark-парами для всех цветных акцентов, a11y (aria-live, aria-current, aria-label, focus-visible) — без единого изменения логики (state/handlers/API не тронуты).
+
+---
+Task ID: 19-c
+Agent: frontend-styling-expert C
+Task: UI/UX pass channels-view + mytko-badge + палитра/узлы/инспектор
+
+Work Log:
+- Тёмная тема: всем hardcoded цветным классам добавлены dark-пары по паттерну bg-*-500/15 + text-*-300 + border-*-500/30 — CHANNEL_META (sky/emerald/violet/amber), Alert «не опубликован» (amber), бейджи «синхронизировано/нет токена» и иконка Truck в шапке MyTKO, чип результата проверки подключения, «••• сохранён/не задан» (emerald/amber-400), подсказка реестра КП.
+- mytko-badge.tsx: локальная карта DARK_CLS (synced/error/none) добавляет dark-варианты к light-классам из studio-types.MYTKO_BADGES (файл типов не тронут).
+- flow-node.tsx: новый экспорт NODE_DARK (dark-пары к NODE_META для всех 10 типов узлов); карточка узла — rounded-lg border bg-card shadow-sm transition-shadow, selected — ring-2 ring-primary ring-offset-1 ring-offset-background (вместо border-2+shadow-lg), hover только shadow-md; иконка типа в цветном кружке rounded-full с dark-парой; чипы кнопок/переменной/памяти — rounded-full border с dark-парами; шапка rounded-t-[7px] под новый радиус.
+- node-palette.tsx: элементы w-full justify-start rounded-lg, hover:bg-muted + hover:border-primary/40, active:bg-primary/5 active:ring-1 ring-primary/30, focus-visible-ring, aria-label на все кнопки (включая NodePaletteStrip); transition-colors вместо transition-all (без геометрических анимаций); ИСПРАВЛЕН латентный баг: handleDragStart использовался в NodePaletteStrip вне скоупа (TS2304) — вынесен на уровень модуля.
+- node-inspector.tsx: иконка узла с dark-парой; все группы полей space-y-2 (было 1/1.5), метки text-xs font-medium, справочные подписи text-[11px]; все Input/SelectTrigger приведены к единой высоте h-9; блок «Создать заявку» rounded-lg bg-muted/30; блок «Сохранить выбор кнопки» p-3; заодно пофикшен pre-existing TS-ошибки валидации (v as 'phone'|'address') — без изменения логики.
+- MyTKO-панель переработана в 4 логические секции «Подключение / Обмен данными с MyTKO / Все возможные КОДЫ КП / Проверка»: заголовок text-sm font-semibold + иконка в h-8 w-8 rounded-lg bg-primary/10 text-primary (KeyRound/ArrowLeftRight/Database/Zap), описание text-xs text-muted-foreground, секции разделены border-t pt-4.
+- Поля MyTKO: Label htmlFor + id (mytko-api/user/pass/codes/token), text-xs font-medium, space-y-2 внутри группы, grid gap-4; Bearer-токен в рамке bg-muted/30 p-3; CTA «Войти и получить токен» default, остальные кнопки outline.
+- lastStatus → цветной чип с точкой (OK → emerald, Ошибка → rose, остальное → slate) с dark-парами, min-w-0 + truncate, sr-only «Статус:», обёртка role="status" aria-live="polite"; чип connectionName — тоже role="status" + aria-live.
+- Скелетоны: список каналов при загрузке теперь Skeleton-сетка (3 карточки-заглушки, sr-only «Загрузка каналов…», role="status") вместо Loader2+«Загрузка…»; Loader2 остался только в кнопках.
+- A11y/мелочи: у <details> «Как подключить» и «Как работает интеграция» — ChevronDown с group-open:rotate-180 и list-none; aria-pressed у выбора типа канала в диалоге; aria-label переключателей каналов динамические (с названием канала); счётчики (реестр КП, таблица отчётов) tabular-nums; text-[10px] → text-[11px]/text-xs по панели; empty-state заголовок font-semibold.
+- bun run lint — 0 ошибок; tsc --noEmit — в src/components/studio ошибок нет (остальные — pre-existing вне моих файлов).
+
+Stage Summary:
+- Экран «Каналы» и MyTKO-панель получили консистентную секционную структуру, тёмную тему (все плашки с dark-парами), скелетоны загрузки и aria-статусы; узлы конструктора (палитра/канвас/инспектор) приведены к единому визуальному языку (rounded-lg, ring-selected, цветные кружки с dark-парами) без изменения какой-либо логики; попутно устранён латентный TS-баг скоупа handleDragStart в палитре.
+
+---
+Task ID: 19
+Agent: Z.ai Code (main) + 4× frontend-styling-expert (A/B/C/D)
+Task: Глубокий senior-анализ и массовый UI/UX-проход по всему приложению (дизайн-система, a11y, состояния, тёмная тема, отзывчивость)
+
+Work Log:
+- ОРКЕСТРАЦИЯ: 4 параллельных frontend-styling-expert агента на НЕПЕРЕСЕКАЮЩИХСЯ файлах (A: login+dashboard, B: inbox+test-chat+ai-assistant, C: channels+mytko-badge+palette/flow-node/inspector, D: editor+shell+app-root); у каждого — единый чеклист конвенций, запрет трогать логику, свой lint; main-агент вёл orders-view, studio-types, globals.css, layout.tsx + интеграцию.
+- ДИЗАЙН-СИСТЕМА (globals.css): Firefox-скроллбары (scrollbar-width/color + dark), ::selection в фирменном тоне, text-wrap:balance для заголовков, клавиатурный фокус на DOM-маркерах карты (.maplibregl-marker:focus-visible). (layout.tsx): viewport themeColor light/dark, formatDetection telephone=no (Safari не линкует телефоны), applicationName.
+- ТЁМНАЯ ТЕМА (крит-фикс централизованно в studio-types.ts): ORDER_STATUS_BADGES и SOURCE_COLORS получили dark-пары (dark:bg-*-500/15 dark:text-*-300 dark:border-*-500/30) — до этого в тёмной теме статусы/источники были светлыми пятнами. Локальные dark-карты агентов (SOURCE_DARK в инбоксе, DARK_CLS в mytko-badge, NODE_DARK в flow-node) дополнили свои файлы.
+- A (login+dashboard): ошибки входа — плашка role="alert"+aria-live, кнопка «Вхожу…/Создаю…», Inputs disabled={busy}, подсказки с aria-describedby, dark-градиент фона; скелетоны сеток статистики/ботов вместо «Загрузка…», карточка бота — role="button"+tabIndex+Enter/Space+focus-ring+aria-label, tabular-nums на числах, aria-label меню бота.
+- B (инбокс+чаты): единые фильтры-чипы h-8 rounded-full, aria-current у выбранного диалога, пузыри унифицированы (клиент bg-muted/bl-md, бот border bg-card/br-md, оператор bg-primary+метка; max-w 85/75%, время 10px), aria-live="polite" на переписку, EmptyState-компонент с отдельным текстом на каждый фильтр, скелетоны списков, dark-пары чипов источников.
+- C (каналы+конструктор-узлы): статус канала lastStatus → цветной чип с точкой role="status"+aria-live, MyTKO-панель разбита на 4 секции (Подключение/Обмен данными/КОДЫ КП/Проверка) с иконками в bg-primary/10, dark-пары всем CHANNEL_META/бейджам, скелетон-сетка каналов, инспектор: Input/Select h-9 единые, группы space-y-4, palette: aria-label + active:ring, flow-node: selected ring-2 ring-primary ring-offset-1 + NODE_DARK; попутно исправлен латентный TS-баг скоупа handleDragStart в палитре.
+- D (editor+shell+app-root): тулбар редактора сгруппирован border-l-разделителями, aria-pressed у «Тест», switch публикации с явным Label-состоянием; сайдбар: aria-current="page" + индикатор-полоска активного пункта + focus-visible, мобильный хедер ужат (gap-0.5, 7 кнопок влезают в 390px); экран «Бот не выбран» → полноценный EmptyState (иконка/заголовок/пояснение/Button) вместо голой ссылки; aria-busy на экране загрузки.
+- MAIN (orders-view): хедер text-lg sm:text-xl tracking-tight, «Новая Заявка» (Новая — на sm+), aria-label обновления; поиск type="search"+aria-label; список строк: shadow-sm+hover:shadow-md, focus-ring, aria-label «Открыть заявку №N — адрес», dark-пара amber-бордера новых, tabular-nums даты; скелетон-сетка 6×68px вместо «Загрузка…»; пустые состояния — иконка в bg-primary/10 + CTA «Создать заявку»; чипы «без координат» — focus-ring+aria-label; карточка заявки: все 14 Label → font-medium, предупреждение геокода role="alert"+dark-пара, MyTKO-блок dark-пара, координаты tabular-nums, строки «Заказы клиента» aria-label+focus-ring; NewOrderDialog: grid-cols-1 sm:grid-cols-2 (было слипшихся 2 колонки на мобиле), телефон type="tel"+inputMode+autocomplete, кнопка «Создаю…»+disabled Отмена; чат заявки: aria-live, пустой стейт с иконкой, aria-label инпута, время 10px.
+- ИНЦИДЕНТ+ВОССТАНОВЛЕНИЕ БД: обнаружено, что БД (db/custom.db) ПУСТА — все таблицы обнулены платформенным снапшотом 08:43 (mtime файла), причина на нашей стороне исключена (наши скрипты удаляли только 2 QA-заявки и qa-сессии). Найдена копия проекта в /tmp/my-project с БД от 02.10 10:23 → восстановлены пользователи (pizzadox/alex/demo), боты (Экосити со сценарием!), 125 сообщений, 8 заявок, 3 канала, 10 записей БЗ; схема дотянута db:push (добавились mytkoConfig, MytkoArea и пр. с дефолтами); пустой файл сохранён как db/custom.db.empty-bak-*; dev-сервер перезапущен через .zscripts/dev.sh. ПОТЕРИ: учётка MyTKO (ecovn.mytko.ru + kolesnichenko.mihail + пароль) — ввести заново в «Каналах» и получить токен кнопкой; реестр КП — перезагрузить кнопкой (~45 с); диалоги/заявки за 02.10→07.10 (тестовые) — не восстановлены.
+- Верификация (agent-browser, сессия pizzadox, удалена): dashboard (бот с новым aria-label), Заявки: карта «На карте: 8», список «Активные 5/Архив 3» с новыми aria-label строк, карточка заявки (клиент, координаты, чат), Инбокс (чипы/поиск/«Выберите диалог»), Каналы (MAX «OK: получаю сообщения», MyTKO-выключатель), Конструктор (Экосити, «Опубликован»); мобайл 390px: noHScroll=true на всех экранах, карточка заявки fullscreen; тёмная тема скриншотом (пустая БД не мешает проверке разметки); dev.log без ошибок; lint 0. Скриншоты .verify/ui-*.png (8 шт).
+
+Stage Summary:
+- Проведён сквозной UI/UX-проход: единая типографика/отступы/радиусы, скелетоны вместо спиннеров, осмысленные пустые состояния с CTA, aria-атрибуты и клавиатурные фокусы по всему приложению, dark-пары всем цветным акцентам (централизованно для статусов/источников), адаптивные диалоги и тач-таргеты.
+- Инцидент потери БД устранён восстановлением из снапшота /tmp (данные на 02.10); обязательно сообщить пользователю: переввести креды MyTKO и перезагрузить реестр КП.

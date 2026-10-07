@@ -119,9 +119,30 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* Типографика: заголовки не оставляют «висячих» коротких строк */
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  /* Выделение текста — в фирменном тоне */
+  ::selection {
+    background: oklch(0.596 0.145 163.225 / 22%);
+  }
+  .dark ::selection {
+    background: oklch(0.696 0.142 163 / 35%);
+  }
+  /* Firefox: тонкие скроллбары (webkit-правила ниже на него не действуют) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.87 0 0) transparent;
+  }
+  .dark * {
+    scrollbar-color: oklch(0.32 0 0) transparent;
+  }
 }
 
-/* Тонкие аккуратные скроллбары для списков и чатов */
+/* Тонкие аккуратные скроллбары для списков и чатов (WebKit) */
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -135,6 +156,18 @@
 }
 *::-webkit-scrollbar-thumb:hover {
   background: oklch(0.78 0 0);
+}
+.dark *::-webkit-scrollbar-thumb {
+  background: oklch(0.32 0 0);
+}
+.dark *::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.42 0 0);
+}
+
+/* Клавиатурный фокус на маркерах карты (это DOM-кнопки вне React) */
+.maplibregl-marker:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background), 0 0 0 4px oklch(0.596 0.145 163.225);
 }
 
 /* React Flow: убираем лишние отступы атрибуции и приглушаем контролы.

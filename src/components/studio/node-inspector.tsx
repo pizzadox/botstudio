@@ -3,7 +3,7 @@
 import { CircleHelp, ClipboardList, MousePointerClick, Plus, Settings2, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { ConditionOp, FlowButton, FlowNode, FlowNodeData } from '@/lib/flow-types';
 import { CONDITION_OP_LABELS, NODE_META } from '@/lib/flow-types';
-import { NODE_ICONS } from './flow-node';
+import { NODE_DARK, NODE_ICONS } from './flow-node';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -41,8 +41,16 @@ export default function NodeInspector({
   return (
     <div className="flex h-full flex-col bg-background">
       <div className="flex items-center gap-2 border-b p-3">
-        <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', meta.bg, meta.color)}>
-          <Icon className="h-4 w-4" />
+        <div
+          className={cn(
+            'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+            meta.bg,
+            meta.color,
+            NODE_DARK[node.type].bg,
+            NODE_DARK[node.type].text
+          )}
+        >
+          <Icon className="h-4 w-4" aria-hidden />
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">{d.label || meta.title}</div>
@@ -55,8 +63,8 @@ export default function NodeInspector({
 
       <ScrollArea className="flex-1">
         <div className="space-y-4 p-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="insp-label">Название блока</Label>
+          <div className="space-y-2">
+            <Label htmlFor="insp-label" className="text-xs font-medium">Название блока</Label>
             <Input
               id="insp-label"
               placeholder={meta.title}
@@ -66,8 +74,8 @@ export default function NodeInspector({
           </div>
 
           {(node.type === 'message' || node.type === 'question' || node.type === 'handoff') && (
-            <div className="space-y-1.5">
-              <Label htmlFor="insp-text">
+            <div className="space-y-2">
+              <Label htmlFor="insp-text" className="text-xs font-medium">
                 {node.type === 'question' ? 'Текст вопроса' : 'Текст сообщения'}
               </Label>
               <Textarea
@@ -81,10 +89,10 @@ export default function NodeInspector({
           )}
 
           {node.type === 'message' && (
-            <div className="space-y-1.5 rounded-xl border p-3">
+            <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
               <div className="flex items-center justify-between">
-                <Label className="flex items-center gap-1 text-sm">
-                  <ClipboardList className="h-3.5 w-3.5" /> Создать заявку
+                <Label className="flex items-center gap-1 text-sm font-medium">
+                  <ClipboardList className="h-3.5 w-3.5" aria-hidden /> Создать заявку
                 </Label>
                 <Switch
                   checked={!!d.createOrder}
@@ -103,9 +111,9 @@ export default function NodeInspector({
                 />
               </div>
               {d.createOrder && (
-                <div className="space-y-2 pt-1">
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Тип заявки</Label>
+                <div className="space-y-3 pt-1">
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium text-muted-foreground">Тип заявки</Label>
                     <Select
                       value={d.createOrder.type ?? 'waste'}
                       onValueChange={(v) =>
@@ -114,7 +122,7 @@ export default function NodeInspector({
                         })
                       }
                     >
-                      <SelectTrigger className="h-8">
+                      <SelectTrigger className="h-9">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -125,10 +133,10 @@ export default function NodeInspector({
                     </Select>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Перем.: адрес</Label>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: адрес</Label>
                       <Input
-                        className="h-8"
+                        className="h-9"
                         value={d.createOrder.addressVar ?? ''}
                         placeholder="address"
                         onChange={(e) =>
@@ -138,10 +146,10 @@ export default function NodeInspector({
                         }
                       />
                     </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Перем.: телефон</Label>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: телефон</Label>
                       <Input
-                        className="h-8"
+                        className="h-9"
                         value={d.createOrder.phoneVar ?? ''}
                         placeholder="phone"
                         onChange={(e) =>
@@ -151,10 +159,10 @@ export default function NodeInspector({
                         }
                       />
                     </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Перем.: дата</Label>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: дата</Label>
                       <Input
-                        className="h-8"
+                        className="h-9"
                         value={d.createOrder.dateVar ?? ''}
                         placeholder="date"
                         onChange={(e) =>
@@ -164,10 +172,10 @@ export default function NodeInspector({
                         }
                       />
                     </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Перем.: объём/состав</Label>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: объём/состав</Label>
                       <Input
-                        className="h-8"
+                        className="h-9"
                         value={d.createOrder.sizeVar ?? ''}
                         placeholder="container"
                         onChange={(e) =>
@@ -187,9 +195,9 @@ export default function NodeInspector({
           )}
 
           {node.type === 'question' && (
-            <div className="space-y-1.5">
-              <Label htmlFor="insp-var" className="flex items-center gap-1">
-                <CircleHelp className="h-3.5 w-3.5" /> Сохранить ответ в переменную
+            <div className="space-y-2">
+              <Label htmlFor="insp-var" className="flex items-center gap-1 text-xs font-medium">
+                <CircleHelp className="h-3.5 w-3.5" aria-hidden /> Сохранить ответ в переменную
               </Label>
               <Input
                 id="insp-var"
@@ -202,13 +210,13 @@ export default function NodeInspector({
                 {d.variable || 'имя'}
                 {'}}'} в следующих блоках.
               </p>
-              <div className="space-y-1.5 border-t pt-2">
-                <Label htmlFor="insp-validate" className="flex items-center gap-1">
-                  <ShieldCheck className="h-3.5 w-3.5" /> Проверка ответа
+              <div className="space-y-2 border-t pt-3">
+                <Label htmlFor="insp-validate" className="flex items-center gap-1 text-xs font-medium">
+                  <ShieldCheck className="h-3.5 w-3.5" aria-hidden /> Проверка ответа
                 </Label>
                 <Select
                   value={d.validate ?? 'none'}
-                  onValueChange={(v) => onChange({ validate: v === 'none' ? undefined : v })}
+                  onValueChange={(v) => onChange({ validate: v === 'none' ? undefined : (v as 'phone' | 'address') })}
                 >
                   <SelectTrigger id="insp-validate" className="h-9 w-full">
                     <SelectValue />
@@ -228,8 +236,8 @@ export default function NodeInspector({
 
           {node.type === 'buttons' && (
             <>
-              <div className="space-y-1.5">
-                <Label htmlFor="insp-btn-text">Текст меню</Label>
+              <div className="space-y-2">
+                <Label htmlFor="insp-btn-text" className="text-xs font-medium">Текст меню</Label>
                 <Textarea
                   id="insp-btn-text"
                   rows={2}
@@ -239,7 +247,7 @@ export default function NodeInspector({
                 />
               </div>
               <div className="space-y-2">
-                <Label>Кнопки (варианты ответа)</Label>
+                <Label className="text-xs font-medium">Кнопки (варианты ответа)</Label>
                 {(d.buttons ?? []).map((b: FlowButton, i: number) => (
                   <div key={b.id} className="flex items-center gap-2">
                     <Input
@@ -279,17 +287,17 @@ export default function NodeInspector({
                 <p className="text-[11px] text-muted-foreground">
                   Каждая кнопка — отдельная точка соединения снизу блока: тяните связь к следующему шагу.
                 </p>
-                <div className="space-y-1 rounded-lg border bg-muted/30 p-2">
-                  <Label className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <MousePointerClick className="h-3 w-3" /> Сохранить выбор кнопки в переменную
+                <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+                  <Label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                    <MousePointerClick className="h-3 w-3" aria-hidden /> Сохранить выбор кнопки в переменную
                   </Label>
                   <Input
-                    className="h-8"
+                    className="h-9"
                     placeholder="например: container"
                     value={d.saveSelection ?? ''}
                     onChange={(e) => onChange({ saveSelection: e.target.value.replace(/\s/g, '_') })}
                   />
-                  <p className="text-[10px] text-muted-foreground">
+                  <p className="text-[11px] text-muted-foreground">
                     Текст нажатой кнопки попадёт в переменную — удобно для заявки (объём контейнера).
                   </p>
                 </div>
@@ -299,8 +307,8 @@ export default function NodeInspector({
 
           {node.type === 'condition' && (
             <div className="space-y-3">
-              <div className="space-y-1.5">
-                <Label>Переменная / значение</Label>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Переменная / значение</Label>
                 <Input
                   placeholder="имя переменной, например имя"
                   value={d.condition?.left ?? ''}
@@ -315,8 +323,8 @@ export default function NodeInspector({
                   }
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label>Оператор</Label>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Оператор</Label>
                 <Select
                   value={d.condition?.op ?? 'eq'}
                   onValueChange={(v) =>
@@ -341,8 +349,8 @@ export default function NodeInspector({
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-1.5">
-                <Label>Сравнить с</Label>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Сравнить с</Label>
                 <Input
                   placeholder="значение или {{переменная}}"
                   value={d.condition?.right ?? ''}
@@ -365,8 +373,8 @@ export default function NodeInspector({
 
           {node.type === 'ai' && (
             <>
-              <div className="space-y-1.5">
-                <Label htmlFor="insp-prompt">Инструкция для ИИ (роль бота)</Label>
+              <div className="space-y-2">
+                <Label htmlFor="insp-prompt" className="text-xs font-medium">Инструкция для ИИ (роль бота)</Label>
                 <Textarea
                   id="insp-prompt"
                   rows={4}
@@ -375,8 +383,8 @@ export default function NodeInspector({
                   onChange={(e) => onChange({ prompt: e.target.value })}
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="insp-knowledge">База знаний</Label>
+              <div className="space-y-2">
+                <Label htmlFor="insp-knowledge" className="text-xs font-medium">База знаний</Label>
                 <Textarea
                   id="insp-knowledge"
                   rows={6}
@@ -421,8 +429,8 @@ export default function NodeInspector({
 
           {node.type === 'http' && (
             <>
-              <div className="space-y-1.5">
-                <Label htmlFor="insp-url">URL запроса</Label>
+              <div className="space-y-2">
+                <Label htmlFor="insp-url" className="text-xs font-medium">URL запроса</Label>
                 <Input
                   id="insp-url"
                   placeholder="https://api.example.com/hook"
@@ -430,8 +438,8 @@ export default function NodeInspector({
                   onChange={(e) => onChange({ url: e.target.value })}
                 />
               </div>
-              <div className="space-y-1.5">
-                <Label>Метод</Label>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Метод</Label>
                 <Select
                   value={d.method ?? 'GET'}
                   onValueChange={(v) => onChange({ method: v })}
@@ -449,8 +457,8 @@ export default function NodeInspector({
                 </Select>
               </div>
               {d.method !== 'GET' && (
-                <div className="space-y-1.5">
-                  <Label htmlFor="insp-body">Тело запроса (JSON)</Label>
+                <div className="space-y-2">
+                  <Label htmlFor="insp-body" className="text-xs font-medium">Тело запроса (JSON)</Label>
                   <Textarea
                     id="insp-body"
                     rows={4}
@@ -467,8 +475,8 @@ export default function NodeInspector({
           )}
 
           {node.type === 'delay' && (
-            <div className="space-y-1.5">
-              <Label htmlFor="insp-sec">Пауза, секунд (до 3)</Label>
+            <div className="space-y-2">
+              <Label htmlFor="insp-sec" className="text-xs font-medium">Пауза, секунд (до 3)</Label>
               <Input
                 id="insp-sec"
                 type="number"

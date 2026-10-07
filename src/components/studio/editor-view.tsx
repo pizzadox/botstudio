@@ -347,17 +347,17 @@ function EditorInner({
     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
       {saveState === 'saved' && (
         <>
-          <Save className="h-3.5 w-3.5 text-emerald-600" /> Сохранено
+          <Save aria-hidden="true" className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> Сохранено
         </>
       )}
       {saveState === 'saving' && (
         <>
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Сохранение…
+          <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" /> Сохранение…
         </>
       )}
       {saveState === 'unsaved' && (
         <>
-          <span className="h-2 w-2 rounded-full bg-amber-500" /> Есть изменения
+          <span aria-hidden="true" className="h-2 w-2 rounded-full bg-amber-500" /> Есть изменения
         </>
       )}
     </div>
@@ -367,21 +367,29 @@ function EditorInner({
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Хедер редактора */}
       <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2">
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">
-          <ChevronLeft className="h-4 w-4" />
-        </Button>
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onBlur={saveName}
-          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-          className="h-9 w-28 border-transparent bg-transparent font-semibold shadow-none hover:border-input sm:w-56"
-        />
-        <Badge variant={status === 'published' ? 'default' : 'secondary'}>
-          {status === 'published' ? 'Опубликован' : 'Черновик'}
-        </Badge>
-        <div className="hidden sm:block">{saveIndicator}</div>
-        <div className="ml-auto flex items-center gap-3">
+        {/* Группа: навигация и имя бота */}
+        <div className="flex min-w-0 items-center gap-1">
+          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onBack} aria-label="Назад к дашборду">
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={saveName}
+            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            aria-label="Название бота"
+            className="h-9 w-28 min-w-0 border-transparent bg-transparent font-semibold shadow-none hover:border-input sm:w-56"
+          />
+          <Badge variant={status === 'published' ? 'default' : 'secondary'} className="shrink-0">
+            {status === 'published' ? 'Опубликован' : 'Черновик'}
+          </Badge>
+        </div>
+
+        {/* Группа: статус сохранения */}
+        <div className="hidden items-center border-l pl-2 sm:flex">{saveIndicator}</div>
+
+        {/* Группа: публикация и тест */}
+        <div className="ml-auto flex items-center gap-2 border-l pl-2">
           <div className="flex items-center gap-2">
             <Switch
               id="publish"
@@ -390,13 +398,14 @@ function EditorInner({
               aria-label="Опубликовать бота"
             />
             <Label htmlFor="publish" className="hidden text-xs text-muted-foreground sm:block">
-              Опубликован
+              {status === 'published' ? 'Опубликован' : 'Черновик'}
             </Label>
           </div>
           <Button
             size="sm"
             variant={testOpen ? 'default' : 'outline'}
             onClick={() => setTestOpen((v) => !v)}
+            aria-pressed={testOpen}
           >
             <MessageSquareText className="h-4 w-4" />
             Тест
@@ -419,8 +428,8 @@ function EditorInner({
         {/* Канвас */}
         <div className="relative min-w-0 flex-1">
           {loading ? (
-            <div className="flex h-full items-center justify-center text-muted-foreground">
-              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Загрузка сценария…
+            <div role="status" className="flex h-full items-center justify-center text-muted-foreground">
+              <Loader2 aria-hidden="true" className="mr-2 h-5 w-5 animate-spin" /> Загрузка сценария…
             </div>
           ) : (
             <ReactFlow
@@ -446,7 +455,7 @@ function EditorInner({
               maxZoom={1.5}
               proOptions={{ hideAttribution: false }}
             >
-              <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} className="bg-emerald-50/40" />
+              <Background variant={BackgroundVariant.Dots} gap={20} size={1.4} className="bg-emerald-50/40 dark:bg-emerald-500/5" />
               <Controls showInteractive={false} />
               <MiniMap
                 pannable
@@ -473,8 +482,8 @@ function EditorInner({
           )}
           {nodes.length === 0 && !loading && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div className="rounded-2xl border bg-card/90 px-6 py-4 text-center text-sm text-muted-foreground shadow-sm">
-                <Sparkles className="mx-auto mb-2 h-5 w-5 text-primary" />
+              <div className="rounded-xl border bg-card/95 px-6 py-4 text-center text-sm text-muted-foreground shadow-lg backdrop-blur">
+                <Sparkles aria-hidden="true" className="mx-auto mb-2 h-5 w-5 text-primary" />
                 Перетащите блок из палитры
                 <br />
                 или кликните по нему, чтобы добавить
@@ -536,7 +545,7 @@ function EditorInner({
       </Sheet>
 
       {/* Сохранение на мобильных */}
-      <div className="border-t bg-background px-3 py-1 text-center sm:hidden">
+      <div className="border-t bg-background px-3 py-1.5 text-center sm:hidden">
         {saveIndicator}
       </div>
     </div>

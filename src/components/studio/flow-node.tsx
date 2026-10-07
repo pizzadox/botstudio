@@ -31,6 +31,23 @@ export const NODE_ICONS: Record<FlowNodeType, LucideIcon> = {
   end: FlagTriangleRight,
 };
 
+/**
+ * Dark-пары к цветам из NODE_META (файл flow-types.ts не редактируем):
+ * bg — фон кружка иконки, text — цвет иконки/текста в тёмной теме.
+ */
+export const NODE_DARK: Record<FlowNodeType, { bg: string; text: string }> = {
+  start: { bg: 'dark:bg-emerald-500/15', text: 'dark:text-emerald-300' },
+  message: { bg: 'dark:bg-teal-500/15', text: 'dark:text-teal-300' },
+  question: { bg: 'dark:bg-cyan-500/15', text: 'dark:text-cyan-300' },
+  buttons: { bg: 'dark:bg-amber-500/15', text: 'dark:text-amber-300' },
+  condition: { bg: 'dark:bg-orange-500/15', text: 'dark:text-orange-300' },
+  ai: { bg: 'dark:bg-violet-500/15', text: 'dark:text-violet-300' },
+  http: { bg: 'dark:bg-fuchsia-500/15', text: 'dark:text-fuchsia-300' },
+  delay: { bg: 'dark:bg-slate-500/20', text: 'dark:text-slate-300' },
+  handoff: { bg: 'dark:bg-rose-500/15', text: 'dark:text-rose-300' },
+  end: { bg: 'dark:bg-slate-500/20', text: 'dark:text-slate-300' },
+};
+
 export interface FlowCardData extends Record<string, unknown> {
   node: FlowNode;
 }
@@ -73,17 +90,25 @@ export function FlowCard({ data, selected }: NodeProps<FlowCardNode>) {
   return (
     <div
       className={cn(
-        'w-56 rounded-xl border-2 bg-card shadow-sm transition-all sm:w-60',
-        selected ? 'border-primary shadow-lg shadow-emerald-600/10' : 'border-border hover:shadow-md'
+        'w-56 rounded-lg border bg-card shadow-sm transition-shadow sm:w-60',
+        selected ? 'ring-2 ring-primary ring-offset-1 ring-offset-background' : 'hover:shadow-md'
       )}
     >
       {node.type !== 'start' && (
         <Handle type="target" position={Position.Top} className={cn(HANDLE_CLS, '!bg-slate-400', '-top-1.5')} />
       )}
 
-      <div className="flex items-center gap-2 rounded-t-[10px] border-b bg-muted/40 p-2.5">
-        <div className={cn('flex h-7 w-7 shrink-0 items-center justify-center rounded-lg', meta.bg, meta.color)}>
-          <Icon className="h-4 w-4" />
+      <div className="flex items-center gap-2 rounded-t-[7px] border-b bg-muted/40 p-2.5">
+        <div
+          className={cn(
+            'flex h-7 w-7 shrink-0 items-center justify-center rounded-full',
+            meta.bg,
+            meta.color,
+            NODE_DARK[node.type].bg,
+            NODE_DARK[node.type].text
+          )}
+        >
+          <Icon className="h-4 w-4" aria-hidden />
         </div>
         <div className="min-w-0">
           <div className="truncate text-xs font-semibold leading-tight">
@@ -102,7 +127,7 @@ export function FlowCard({ data, selected }: NodeProps<FlowCardNode>) {
             {buttons.map((b) => (
               <span
                 key={b.id}
-                className="rounded-md border bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700"
+                className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] leading-tight text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300"
               >
                 {b.text}
               </span>
@@ -110,12 +135,12 @@ export function FlowCard({ data, selected }: NodeProps<FlowCardNode>) {
           </div>
         )}
         {node.type === 'question' && node.data.variable && (
-          <span className="inline-block rounded-md bg-cyan-50 px-1.5 py-0.5 text-[10px] text-cyan-700">
+          <span className="inline-block rounded-full border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[10px] leading-tight text-cyan-700 dark:border-cyan-500/30 dark:bg-cyan-500/15 dark:text-cyan-300">
             → {`{{${node.data.variable}}}`}
           </span>
         )}
         {node.type === 'ai' && (
-          <span className="inline-block rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700">
+          <span className="inline-block rounded-full border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] leading-tight text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/15 dark:text-violet-300">
             {node.data.useMemory !== false ? 'с памятью' : 'без памяти'}
           </span>
         )}

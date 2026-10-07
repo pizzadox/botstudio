@@ -44,9 +44,16 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+
+// Сетки-константы: скелетоны загрузки обязаны совпадать с реальными сетками контента
+const STATS_GRID_CLASSES = 'grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5';
+const BOTS_GRID_CLASSES = 'grid gap-4 sm:grid-cols-2 xl:grid-cols-3';
+const STATS_SKELETON_COUNT = 5;
+const BOTS_SKELETON_COUNT = 3;
 
 export default function Dashboard({
   onOpenBot,
@@ -133,11 +140,11 @@ export default function Dashboard({
   };
 
   const statCards = [
-    { label: 'Ботов', value: stats?.bots ?? 0, icon: Bot, color: 'text-emerald-600 bg-emerald-100' },
-    { label: 'Активных каналов', value: stats?.activeChannels ?? 0, icon: Cable, color: 'text-teal-600 bg-teal-100' },
-    { label: 'Диалогов', value: stats?.conversations ?? 0, icon: MessagesSquare, color: 'text-amber-600 bg-amber-100' },
-    { label: 'Сообщений', value: stats?.messages ?? 0, icon: Inbox, color: 'text-violet-600 bg-violet-100' },
-    { label: 'Ждут оператора', value: stats?.needsOperator ?? 0, icon: Headset, color: 'text-rose-600 bg-rose-100' },
+    { label: 'Ботов', value: stats?.bots ?? 0, icon: Bot, color: 'text-emerald-600 bg-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-400' },
+    { label: 'Активных каналов', value: stats?.activeChannels ?? 0, icon: Cable, color: 'text-teal-600 bg-teal-100 dark:bg-teal-500/15 dark:text-teal-400' },
+    { label: 'Диалогов', value: stats?.conversations ?? 0, icon: MessagesSquare, color: 'text-amber-600 bg-amber-100 dark:bg-amber-500/15 dark:text-amber-400' },
+    { label: 'Сообщений', value: stats?.messages ?? 0, icon: Inbox, color: 'text-violet-600 bg-violet-100 dark:bg-violet-500/15 dark:text-violet-400' },
+    { label: 'Ждут оператора', value: stats?.needsOperator ?? 0, icon: Headset, color: 'text-rose-600 bg-rose-100 dark:bg-rose-500/15 dark:text-rose-400' },
   ];
 
   return (
@@ -188,7 +195,7 @@ export default function Dashboard({
                 Отмена
               </Button>
               <Button onClick={createBot} disabled={busy || !name.trim()}>
-                {busy && <Loader2 className="h-4 w-4 animate-spin" />} Создать
+                {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />} {busy ? 'Создаю…' : 'Создать'}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -196,34 +203,44 @@ export default function Dashboard({
       </div>
 
       {/* Статистика */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {statCards.map((s) => (
-          <Card key={s.label} className="p-4">
-            <div className="flex items-center gap-3">
-              <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-xl', s.color)}>
-                <s.icon className="h-5 w-5" />
+      {loading ? (
+        <div className={STATS_GRID_CLASSES} role="status" aria-label="Загрузка статистики">
+          {Array.from({ length: STATS_SKELETON_COUNT }).map((_, i) => (
+            <Skeleton key={i} className="h-[72px] rounded-xl" />
+          ))}
+        </div>
+      ) : (
+        <div className={STATS_GRID_CLASSES}>
+          {statCards.map((s) => (
+            <Card key={s.label} className="p-4">
+              <div className="flex items-center gap-3">
+                <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-xl', s.color)}>
+                  <s.icon className="h-5 w-5" aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xl font-bold leading-tight tabular-nums">{s.value}</div>
+                  <div className="truncate text-xs text-muted-foreground">{s.label}</div>
+                </div>
               </div>
-              <div className="min-w-0">
-                <div className="text-xl font-bold leading-tight">{s.value}</div>
-                <div className="truncate text-xs text-muted-foreground">{s.label}</div>
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {/* Список ботов */}
       <div>
-        <h2 className="mb-3 text-lg font-semibold">Мои боты</h2>
+        <h2 className="mb-3 text-lg font-semibold tracking-tight">Мои боты</h2>
         {loading ? (
-          <div className="flex items-center gap-2 py-12 text-muted-foreground">
-            <Loader2 className="h-5 w-5 animate-spin" /> Загрузка…
+          <div className={BOTS_GRID_CLASSES} role="status" aria-label="Загрузка ботов">
+            {Array.from({ length: BOTS_SKELETON_COUNT }).map((_, i) => (
+              <Skeleton key={i} className="h-[180px] rounded-xl" />
+            ))}
           </div>
         ) : bots.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                <Bot className="h-7 w-7" />
+              <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <Bot className="h-7 w-7" aria-hidden="true" />
               </div>
               <div className="font-medium">Пока нет ни одного бота</div>
               <p className="max-w-sm text-sm text-muted-foreground">
@@ -235,12 +252,21 @@ export default function Dashboard({
             </CardContent>
           </Card>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className={BOTS_GRID_CLASSES}>
             {bots.map((bot) => (
               <Card
                 key={bot.id}
-                className="cursor-pointer transition-shadow hover:shadow-md"
+                role="button"
+                tabIndex={0}
+                aria-label={`Открыть бота «${bot.name}»`}
+                className="cursor-pointer transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 onClick={() => onOpenBot(bot, 'editor')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onOpenBot(bot, 'editor');
+                  }
+                }}
               >
                 <CardHeader className="pb-3">
                   <div className="flex min-w-0 items-start justify-between gap-2">
@@ -258,8 +284,8 @@ export default function Dashboard({
                     <div onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreVertical className="h-4 w-4" />
+                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Меню бота">
+                            <MoreVertical className="h-4 w-4" aria-hidden="true" />
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
@@ -303,8 +329,8 @@ export default function Dashboard({
                         }
                         className={
                           bot.mytko.hasToken
-                            ? 'border-emerald-200 bg-emerald-100 text-emerald-800'
-                            : 'border-amber-200 bg-amber-100 text-amber-800'
+                            ? 'border-emerald-200 bg-emerald-100 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300'
+                            : 'border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300'
                         }
                       >
                         MyTKO {bot.mytko.hasToken ? '✓' : '…'}
@@ -326,22 +352,26 @@ export default function Dashboard({
                   <Button
                     size="sm"
                     variant="outline"
+                    aria-label={`Каналы: ${bot.channelsCount}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenBot(bot, 'channels');
                     }}
                   >
-                    <Cable className="h-4 w-4" /> {bot.channelsCount}
+                    <Cable className="h-4 w-4" aria-hidden="true" />{' '}
+                    <span className="tabular-nums">{bot.channelsCount}</span>
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
+                    aria-label={`Диалоги: ${bot.conversationsCount}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenBot(bot, 'inbox');
                     }}
                   >
-                    <Inbox className="h-4 w-4" /> {bot.conversationsCount}
+                    <Inbox className="h-4 w-4" aria-hidden="true" />{' '}
+                    <span className="tabular-nums">{bot.conversationsCount}</span>
                   </Button>
                 </CardFooter>
               </Card>

@@ -171,11 +171,11 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
 };
 
 export const ORDER_STATUS_BADGES: Record<string, string> = {
-  new: 'bg-amber-100 text-amber-800 border-amber-200',
-  assigned: 'bg-sky-100 text-sky-800 border-sky-200',
-  in_progress: 'bg-violet-100 text-violet-800 border-violet-200',
-  completed: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-  cancelled: 'bg-slate-200 text-slate-600 border-slate-300',
+  new: 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30',
+  assigned: 'bg-sky-100 text-sky-800 border-sky-200 dark:bg-sky-500/15 dark:text-sky-300 dark:border-sky-500/30',
+  in_progress: 'bg-violet-100 text-violet-800 border-violet-200 dark:bg-violet-500/15 dark:text-violet-300 dark:border-violet-500/30',
+  completed: 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30',
+  cancelled: 'bg-slate-200 text-slate-600 border-slate-300 dark:bg-slate-500/15 dark:text-slate-300 dark:border-slate-500/30',
 };
 
 export const ORDER_TYPE_LABELS: Record<string, string> = {
@@ -199,9 +199,9 @@ export const SOURCE_LABELS: Record<string, string> = {
 };
 
 export const SOURCE_COLORS: Record<string, string> = {
-  telegram: 'bg-sky-100 text-sky-700',
-  whatsapp: 'bg-emerald-100 text-emerald-700',
-  max: 'bg-violet-100 text-violet-700',
-  web: 'bg-amber-100 text-amber-700',
-  simulator: 'bg-slate-200 text-slate-700',
+  telegram: 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300',
+  whatsapp: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
+  max: 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300',
+  web: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
+  simulator: 'bg-slate-200 text-slate-700 dark:bg-slate-500/15 dark:text-slate-300',
 };

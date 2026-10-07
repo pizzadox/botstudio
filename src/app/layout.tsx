@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
@@ -18,6 +18,16 @@ export const metadata: Metadata = {
   description:
     "Создавайте ботов для MAX, Telegram, WhatsApp и сайта в визуальном редакторе. ИИ-ответы, память диалога, передача оператору.",
   keywords: ["бот", "конструктор", "Telegram", "WhatsApp", "MAX", "техподдержка", "визуальный редактор"],
+  applicationName: "BotStudio",
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+  ],
+  // Safari не должен превращать телефоны клиентов в ссылки внутри чатов/карточек
+  formatDetection: { telephone: false },
 };
 
 export default function RootLayout({

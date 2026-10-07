@@ -1,11 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Loader2 } from 'lucide-react';
+import { Bot, LayoutDashboard, Loader2 } from 'lucide-react';
 import { api, clearAuthToken } from '@/lib/client-api';
 import type { SessionUser, BotListItem, ViewKey } from '@/lib/studio-types';
 import { useToast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
+import { Button } from '@/components/ui/button';
 import LoginView from './login-view';
 import Shell from './shell';
 import Dashboard from './dashboard';
@@ -218,8 +219,8 @@ export default function AppRoot() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-3 bg-background">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground animate-pulse">
+      <div aria-busy="true" className="min-h-screen flex flex-col items-center justify-center gap-3 bg-background">
+        <div aria-hidden="true" className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground animate-pulse">
           <Bot className="h-7 w-7" />
         </div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -297,17 +298,21 @@ export default function AppRoot() {
         />
       )}
       {(view !== 'dashboard' && !currentBot) && (
-        <div className="p-10 text-center text-muted-foreground">
-          Сначала выберите бота на дашборде.
-          <div className="mt-4">
-            <button
-              className="text-primary underline underline-offset-4"
-              onClick={() => setView('dashboard')}
-            >
-              Перейти к списку ботов
-            </button>
+        <section className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+            <Bot className="h-7 w-7" aria-hidden="true" />
           </div>
-        </div>
+          <div className="max-w-sm space-y-1">
+            <h2 className="font-medium">Бот не выбран</h2>
+            <p className="text-sm text-muted-foreground">
+              Сначала выберите бота на дашборде — конструктор, каналы и остальные разделы работают с выбранным ботом.
+            </p>
+          </div>
+          <Button onClick={() => setView('dashboard')}>
+            <LayoutDashboard className="h-4 w-4" aria-hidden="true" />
+            Перейти к списку ботов
+          </Button>
+        </section>
       )}
     </Shell>
   );

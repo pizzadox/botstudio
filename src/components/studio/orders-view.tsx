@@ -37,6 +37,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
 import { MytkoBadge } from '@/components/studio/mytko-badge';
 import {
   Dialog,
@@ -329,9 +330,13 @@ function OrdersMap({
       </div>
       {/* Счётчик маркеров + кнопка разворачиваемого списка точек */}
       <div className="absolute left-2.5 top-2.5 z-10 flex items-start gap-2 sm:left-3 sm:top-3">
-        <div className="rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur">
-          <MapPin className="mr-1 inline h-3 w-3 text-primary" />
-          На карте: <b>{visible.length}</b>
+        <div
+          role="status"
+          aria-label={`Точек на карте: ${visible.length}`}
+          className="rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur"
+        >
+          <MapPin className="mr-1 inline h-3 w-3 text-primary" aria-hidden />
+          На карте: <b className="tabular-nums">{visible.length}</b>
         </div>
         {!placementOrderId && visible.length > 0 && (
           <button
@@ -371,9 +376,10 @@ function OrdersMap({
                   type="button"
                   onClick={() => jumpToListPoint(o)}
                   className={cn(
-                    'flex w-full items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-muted/70',
+                    'flex w-full items-center gap-2 px-2.5 py-2.5 text-left transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                     o.id === selectedId && 'bg-primary/5'
                   )}
+                  aria-label={`Перейти к заявке №${o.number} — ${o.address || o.city || 'без адреса'}`}
                 >
                   <span
                     className={cn(
@@ -484,12 +490,18 @@ function OrderChat({
         <MessageSquare className="h-3.5 w-3.5" />
         Чат с клиентом по заявке — сообщения доставляются в его мессенджер
       </div>
-      <div ref={scrollRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/30 p-3">
+      {/* Чат с клиентом по заявке */}
+      <div ref={scrollRef} aria-live="polite" className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/30 p-3">
         {messages.length === 0 && (
-          <div className="flex h-full items-center justify-center text-center text-xs text-muted-foreground">
-            Сообщений по заявке пока нет.
-            <br />
-            Клиент может написать в боте, открыв карточку своей заявки.
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-muted-foreground">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary" aria-hidden>
+              <MessageSquare className="h-5 w-5" />
+            </div>
+            <p className="text-xs">
+              Сообщений по заявке пока нет.
+              <br />
+              Клиент может написать в боте, открыв карточку своей заявки.
+            </p>
           </div>
         )}
         {messages.map((m) => {
@@ -510,7 +522,7 @@ function OrderChat({
                   </div>
                 )}
                 <div className="whitespace-pre-wrap">{m.text}</div>
-                <div className="text-right text-[9px] opacity-60">
+                <div className="text-right text-[10px] opacity-60">
                   {new Date(m.createdAt).toLocaleTimeString('ru-RU', {
                     hour: '2-digit',
                     minute: '2-digit',
@@ -529,6 +541,7 @@ function OrderChat({
         }}
       >
         <Input
+          aria-label="Ответ клиенту"
           placeholder={
             hasConversation
               ? 'Ответить клиенту…'
@@ -742,8 +755,8 @@ function OrderDetailDialog({
         </DialogHeader>
 
         {!order && loading ? (
-          <div className="flex items-center justify-center gap-2 text-muted-foreground">
-            <Loader2 className="h-5 w-5 animate-spin" /> Загрузка…
+          <div className="flex items-center justify-center gap-2 text-muted-foreground" role="status">
+            <Loader2 className="h-5 w-5 animate-spin" aria-hidden /> Загрузка…
           </div>
         ) : !order ? (
           <div className="flex items-center justify-center text-sm text-muted-foreground">
@@ -799,12 +812,13 @@ function OrderDetailDialog({
                         <button
                           key={o.id}
                           onClick={() => onSwitchOrder(o.id)}
+                          aria-label={`Перейти к заявке №${o.number}`}
                           className={cn(
-                            'flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted',
+                            'flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                             o.id === order.id && 'border-primary/50 bg-primary/5'
                           )}
                         >
-                          <span className="shrink-0 font-semibold">№{o.number}</span>
+                          <span className="shrink-0 font-semibold tabular-nums">№{o.number}</span>
                           <span className="min-w-0 flex-1 truncate text-muted-foreground">
                             {ORDER_TYPE_LABELS[o.type] ?? o.type}
                             {o.address ? ` · ${o.address}` : ''}
@@ -827,7 +841,7 @@ function OrderDetailDialog({
               <div className="space-y-3 rounded-xl border p-3">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Статус</Label>
+                    <Label className="text-xs font-medium text-muted-foreground">Статус</Label>
                     <Select
                       value={order.status}
                       onValueChange={(v) => patch({ status: v }, 'Статус обновлён')}
@@ -845,7 +859,7 @@ function OrderDetailDialog({
                     </Select>
                   </div>
                   <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">Желаемая дата</Label>
+                    <Label className="text-xs font-medium text-muted-foreground">Желаемая дата</Label>
                     <Input
                       className="h-9"
                       value={wishDate}
@@ -861,7 +875,7 @@ function OrderDetailDialog({
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Исполнитель</Label>
+                  <Label className="text-xs font-medium text-muted-foreground">Исполнитель</Label>
                   <div className="flex gap-2">
                     <Input
                       className="h-9 min-w-0"
@@ -881,7 +895,7 @@ function OrderDetailDialog({
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Город и адрес вывоза</Label>
+                  <Label className="text-xs font-medium text-muted-foreground">Город и адрес вывоза</Label>
                   <div className="grid gap-2 sm:grid-cols-[minmax(0,190px)_minmax(0,1fr)]">
                     <Select
                       value={order.city ?? '__none'}
@@ -960,7 +974,7 @@ function OrderDetailDialog({
                     )}
                   </div>
                   {confirmGeo && (
-                    <div className="flex flex-col gap-2 rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-xs text-amber-800 sm:flex-row sm:items-center">
+                    <div className="flex flex-col gap-2 rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 sm:flex-row sm:items-center" role="alert">
                       <span className="min-w-0 flex-1">
                         Точка установлена вручную. Пересчитать координаты по адресу?
                       </span>
@@ -980,20 +994,20 @@ function OrderDetailDialog({
                     </div>
                   )}
                   {order.lat != null ? (
-                    <div className="pt-1 text-[11px] text-muted-foreground">
+                    <div className="pt-1 text-[11px] tabular-nums text-muted-foreground">
                       Координаты: {order.lat.toFixed(5)}, {order.lng?.toFixed(5)}
                       {order.geoSource === 'manual' && ' · указано вручную'}
                       {order.geoSource === 'geocode' && ' · по адресу'}
                     </div>
                   ) : (
-                    <div className="pt-1 text-[11px] text-amber-600">
+                    <div className="pt-1 text-[11px] text-amber-600 dark:text-amber-400">
                       Точка на карте не указана
                     </div>
                   )}
                 </div>
                 {/* MyTKO «Чистая логистика» */}
                 {mytkoEnabled && (
-                  <div className="space-y-1.5 rounded-xl border border-emerald-200/70 bg-emerald-50/40 p-3">
+                  <div className="space-y-1.5 rounded-xl border border-emerald-200/70 bg-emerald-50/40 p-3 dark:border-emerald-500/30 dark:bg-emerald-500/10">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         <Truck className="h-3.5 w-3.5" /> MyTKO · синхронизация
@@ -1028,11 +1042,11 @@ function OrderDetailDialog({
                   </div>
                 )}
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Состав / объём</Label>
+                  <Label className="text-xs font-medium text-muted-foreground">Состав / объём</Label>
                   <div className="break-words text-sm">{order.size || '—'}</div>
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Комментарий оператора</Label>
+                  <Label className="text-xs font-medium text-muted-foreground">Комментарий оператора</Label>
                   <Textarea
                     rows={2}
                     value={comment}
@@ -1172,13 +1186,13 @@ function NewOrderDialog({
         <DialogHeader>
           <DialogTitle>Новая заявка</DialogTitle>
           <DialogDescription>
-            Заявку можно создать вручную — она появится на карте и в списке
+            Заявку можно создать вручную — она появится на карте и в списке. Координаты подставятся автоматически по адресу.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Тип</Label>
+              <Label className="text-xs font-medium text-muted-foreground">Тип</Label>
               <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
                 <SelectTrigger>
                   <SelectValue />
@@ -1191,25 +1205,28 @@ function NewOrderDialog({
               </Select>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Телефон</Label>
+              <Label className="text-xs font-medium text-muted-foreground">Телефон</Label>
               <Input
                 value={form.phone}
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
                 placeholder="+7 900 …"
                 onChange={(e) => setForm({ ...form, phone: e.target.value })}
               />
             </div>
           </div>
           <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Клиент</Label>
+            <Label className="text-xs font-medium text-muted-foreground">Клиент</Label>
             <Input
               value={form.clientName}
               placeholder="Имя клиента"
               onChange={(e) => setForm({ ...form, clientName: e.target.value })}
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Город обслуживания</Label>
+              <Label className="text-xs font-medium text-muted-foreground">Город обслуживания</Label>
               <Select
                 value={form.city}
                 onValueChange={(v) => setForm({ ...form, city: v })}
@@ -1228,7 +1245,7 @@ function NewOrderDialog({
               </Select>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">
+              <Label className="text-xs font-medium text-muted-foreground">
                 {form.city === OTHER_CITY ? 'Название города' : 'Улица и дом'}
               </Label>
               {form.city === OTHER_CITY ? (
@@ -1253,9 +1270,9 @@ function NewOrderDialog({
               )}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Объём / состав</Label>
+              <Label className="text-xs font-medium text-muted-foreground">Объём / состав</Label>
               <Input
                 value={form.size}
                 placeholder="8 м³, диван…"
@@ -1263,7 +1280,7 @@ function NewOrderDialog({
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Дата подачи</Label>
+              <Label className="text-xs font-medium text-muted-foreground">Дата подачи</Label>
               <Input
                 value={form.wishDate}
                 placeholder="завтра до 12:00"
@@ -1272,19 +1289,27 @@ function NewOrderDialog({
             </div>
           </div>
           <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Комментарий</Label>
+            <Label className="text-xs font-medium text-muted-foreground">Комментарий</Label>
             <Textarea
               rows={2}
               value={form.comment}
               onChange={(e) => setForm({ ...form, comment: e.target.value })}
             />
           </div>
-          <div className="flex justify-end gap-2 pt-1">
-            <Button variant="outline" onClick={onClose}>
+          <div className="flex justify-end gap-2 border-t pt-3">
+            <Button variant="outline" onClick={onClose} disabled={saving}>
               Отмена
             </Button>
             <Button onClick={submit} disabled={saving}>
-              {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />} Создать
+              {saving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Создаю…
+                </>
+              ) : (
+                <>
+                  <Plus className="h-4 w-4" aria-hidden /> Создать заявку
+                </>
+              )}
             </Button>
           </div>
         </div>
@@ -1307,9 +1332,10 @@ function OrderRow({
   return (
     <button
       onClick={() => onOpen(order.id)}
+      aria-label={`Открыть заявку №${order.number} — ${order.address || order.clientName || 'без адреса'}`}
       className={cn(
-        'flex w-full flex-col gap-1.5 rounded-xl border bg-card p-3 text-left transition-colors hover:bg-muted/60',
-        order.status === 'new' && 'border-amber-300/70'
+        'flex w-full flex-col gap-1.5 rounded-xl border bg-card p-3 text-left shadow-sm transition-[box-shadow,background-color] hover:bg-muted/60 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+        order.status === 'new' && 'border-amber-300/70 dark:border-amber-500/40'
       )}
     >
       <div className="flex w-full items-center gap-2">
@@ -1338,12 +1364,12 @@ function OrderRow({
         {order.size && <span>{order.size}</span>}
         {order.wishDate && <span>🗓 {order.wishDate}</span>}
         {order.lat != null ? (
-          <span className="flex items-center gap-0.5 text-emerald-600">
-            <MapPin className="h-3 w-3" /> на карте
+          <span className="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400">
+            <MapPin className="h-3 w-3" aria-hidden /> на карте
           </span>
         ) : (
-          <span className="flex items-center gap-0.5 text-amber-600">
-            <MapPin className="h-3 w-3" /> точка не указана
+          <span className="flex items-center gap-0.5 text-amber-600 dark:text-amber-400">
+            <MapPin className="h-3 w-3" aria-hidden /> точка не указана
           </span>
         )}
         {typeof order.messagesCount === 'number' && order.messagesCount > 0 && (
@@ -1351,7 +1377,7 @@ function OrderRow({
             <MessageSquare className="h-3 w-3" /> {order.messagesCount}
           </span>
         )}
-        <span className="ml-auto">{fmtDate(order.createdAt)}</span>
+        <span className="ml-auto tabular-nums">{fmtDate(order.createdAt)}</span>
       </div>
     </button>
   );
@@ -1496,26 +1522,26 @@ export default function OrdersView({
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Хедер */}
       <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2.5 sm:px-4 sm:py-3">
-        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onBack} aria-label="Назад">
+        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onBack} aria-label="Назад к дашборду">
           <ChevronLeft className="h-4 w-4" />
         </Button>
-        <MapPin className="h-5 w-5 shrink-0 text-primary" />
-        <h1 className="shrink-0 text-lg font-bold">Заявки</h1>
+        <MapPin className="h-5 w-5 shrink-0 text-primary" aria-hidden />
+        <h1 className="shrink-0 text-lg font-bold tracking-tight sm:text-xl">Заявки</h1>
         <Badge variant="secondary" className="max-w-[130px] truncate sm:max-w-[180px]">
           {bot.name}
         </Badge>
         {newCount > 0 && (
-          <Badge variant="destructive" className="animate-pulse">
+          <Badge variant="destructive" className="tabular-nums animate-pulse" aria-label={`Новых заявок: ${newCount}`}>
             новых: {newCount}
           </Badge>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8" onClick={load}>
+          <Button variant="outline" size="sm" className="h-8" onClick={load} aria-label="Обновить список заявок">
             <RefreshCw className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Обновить</span>
           </Button>
           <Button size="sm" className="h-8" onClick={() => setNewOpen(true)}>
-            <Plus className="h-4 w-4" /> Заявка
+            <Plus className="h-4 w-4" aria-hidden /> <span className="hidden sm:inline">Новая</span> Заявка
           </Button>
         </div>
       </div>
@@ -1528,11 +1554,11 @@ export default function OrdersView({
               <MapPin className="mr-1 h-3.5 w-3.5" /> Карта
             </TabsTrigger>
             <TabsTrigger value="active" className="text-xs">
-              Активные <span className="ml-1 text-muted-foreground">{active.length}</span>
+              Активные <span className="ml-1 tabular-nums text-muted-foreground">{active.length}</span>
             </TabsTrigger>
             <TabsTrigger value="archive" className="text-xs">
               <Archive className="mr-1 hidden h-3.5 w-3.5 sm:inline" /> Архив{' '}
-              <span className="ml-1 text-muted-foreground">{archive.length}</span>
+              <span className="ml-1 tabular-nums text-muted-foreground">{archive.length}</span>
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -1561,6 +1587,8 @@ export default function OrdersView({
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="h-9 pl-8"
+            type="search"
+            aria-label="Поиск заявок по номеру, адресу, клиенту или телефону"
             placeholder="№, адрес, клиент, телефон…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -1596,9 +1624,10 @@ export default function OrdersView({
                     <button
                       key={o.id}
                       onClick={() => placeRequest(o.id)}
-                      className="rounded-full border px-2.5 py-1 text-xs transition-colors hover:bg-muted"
+                      className="rounded-full border px-2.5 py-1.5 text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                      aria-label={`Указать точку заявки №${o.number} на карте`}
                     >
-                      <Crosshair className="mr-1 inline h-3 w-3" />№{o.number} ·{' '}
+                      <Crosshair className="mr-1 inline h-3 w-3" aria-hidden />№{o.number} ·{' '}
                       {o.address?.slice(0, 30) ?? 'без адреса'}
                     </button>
                   ))}
@@ -1611,17 +1640,29 @@ export default function OrdersView({
         {tab !== 'map' && (
           <div className="h-full overflow-y-auto pr-1">
             {loading ? (
-              <div className="flex items-center gap-2 p-6 text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> Загрузка…
+              <div className="grid grid-cols-1 gap-2 p-1 lg:grid-cols-2" role="status" aria-label="Загрузка заявок">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <Skeleton key={i} className="h-[68px] rounded-xl" />
+                ))}
               </div>
             ) : filtered(tab === 'active' ? active : archive).length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-muted-foreground">
-                {tab === 'active' ? <MapPin className="h-10 w-10 opacity-30" /> : <Archive className="h-10 w-10 opacity-30" />}
-                <p className="text-sm">
+                <div
+                  className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+                  aria-hidden
+                >
+                  {tab === 'active' ? <MapPin className="h-7 w-7" /> : <Archive className="h-7 w-7" />}
+                </div>
+                <p className="max-w-sm text-sm">
                   {tab === 'active'
-                    ? 'Активных заявок нет. Клиенты оформляют заявки в боте — или создайте вручную.'
+                    ? 'Активных заявок нет. Клиенты оформляют заявки в боте — или создайте первую вручную.'
                     : 'Архив пуст: выполненные и отменённые заявки появятся здесь.'}
                 </p>
+                {tab === 'active' && (
+                  <Button size="sm" onClick={() => setNewOpen(true)}>
+                    <Plus className="h-4 w-4" aria-hidden /> Создать заявку
+                  </Button>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">

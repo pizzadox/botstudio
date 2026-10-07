@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
@@ -224,31 +225,51 @@ export default function AiAssistantView({
 
   if (!loaded) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <div
+        className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4 sm:p-6 lg:p-8"
+        role="status"
+        aria-label="Загрузка настроек ассистента"
+      >
+        <div className="flex items-center gap-3">
+          <Skeleton className="h-8 w-8 rounded-lg" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-7 w-56" />
+            <Skeleton className="h-4 w-80 max-w-full" />
+          </div>
+        </div>
+        <div className="grid gap-6 xl:grid-cols-5">
+          <div className="space-y-6 xl:col-span-3">
+            <Skeleton className="h-64 rounded-xl" />
+            <Skeleton className="h-72 rounded-xl" />
+          </div>
+          <Skeleton className="h-[480px] rounded-xl xl:col-span-2" />
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto space-y-6 p-4 sm:p-6 lg:p-8">
+    <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4 sm:p-6 lg:p-8">
       {/* Заголовок */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          <div>
+          <div className="min-w-0">
             <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-              <Sparkles className="h-6 w-6 text-primary" /> ИИ-ассистент
+              <Sparkles className="h-6 w-6 shrink-0 text-primary" aria-hidden /> ИИ-ассистент
             </h1>
-            <p className="text-sm text-muted-foreground">
+            <p className="truncate text-sm text-muted-foreground">
               Нейросеть отвечает на свободные вопросы клиентов бота «{bot.name}»
             </p>
           </div>
         </div>
         {bot.status !== 'published' && (
-          <Badge variant="outline" className="text-amber-600 border-amber-300">
+          <Badge
+            variant="outline"
+            className="border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300"
+          >
             Бот не опубликован — ассистент работает только в тестах
           </Badge>
         )}
@@ -260,8 +281,8 @@ export default function AiAssistantView({
           {/* Настройки */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <BrainCircuit className="h-5 w-5 text-primary" /> Настройки ассистента
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <BrainCircuit className="h-5 w-5 shrink-0 text-primary" aria-hidden /> Настройки ассистента
               </CardTitle>
               <CardDescription>
                 Когда сценарию нечего ответить (свободный текст вместо кнопки, вопрос вне сценария),
@@ -269,8 +290,8 @@ export default function AiAssistantView({
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex items-center justify-between rounded-lg border p-3">
-                <div>
+              <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                <div className="min-w-0">
                   <Label htmlFor="ai-enabled" className="text-sm font-medium">
                     Включить ИИ-ассистента
                   </Label>
@@ -296,7 +317,7 @@ export default function AiAssistantView({
                       value={cfg.prompt}
                       onChange={(e) => setCfg((c) => ({ ...c, prompt: e.target.value }))}
                     />
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-[11px] text-muted-foreground">
                         Инструкция для нейросети: кто вы, как отвечать, чего избегать.
                       </p>
@@ -311,8 +332,8 @@ export default function AiAssistantView({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <div>
+                  <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                    <div className="min-w-0">
                       <Label htmlFor="ai-reask" className="text-sm font-medium">
                         Показывать меню после ответа
                       </Label>
@@ -336,12 +357,16 @@ export default function AiAssistantView({
                 </>
               )}
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <Button onClick={saveCfg} disabled={savingCfg || !dirty}>
                   {savingCfg ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                   Сохранить настройки
                 </Button>
-                {dirty && <span className="text-xs text-amber-600">Есть несохранённые изменения</span>}
+                {dirty && (
+                  <span className="text-xs text-amber-600 dark:text-amber-400">
+                    Есть несохранённые изменения
+                  </span>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -350,9 +375,9 @@ export default function AiAssistantView({
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between gap-2">
-                <div>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <BookOpen className="h-5 w-5 text-primary" /> База знаний
+                <div className="min-w-0">
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <BookOpen className="h-5 w-5 shrink-0 text-primary" aria-hidden /> База знаний
                   </CardTitle>
                   <CardDescription>
                     Факты о компании: графики, цены, доставка, возвраты, контакты…
@@ -370,15 +395,31 @@ export default function AiAssistantView({
             </CardHeader>
             <CardContent className="space-y-3">
               {knowledge.length === 0 && !editing && (
-                <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                  Записей пока нет. Добавьте ответы на частые вопросы — ассистент будет опираться
-                  на них при ответах.
+                <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed p-6 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                    <BookOpen className="h-6 w-6" aria-hidden />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Записей пока нет</p>
+                    <p className="mt-1 max-w-[320px] text-sm text-muted-foreground">
+                      Добавьте ответы на частые вопросы — ассистент будет опираться на них при
+                      ответах.
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={kbBusy}
+                    onClick={() => setEditing({ id: null, title: '', content: '' })}
+                  >
+                    <Plus className="h-4 w-4" /> Добавить запись
+                  </Button>
                 </div>
               )}
 
               {editing && (
-                <div className="space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
-                  <div className="flex items-center justify-between">
+                <div className="space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-4">
+                  <div className="flex items-center justify-between gap-2">
                     <Label className="text-sm font-medium">
                       {editing.id ? 'Изменить запись' : 'Новая запись'}
                     </Label>
@@ -387,19 +428,21 @@ export default function AiAssistantView({
                       size="icon"
                       className="h-7 w-7"
                       onClick={() => setEditing(null)}
-                      aria-label="Отменить"
+                      aria-label="Отменить редактирование"
                     >
                       <X className="h-4 w-4" />
                     </Button>
                   </div>
                   <Input
                     placeholder="Заголовок: например «График работы»"
+                    aria-label="Заголовок записи"
                     value={editing.title}
                     onChange={(e) => setEditing({ ...editing, title: e.target.value })}
                   />
                   <Textarea
                     rows={4}
                     placeholder="Содержимое: пн–пт с 9:00 до 18:00 МСК…"
+                    aria-label="Содержимое записи"
                     value={editing.content}
                     onChange={(e) => setEditing({ ...editing, content: e.target.value })}
                   />
@@ -416,28 +459,33 @@ export default function AiAssistantView({
               )}
 
               {knowledge.length > 0 && (
-                <div className="max-h-96 space-y-2 overflow-y-auto pr-1">
-                  {knowledge.map((k) => (
-                    <div
-                      key={k.id}
-                      className={cn(
-                        'group rounded-lg border p-3 transition-colors',
-                        editing?.id === k.id && 'hidden'
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-2">
+                <div
+                  className="max-h-96 overflow-y-auto rounded-lg border"
+                  role="list"
+                  aria-label="Записи базы знаний"
+                >
+                  <div className="divide-y">
+                    {knowledge.map((k) => (
+                      <div
+                        key={k.id}
+                        role="listitem"
+                        className={cn(
+                          'group flex items-start justify-between gap-2 p-3',
+                          editing?.id === k.id && 'hidden'
+                        )}
+                      >
                         <div className="min-w-0">
                           <div className="truncate text-sm font-medium">{k.title}</div>
                           <p className="mt-0.5 line-clamp-2 whitespace-pre-line text-xs text-muted-foreground">
                             {k.content}
                           </p>
                         </div>
-                        <div className="flex shrink-0 gap-1 opacity-70 transition-opacity group-hover:opacity-100">
+                        <div className="flex shrink-0 gap-1 opacity-70 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                           <Button
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8"
-                            aria-label="Изменить"
+                            aria-label={`Изменить запись «${k.title}»`}
                             onClick={() =>
                               setEditing({ id: k.id, title: k.title, content: k.content })
                             }
@@ -448,15 +496,15 @@ export default function AiAssistantView({
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                            aria-label="Удалить"
+                            aria-label={`Удалить запись «${k.title}»`}
                             onClick={() => deleteItem(k.id)}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -467,9 +515,9 @@ export default function AiAssistantView({
         <Card className="xl:col-span-2">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
-              <div>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Bot className="h-5 w-5 text-primary" /> Проверить ассистента
+              <div className="min-w-0">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Bot className="h-5 w-5 shrink-0 text-primary" aria-hidden /> Проверить ассистента
                 </CardTitle>
                 <CardDescription>
                   {cfg.enabled
@@ -485,12 +533,21 @@ export default function AiAssistantView({
           <CardContent className="space-y-3">
             <div
               ref={scrollRef}
-              className="h-80 space-y-2.5 overflow-y-auto rounded-lg border bg-muted/40 p-3"
+              aria-live="polite"
+              aria-label="История сообщений тестового чата"
+              className="h-80 min-h-0 space-y-2 overflow-y-auto rounded-lg border bg-muted/40 p-3"
             >
               {chat.length === 0 && (
-                <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-muted-foreground">
-                  <Sparkles className="h-6 w-6 opacity-40" />
-                  <span>Напишите вопрос, как это сделает клиент</span>
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                    <Sparkles className="h-6 w-6" aria-hidden />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Начните диалог</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Напишите вопрос, как это сделает клиент
+                    </p>
+                  </div>
                   {cfg.enabled && kbSuggestions.length > 0 && (
                     <div className="flex max-w-[90%] flex-wrap justify-center gap-1.5">
                       {kbSuggestions.map((s) => (
@@ -498,7 +555,7 @@ export default function AiAssistantView({
                           key={s}
                           onClick={() => send(s)}
                           disabled={sending}
-                          className="max-w-full truncate rounded-full border border-primary/30 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
+                          className="max-w-full truncate rounded-full border border-primary/30 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
                         >
                           {s}
                         </button>
@@ -510,14 +567,14 @@ export default function AiAssistantView({
               {chat.map((m) => (
                 <div
                   key={m.id}
-                  className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}
+                  className={cn('flex min-w-0', m.role === 'user' ? 'justify-end' : 'justify-start')}
                 >
                   <div
                     className={cn(
-                      'max-w-[85%] whitespace-pre-line rounded-2xl px-3.5 py-2 text-sm',
+                      'max-w-[85%] whitespace-pre-line rounded-2xl px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
                       m.role === 'user'
-                        ? 'rounded-br-sm bg-primary text-primary-foreground'
-                        : 'rounded-bl-sm border bg-background'
+                        ? 'rounded-br-md bg-primary text-primary-foreground'
+                        : 'rounded-bl-md bg-muted'
                     )}
                   >
                     {m.text}
@@ -535,7 +592,7 @@ export default function AiAssistantView({
                         key={b.id}
                         onClick={() => send(b.text)}
                         disabled={sending}
-                        className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
+                        className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
                       >
                         {b.text}
                       </button>
@@ -545,7 +602,7 @@ export default function AiAssistantView({
               })()}
               {sending && (
                 <div className="flex justify-start">
-                  <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm border bg-background px-3.5 py-2">
+                  <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-md bg-muted px-3.5 py-2">
                     <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                     <span className="text-xs text-muted-foreground">ИИ печатает…</span>
                   </div>
@@ -554,7 +611,7 @@ export default function AiAssistantView({
             </div>
 
             {handedOff && (
-              <div className="flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 p-2.5 text-xs text-rose-700">
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 p-2.5 text-xs text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
                 <span>Диалог передан оператору</span>
                 <div className="flex gap-1.5">
                   {onOpenInbox && (
@@ -581,6 +638,7 @@ export default function AiAssistantView({
                 onChange={(e) => setInput(e.target.value)}
                 placeholder={cfg.enabled ? 'Ваш вопрос…' : 'Ассистент выключен — сценарий будет отвечать по сценарию'}
                 disabled={sending}
+                aria-label="Ваш вопрос ассистенту"
               />
               <Button type="submit" size="icon" disabled={sending || !input.trim()} aria-label="Отправить">
                 {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
