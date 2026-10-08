@@ -11,6 +11,7 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
+  Code,
   Copy,
   Database,
   Eye,
@@ -24,6 +25,7 @@ import {
   Plug,
   Plus,
   Send,
+  Timer,
   Trash2,
   Truck,
   Zap,
@@ -70,6 +72,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
@@ -128,6 +131,8 @@ export default function ChannelsView({
   // IMP-FE21-09: id канала, для которого идёт проверка — повторный клик невозможен
   const [testBusyId, setTestBusyId] = useState<string | null>(null);
   const [demoChannel, setDemoChannel] = useState<ChannelItem | null>(null);
+  // IMP-FE22-17: диалог с iframe-сниппетом публичного виджета /w/<secret>
+  const [codeChannel, setCodeChannel] = useState<ChannelItem | null>(null);
   const [origin, setOrigin] = useState('');
   // Подтверждение удаления (AlertDialog): state-target + open={!!target}
   const [deleteTarget, setDeleteTarget] = useState<ChannelItem | null>(null);
@@ -217,6 +222,11 @@ export default function ChannelsView({
   // сборка из secret — фолбэк на случай, если BE ещё не выкатил поле
   const webhookUrl = (ch: ChannelItem) =>
     ch.webhookUrl ?? `${origin}/api/webhook/${ch.type}/${ch.secret}`;
+
+  // IMP-FE22-17: сниппет с публичной страницей-виджетом (src/app/w/[secret]/route.ts).
+  // position:fixed внутри iframe — это viewport самого iframe, кнопка ляжет в угол сайта.
+  const embedSnippet = (ch: ChannelItem) =>
+    `<iframe src="${origin}/w/${ch.secret}" style="position:fixed;right:16px;bottom:16px;width:400px;max-width:calc(100vw - 32px);height:560px;max-height:calc(100dvh - 32px);border:0;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.25);z-index:2147483000" title="Чат поддержки"></iframe>`;
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto space-y-6 p-4 sm:p-6 lg:p-8">
@@ -341,9 +351,14 @@ export default function ChannelsView({
                     </div>
                   )}
                   {ch.type === 'web' && (
-                    <Button variant="outline" className="w-full" onClick={() => setDemoChannel(ch)}>
-                      <Bot className="h-4 w-4" /> Открыть демо-чат
-                    </Button>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button variant="outline" onClick={() => setDemoChannel(ch)}>
+                        <Bot className="h-4 w-4" /> Демо-чат
+                      </Button>
+                      <Button variant="outline" onClick={() => setCodeChannel(ch)}>
+                        <Code className="h-4 w-4" /> Код для сайта
+                      </Button>
+                    </div>
                   )}
                   {ch.lastStatus && (
                     <div role="status" aria-live="polite" className="min-w-0">
@@ -528,6 +543,34 @@ export default function ChannelsView({
         </DialogContent>
       </Dialog>
 
+      {/* Код для сайта (IMP-FE22-17): readOnly-сниппет + копирование */}
+      <Dialog open={!!codeChannel} onOpenChange={(o) => !o && setCodeChannel(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Код для сайта</DialogTitle>
+            <DialogDescription>
+              Вставьте этот код на страницы сайта — в углу появится кнопка чата.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            readOnly
+            rows={5}
+            value={codeChannel ? embedSnippet(codeChannel) : ''}
+            onFocus={(e) => e.currentTarget.select()}
+            aria-label="Код для вставки на сайт"
+            className="font-mono text-[11px] leading-relaxed text-muted-foreground"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCodeChannel(null)}>
+              Закрыть
+            </Button>
+            <Button onClick={() => codeChannel && copy(embedSnippet(codeChannel))}>
+              <Copy className="h-4 w-4" /> Копировать
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Подтверждение удаления канала — безвозвратно */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogContent>
@@ -565,24 +608,37 @@ function DemoChat({ secret }: { secret: string }) {
   >([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  // IMP-FE22-14: «Бот печатает…» — пузырь с тремя точками; гаснет на ответе/ошибке
+  const [typing, setTyping] = useState(false);
+  // IMP-FE22-16: скелетон пузырей, пока восстанавливается диалог (вместо пустого состояния)
+  const [booting, setBooting] = useState(true);
+  // IMP-FE22-15: системная строка (429 и т.п.) + кулдаун ввода с отсчётом
+  const [notice, setNotice] = useState<string | null>(null);
+  const [cooldown, setCooldown] = useState(0);
+  // IMP-FE22-18: статус публикации в шапке — «по факту» ответа движка
+  const [pubState, setPubState] = useState<'unknown' | 'published' | 'unpublished'>('unknown');
   const convRef = useRef<string | null>(null);
   const visitorRef = useRef<string>('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const storageKey = `botstudio_demo_conv_${secret}`;
-  const visitorKey = 'botstudio_visitor';
+  // IMP-FE22-17: тот же ключ visitorId, что у публичного виджета /w/<secret>;
+  // прежний botstudio_visitor читается для преемственности (миграция)
+  const visitorKey = 'bstudio.visitorId';
 
   // Стабильный id посетителя: один гость = одно обращение,
   // даже если conversationId был потерян
   useEffect(() => {
     try {
-      let v = window.localStorage.getItem(visitorKey);
+      let v =
+        window.localStorage.getItem(visitorKey) ??
+        window.localStorage.getItem('botstudio_visitor');
       if (!v) {
         v =
           typeof crypto !== 'undefined' && 'randomUUID' in crypto
             ? crypto.randomUUID().replace(/-/g, '')
             : Math.random().toString(36).slice(2) + Date.now().toString(36);
-        window.localStorage.setItem(visitorKey, v);
       }
+      window.localStorage.setItem(visitorKey, v);
       visitorRef.current = v;
     } catch {
       visitorRef.current = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -604,12 +660,29 @@ function DemoChat({ secret }: { secret: string }) {
         if (!cancelled && d.messages?.length) setMessages(d.messages);
       } catch {
         /* диалог не восстановился — начнётся новый при отправке */
+      } finally {
+        if (!cancelled) setBooting(false);
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [secret, storageKey]);
+
+  // IMP-FE22-14: рост списка сообщений (ответ поллингом или POST) гасит «печатает»
+  const prevCountRef = useRef(0);
+  useEffect(() => {
+    if (messages.length > prevCountRef.current) setTyping(false);
+    prevCountRef.current = messages.length;
+  }, [messages]);
+
+  // IMP-FE22-15: обратный отсчёт кулдауна; интервал живёт, только пока активен
+  const cooldownActive = cooldown > 0;
+  useEffect(() => {
+    if (!cooldownActive) return;
+    const t = setInterval(() => setCooldown((s) => (s <= 1 ? 0 : s - 1)), 1000);
+    return () => clearInterval(t);
+  }, [cooldownActive]);
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -633,15 +706,39 @@ function DemoChat({ secret }: { secret: string }) {
     }
   }, [secret]);
 
+  // IMP-FE22-18: поллинг на паузе, пока вкладка скрыта (паттерн startTimer/stopTimer волны 20)
   useEffect(() => {
-    const t = setInterval(poll, 4000);
-    return () => clearInterval(t);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const stopTimer = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const startTimer = () => {
+      if (timer === null) timer = setInterval(() => void poll(), 4000);
+    };
+    const onVisibility = () => {
+      if (document.hidden) stopTimer();
+      else {
+        void poll();
+        startTimer();
+      }
+    };
+    startTimer();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stopTimer();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [poll]);
 
   const send = async (text: string) => {
     const t = text.trim();
-    if (!t || sending) return;
+    if (!t || sending || cooldown > 0) return;
     setSending(true);
+    setTyping(true);
+    setNotice(null);
     setInput('');
     setMessages((prev) => [...prev, { id: `local-${Date.now()}`, role: 'user', text: t }]);
     scrollToBottom();
@@ -660,21 +757,45 @@ function DemoChat({ secret }: { secret: string }) {
         /* ignore */
       }
       setMessages(d.messages);
+      // IMP-FE22-18: движок ответил — бот действительно опубликован
+      setPubState('published');
       scrollToBottom();
     } catch (e) {
-      // IMP-FE21-23: сбой виден в чате системным сообщением, а не теряется молча
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `err-${Date.now()}`,
-          role: 'bot',
-          text: `Не удалось отправить${e instanceof Error && e.message ? `: ${e.message}` : ''}`,
-        },
-      ]);
+      // IMP-FE22-15: статус приходит аддитивным полем от api() (FE22-15а)
+      const status = (e as { status?: number }).status;
+      const msg = e instanceof Error ? e.message : '';
+      if (status === 409 && /публик|publish/i.test(msg)) {
+        // IMP-FE22-18: бот не опубликован — шапка меняется на «Не опубликован»
+        setPubState('unpublished');
+      }
+      if (status === 429) {
+        // IMP-FE22-15: системная строка (не пузырь бота) + блокировка ввода на 60с
+        setNotice(msg || 'Слишком часто, подождите минуту');
+        setCooldown(60);
+      } else {
+        // IMP-FE21-23: сбой виден в чате системным сообщением, а не теряется молча
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `err-${Date.now()}`,
+            role: 'bot',
+            text: `Не удалось отправить${msg ? `: ${msg}` : ''}`,
+          },
+        ]);
+      }
     } finally {
       setSending(false);
+      setTyping(false);
     }
   };
+
+  // IMP-FE22-18: статус в шапке — по факту (unknown → «Онлайн», как раньше)
+  const statusMeta =
+    pubState === 'unpublished'
+      ? { label: 'Не опубликован', dot: 'bg-amber-300' }
+      : pubState === 'published'
+        ? { label: 'Опубликован', dot: 'bg-emerald-300' }
+        : { label: 'Онлайн', dot: 'bg-emerald-300' };
 
   return (
     <div className="flex flex-col">
@@ -685,26 +806,50 @@ function DemoChat({ secret }: { secret: string }) {
         <div className="flex-1">
           <div className="text-sm font-semibold leading-tight">Чат поддержки</div>
           <div className="flex items-center gap-1 text-xs text-white/80">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" /> онлайн
+            <span className={cn('h-1.5 w-1.5 rounded-full', statusMeta.dot)} aria-hidden="true" />
+            {statusMeta.label}
           </div>
         </div>
         <Badge variant="secondary" className="text-[10px]">
           демо сайта
         </Badge>
       </div>
-      <div ref={scrollRef} className="h-80 space-y-2.5 overflow-y-auto bg-muted/40 p-3">
-        {messages.length === 0 && (
-          <div className="flex h-full items-center justify-center text-center text-sm text-muted-foreground">
-            Напишите сообщение — бот ответит
-            <br />
-            как в настоящем виджете на сайте
+      {/* IMP-FE22-18: aria-live на список сообщений — новые пузыри озвучиваются */}
+      <div
+        ref={scrollRef}
+        aria-live="polite"
+        className="h-80 space-y-2.5 overflow-y-auto bg-muted/40 p-3"
+      >
+        {booting ? (
+          // IMP-FE22-16: скелетон, пока восстанавливается диалог
+          <div className="space-y-2.5" role="status">
+            <p className="sr-only">Загрузка диалога…</p>
+            <div className="flex justify-start">
+              <Skeleton className="h-10 w-3/5 rounded-2xl rounded-bl-md" />
+            </div>
+            <div className="flex justify-end">
+              <Skeleton className="h-10 w-2/5 rounded-2xl rounded-br-md" />
+            </div>
+            <div className="flex justify-start">
+              <Skeleton className="h-10 w-1/2 rounded-2xl rounded-bl-md" />
+            </div>
           </div>
+        ) : (
+          messages.length === 0 && (
+            // IMP-FE22-16: приветствие новому посетителю — локальный пузырь,
+            // в messages не пишется и на сервере не сохраняется
+            <div className="flex justify-start">
+              <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-bl-md border bg-card px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]">
+                Здравствуйте! Напишите ваш вопрос — бот ответит.
+              </div>
+            </div>
+          )
         )}
         {messages.map((m) => (
           <div key={m.id} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
             <div
               className={cn(
-                'max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm leading-snug',
+                'max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm leading-snug [overflow-wrap:anywhere]',
                 m.role === 'user'
                   ? 'rounded-br-md bg-primary text-primary-foreground'
                   : 'rounded-bl-md border bg-card'
@@ -714,6 +859,35 @@ function DemoChat({ secret }: { secret: string }) {
             </div>
           </div>
         ))}
+        {typing && (
+          // IMP-FE22-14: «Бот печатает…» — три прыгающие точки, текст для скринридера
+          <div className="flex justify-start">
+            <div
+              aria-hidden="true"
+              className="rounded-2xl rounded-bl-md border bg-card px-3.5 py-3"
+            >
+              <span className="flex items-center gap-1">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />
+              </span>
+            </div>
+            <span className="sr-only">Бот печатает</span>
+          </div>
+        )}
+        {notice && (
+          // IMP-FE22-15: системная строка об ограничении — НЕ пузырь бота
+          <div
+            role="status"
+            className="flex items-center justify-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400"
+          >
+            <Timer className="h-3 w-3 shrink-0" aria-hidden="true" />
+            <span>
+              {notice}
+              {cooldown > 0 ? ` · подождите ${cooldown}с` : ''}
+            </span>
+          </div>
+        )}
         {(() => {
           const lastButtons = [...messages].reverse().find((m) => m.role === 'bot' && m.buttons?.length)?.buttons;
           if (!lastButtons?.length) return null;
@@ -723,8 +897,8 @@ function DemoChat({ secret }: { secret: string }) {
                 <button
                   key={b.id}
                   onClick={() => send(b.text)}
-                  disabled={sending}
-                  className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
+                  disabled={sending || cooldown > 0}
+                  className="inline-flex min-h-11 items-center rounded-full border border-primary/40 bg-primary/5 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
                 >
                   {b.text}
                 </button>
@@ -742,11 +916,18 @@ function DemoChat({ secret }: { secret: string }) {
       >
         <Input
           aria-label="Сообщение"
-          placeholder="Сообщение…"
+          placeholder={cooldown > 0 ? `Подождите ${cooldown}с…` : 'Сообщение…'}
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          disabled={cooldown > 0}
         />
-        <Button type="submit" size="icon" className="h-10 w-10 shrink-0" disabled={sending || !input.trim()}>
+        <Button
+          type="submit"
+          size="icon"
+          className="h-10 w-10 shrink-0"
+          disabled={sending || cooldown > 0 || !input.trim()}
+          aria-label={cooldown > 0 ? `Подождите ${cooldown}с` : 'Отправить'}
+        >
           {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </Button>
       </form>

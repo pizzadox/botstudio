@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { createSession, SESSION_COOKIE, sessionCookieOptions, verifyPassword } from '@/lib/auth';
 import { clientIp, rateLimit } from '@/lib/rate-limit';
+import { inc } from '@/lib/metrics';
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,6 +12,7 @@ export async function POST(req: NextRequest) {
 
     // IMP-BE21-04: брутфорс-защита — не больше 5 попыток на ip+логин за 15 минут
     if (!rateLimit(`login:${clientIp(req)}:${username}`, 5, 15 * 60_000)) {
+      inc('rateLimited');
       return NextResponse.json(
         { error: 'Слишком много попыток, попробуйте позже' },
         { status: 429 }

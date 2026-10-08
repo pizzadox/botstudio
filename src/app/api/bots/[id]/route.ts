@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { maskToken, webhookUrlFor } from '@/lib/mask';
+import { normalizeFlow } from '@/lib/flow-validate';
 import type { Bot, Channel } from '@prisma/client';
 
 type Params = { params: Promise<{ id: string }> };
@@ -105,15 +106,13 @@ export async function PUT(req: NextRequest, { params }: Params) {
     if (typeof body.status === 'string' && ['draft', 'published'].includes(body.status)) {
       data.status = body.status;
     }
+    // IMP-BE22-21: валидация/нормализация сценария перед сохранением.
+    // normalizeFlow принимает объект {nodes,edges} (или JSON-строку) и возвращает
+    // либо нормализованную строку JSON, либо ошибку для 400.
     if (body.flow !== undefined) {
-      if (typeof body.flow !== 'object' || body.flow === null) {
-        return NextResponse.json({ error: 'Некорректный формат сценария' }, { status: 400 });
-      }
-      const f = body.flow as { nodes?: unknown; edges?: unknown };
-      if (!Array.isArray(f.nodes) || !Array.isArray(f.edges)) {
-        return NextResponse.json({ error: 'Некорректный формат сценария' }, { status: 400 });
-      }
-      data.flow = JSON.stringify(f);
+      const v = normalizeFlow(body.flow);
+      if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
+      data.flow = v.flow;
     }
 
     const updated = await db.bot.update({ where: { id: bot.id }, data });

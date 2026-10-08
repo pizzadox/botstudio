@@ -12,6 +12,9 @@
 const PRIMARY_BASE = process.env.MAX_API_BASE ?? 'https://botapi.max.ru';
 const FALLBACK_BASES = ['https://platform-api.max.ru', 'https://platform-api2.max.ru'];
 
+/** Пауза между чанками одного сообщения (лимит MAX ~2 сообщения/сек на диалог) */
+const CHUNK_DELAY_MS = 650;
+
 export interface MaxUser {
   user_id?: number;
   name?: string;
@@ -118,29 +121,73 @@ function keyboardAttachment(buttons?: MaxButton[]): unknown[] | undefined {
 }
 
 /**
+ * BE22-03: разбить длинный текст на чанки ≤ limit символов.
+ * Резать стараемся по границам абзацев (\n\n), затем строк (\n),
+ * и только в крайнем случае — жёстко. Кнопки (клавиатура) прикладываются
+ * вызывающим кодом к ПОСЛЕДНЕМУ чанку.
+ */
+export function splitTextChunks(text: string, limit: number): string[] {
+  if (text.length <= limit) return [text];
+  const chunks: string[] = [];
+  let rest = text;
+  const softLimit = Math.floor(limit * 0.3); // граница не «съедает» начало чанка
+  while (rest.length > limit) {
+    let cut = rest.lastIndexOf('\n\n', limit - 1);
+    if (cut < softLimit) cut = rest.lastIndexOf('\n', limit - 1);
+    if (cut < softLimit) cut = limit; // жёсткий разрез — гарантия прогресса
+    const piece = rest.slice(0, cut).trim();
+    if (piece) chunks.push(piece);
+    rest = rest.slice(cut).trim();
+  }
+  if (rest || chunks.length === 0) chunks.push(rest);
+  return chunks;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
  * POST /messages — отправить сообщение в чат/диалог.
  * Если переданы кнопки — добавляет inline_keyboard (callback-кнопки,
  * payload = текст кнопки, по нему движок матчит выбор пользователя).
+ *
+ * BE22-03: текст длиннее 3900 символов отправляется несколькими сообщениями
+ * (границы абзацев/строк, чанки ≤ 3900); клавиатура — только у последнего
+ * чанка. Последовательная отправка с паузой — лимит MAX ~2 сообщения/сек.
  */
 export async function maxSendMessage(
   token: string,
   chatId: string,
   text: string,
   buttons?: MaxButton[]
-): Promise<{ ok: boolean; error?: string }> {
-  const body: Record<string, unknown> = { text };
+): Promise<{ ok: boolean; status?: number; error?: string }> {
   const attachments = keyboardAttachment(buttons);
-  if (attachments) body.attachments = attachments;
+  const chunks = splitTextChunks(text, 3900);
 
-  const res = await apiFetch(`/messages?chat_id=${encodeURIComponent(chatId)}`, token, {
-    method: 'POST',
-    body,
-    timeoutMs: 10000,
-  });
-  if (res.ok) return { ok: true };
-  if (res.status === 401 || res.status === 403) return { ok: false, error: 'неверный или отозванный токен' };
-  const msg = (res.json as { message?: string } | null)?.message;
-  return { ok: false, error: msg ?? `MAX не принял сообщение (HTTP ${res.status})` };
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const body: Record<string, unknown> = { text: chunks[i] };
+    if (isLast && attachments) body.attachments = attachments;
+
+    const res = await apiFetch(`/messages?chat_id=${encodeURIComponent(chatId)}`, token, {
+      method: 'POST',
+      body,
+      timeoutMs: 10000,
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403)
+        return { ok: false, status: res.status, error: 'неверный или отозванный токен' };
+      const msg = (res.json as { message?: string } | null)?.message;
+      return {
+        ok: false,
+        status: res.status,
+        error: msg ?? `MAX не принял сообщение (HTTP ${res.status})`,
+      };
+    }
+    if (!isLast) await sleep(CHUNK_DELAY_MS);
+  }
+  return { ok: true };
 }
 
 /** Совместимость: отправка простого текста без кнопок. */

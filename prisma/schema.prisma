@@ -103,6 +103,8 @@ model Conversation {
   status         String    @default("open")
   /// Когда оператор последний раз открывал диалог — для счётчика непрочитанных
   operatorReadAt DateTime?
+  /// Закреплён ли диалог оператором (IMP-BE22-12b): не-null → закреплён, поднимается вверху инбокса
+  pinnedAt       DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   messages       Message[]

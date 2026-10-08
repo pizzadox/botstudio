@@ -13,6 +13,23 @@ const flowGlobals = globalThis as unknown as {
 const CACHE_CAP = 50;
 const EMPTY_FLOW: Flow = { nodes: [], edges: [] };
 
+/**
+ * BE22-01б: нормализация распарсенного сценария.
+ * После restore БД в Bot.flow может оказаться '{}', null или вообще не JSON —
+ * движок ожидает массивы nodes/edges. Любой мусор превращаем в пустой сценарий
+ * (бот молчит, но не падает), валидный JSON проходим без изменений.
+ */
+function normalizeParsedFlow(parsed: unknown): Flow {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return EMPTY_FLOW;
+  }
+  const f = parsed as Partial<Flow>;
+  const nodes = Array.isArray(f.nodes) ? f.nodes : [];
+  const edges = Array.isArray(f.edges) ? f.edges : [];
+  if (nodes.length === 0 && edges.length === 0) return EMPTY_FLOW;
+  return { nodes, edges };
+}
+
 export function getFlowCached(
   botId: string,
   updatedAt: Date | string | number,
@@ -31,7 +48,7 @@ export function getFlowCached(
 
   let flow: Flow = EMPTY_FLOW;
   try {
-    flow = JSON.parse(flowString) as Flow;
+    flow = normalizeParsedFlow(JSON.parse(flowString) as unknown);
   } catch {
     flow = EMPTY_FLOW;
   }

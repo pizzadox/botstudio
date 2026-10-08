@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Bot,
+  Eye,
+  EyeOff,
   Inbox,
   LayoutDashboard,
   Loader2,
@@ -12,6 +14,7 @@ import {
   Plug,
   Sparkles,
   Sun,
+  UserRound,
   Workflow,
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
@@ -28,6 +31,16 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import LoginView from './login-view';
 import Shell from './shell';
 import Dashboard from './dashboard';
@@ -225,6 +238,179 @@ function CommandPalette({
 }
 
 /**
+ * Диалог «Профиль» (IMP-FE22-23): имя/@username (только показ) + смена пароля.
+ * После смены ДРУГИЕ сессии пользователя инвалидируются сервером — текущая
+ * остаётся живой, поэтому никакого auto-logout здесь нет и не нужно.
+ */
+function ProfileDialog({
+  open,
+  onOpenChange,
+  user,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  user: SessionUser;
+}) {
+  const { toast } = useToast();
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  // IMP-FE21-11 паттерн: глаз-тогглы с aria-pressed и focus-ring
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Закрытие/переоткрытие — чистая форма (пароли не «живут» в стейте)
+  useEffect(() => {
+    if (!open) {
+      setCurrentPassword('');
+      setNewPassword('');
+      setShowCurrent(false);
+      setShowNew(false);
+      setError(null);
+    }
+  }, [open]);
+
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api('/api/auth/password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      toast({ title: 'Пароль изменён' });
+      onOpenChange(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Не удалось сменить пароль');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Профиль</DialogTitle>
+          <DialogDescription>Данные аккаунта и смена пароля</DialogDescription>
+        </DialogHeader>
+
+        {/* Имя и логин — только показ (редактирования профиля нет) */}
+        <div className="flex items-center gap-3 rounded-xl border bg-muted/40 p-3">
+          <div
+            aria-hidden="true"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary text-base font-bold uppercase"
+          >
+            {user.name?.[0] ?? user.username[0]}
+          </div>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium">{user.name ?? user.username}</div>
+            <div className="truncate text-xs text-muted-foreground">@{user.username}</div>
+          </div>
+        </div>
+
+        {/* IMP-FE21-11 паттерн: form + Enter + autoFocus + busy-кнопка */}
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
+          <div className="space-y-2">
+            <Label htmlFor="profile-current-password">Текущий пароль</Label>
+            <div className="relative">
+              <Input
+                id="profile-current-password"
+                type={showCurrent ? 'text' : 'password'}
+                placeholder="••••••••"
+                autoComplete="current-password"
+                autoFocus
+                required
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                disabled={busy}
+                className="pr-9"
+              />
+              <button
+                type="button"
+                aria-label={showCurrent ? 'Скрыть текущий пароль' : 'Показать текущий пароль'}
+                aria-pressed={showCurrent}
+                onClick={() => setShowCurrent((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {showCurrent ? (
+                  <EyeOff className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Eye className="h-4 w-4" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="profile-new-password">Новый пароль</Label>
+            <div className="relative">
+              <Input
+                id="profile-new-password"
+                type={showNew ? 'text' : 'password'}
+                placeholder="минимум 6 символов"
+                autoComplete="new-password"
+                required
+                minLength={6}
+                pattern="[!-~]+"
+                title="От 6 символов — латиница, цифры и знаки (без пробелов и кириллицы)"
+                aria-describedby="profile-new-password-hint"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                disabled={busy}
+                className="pr-9"
+              />
+              <button
+                type="button"
+                aria-label={showNew ? 'Скрыть новый пароль' : 'Показать новый пароль'}
+                aria-pressed={showNew}
+                onClick={() => setShowNew((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {showNew ? (
+                  <EyeOff className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Eye className="h-4 w-4" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+            <p id="profile-new-password-hint" className="text-xs text-muted-foreground">
+              От 6 символов — латиница, цифры, знаки. Другие сессии будут завершены.
+            </p>
+          </div>
+          {error && (
+            <p role="alert" aria-live="assertive" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={busy}
+            >
+              Отмена
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+              {busy ? 'Сохраняю…' : 'Сменить пароль'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
  * Фоновый наблюдатель: раз в 12 секунд спрашивает /api/notifications и
  * показывает тосты о новых заявках/диалогах + обновляет бейджи навигации.
  *
@@ -374,6 +560,8 @@ export default function AppRoot() {
   const [chatFocus, setChatFocus] = useState<string | null>(null);
   // Палитра команд (Ctrl/Cmd+K)
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Диалог «Профиль» (смена пароля)
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const refreshBots = useCallback(() => setBotsVersion((v) => v + 1), []);
   const onTotals = useCallback(
@@ -475,6 +663,18 @@ export default function AppRoot() {
     };
   }, []);
 
+  // FE22-05: кнопка «Открыть диалог» из карточки заявки → инбокс с фокусом на переписке
+  useEffect(() => {
+    const onOpenConversation = (e: Event) => {
+      const id = (e as CustomEvent<{ conversationId?: string }>).detail?.conversationId;
+      if (!id) return;
+      setChatFocus(id);
+      setView('inbox');
+    };
+    window.addEventListener('bstudio:open-conversation', onOpenConversation);
+    return () => window.removeEventListener('bstudio:open-conversation', onOpenConversation);
+  }, []);
+
   // IMP-FE21-06: сохраняем view и бота только у авторизованных
   useEffect(() => {
     if (!user) return;
@@ -556,8 +756,10 @@ export default function AppRoot() {
       currentBot={currentBot}
       badges={{ inbox: badges.openConvs, orders: badges.newOrders }}
       onOpenPalette={() => setPaletteOpen(true)}
+      onOpenProfile={() => setProfileOpen(true)}
       onLogout={logout}
     >
+      <ProfileDialog open={profileOpen} onOpenChange={setProfileOpen} user={user} />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -573,6 +775,8 @@ export default function AppRoot() {
           key={`dash-${botsVersion}`}
           onOpenBot={openBot}
           onBotsChanged={refreshBots}
+          newOrders={badges.newOrders}
+          onOpenView={setView}
         />
       )}
       {view === 'editor' && currentBot && (

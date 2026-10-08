@@ -1,0 +1,1173 @@
+     1→'use client';
+     2→
+     3→import {
+     4→  memo,
+     5→  useCallback,
+     6→  useDeferredValue,
+     7→  useEffect,
+     8→  useMemo,
+     9→  useRef,
+    10→  useState,
+    11→} from 'react';
+    12→import {
+    13→  Archive,
+    14→  Bot,
+    15→  ChevronLeft,
+    16→  ChevronDown,
+    17→  ChevronRight,
+    18→  Clock,
+    19→  Globe,
+    20→  Headset,
+    21→  Inbox,
+    22→  Loader2,
+    23→  MessageCircle,
+    24→  MessagesSquare,
+    25→  MessageSquare,
+    26→  RotateCcw,
+    27→  Search,
+    28→  Send,
+    29→  SearchCheck,
+    30→  Truck,
+    31→  WifiOff,
+    32→} from 'lucide-react';
+    33→import type { LucideIcon } from 'lucide-react';
+    34→import { api } from '@/lib/client-api';
+    35→import type { ChatMessage, ConversationListItem } from '@/lib/studio-types';
+    36→import {
+    37→  ORDER_STATUS_BADGES,
+    38→  ORDER_STATUS_LABELS,
+    39→  ORDER_TYPE_LABELS,
+    40→  SOURCE_COLORS,
+    41→  SOURCE_LABELS,
+    42→} from '@/lib/studio-types';
+    43→import { Badge } from '@/components/ui/badge';
+    44→import { Button } from '@/components/ui/button';
+    45→import { Input } from '@/components/ui/input';
+    46→import {
+    47→  Select,
+    48→  SelectContent,
+    49→  SelectItem,
+    50→  SelectTrigger,
+    51→  SelectValue,
+    52→} from '@/components/ui/select';
+    53→import { ScrollArea } from '@/components/ui/scroll-area';
+    54→import { Skeleton } from '@/components/ui/skeleton';
+    55→import { MytkoBadge } from '@/components/studio/mytko-badge';
+    56→import { useToast } from '@/hooks/use-toast';
+    57→import { cn } from '@/lib/utils';
+    58→
+    59→/** Dark-пары для цветных чипов источников (светлые классы приходят из SOURCE_COLORS) */
+    60→const SOURCE_DARK: Record<string, string> = {
+    61→  telegram: 'dark:bg-sky-500/15 dark:text-sky-300',
+    62→  whatsapp: 'dark:bg-emerald-500/15 dark:text-emerald-300',
+    63→  max: 'dark:bg-violet-500/15 dark:text-violet-300',
+    64→  web: 'dark:bg-amber-500/15 dark:text-amber-300',
+    65→  simulator: 'dark:bg-slate-500/15 dark:text-slate-300',
+    66→};
+    67→
+    68→function sourceChipClass(source: string): string {
+    69→  return cn(
+    70→    SOURCE_COLORS[source] ?? 'bg-muted text-muted-foreground',
+    71→    SOURCE_DARK[source]
+    72→  );
+    73→}
+    74→
+    75→/** Ключи localStorage для persistence фильтра и поиска инбокса (IMP-F07) */
+    76→const LS_FILTER_KEY = 'bstudio.inbox.filter';
+    77→const LS_QUERY_KEY = 'bstudio.inbox.q';
+    78→
+    79→type FilterKey = 'all' | 'operator' | 'unread' | 'closed';
+    80→
+    81→const FILTER_KEYS: FilterKey[] = ['all', 'operator', 'unread', 'closed'];
+    82→
+    83→/** SSR-безопасное чтение localStorage (на сервере/в приватном режиме — fallback) */
+    84→function readLS(key: string, fallback: string): string {
+    85→  try {
+    86→    return window.localStorage.getItem(key) ?? fallback;
+    87→  } catch {
+    88→    return fallback;
+    89→  }
+    90→}
+    91→
+    92→function writeLS(key: string, value: string): void {
+    93→  try {
+    94→    window.localStorage.setItem(key, value);
+    95→  } catch {
+    96→    /* localStorage недоступен — не критично */
+    97→  }
+    98→}
+    99→
+   100→/**
+   101→ * Дедуп-слияние сообщений поллинга (IMP-F03): добавляем только новые id,
+   102→ * сортируем по createdAt. Если ничего нового — возвращаем prev как есть
+   103→ * (ссылочная стабильность убирает лишние ре-рендеры).
+   104→ */
+   105→function mergeMessages(prev: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+   106→  const seen = new Set(prev.map((m) => m.id));
+   107→  const add = incoming.filter((m) => !seen.has(m.id));
+   108→  if (!add.length) return prev;
+   109→  return [...prev, ...add].sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
+   110→}
+   111→
+   112→/** Осмысленные пустые состояния для каждого фильтра списка */
+   113→const EMPTY_STATES: Record<FilterKey, { title: string; hint: string }> = {
+   114→  all: {
+   115→    title: 'Диалогов пока нет',
+   116→    hint: 'Опубликуйте бота и напишите ему в демо-чате или мессенджере — обращения появятся здесь.',
+   117→  },
+   118→  operator: {
+   119→    title: 'Нет диалогов, требующих внимания',
+   120→    hint: 'Когда клиент попросит оператора, обращение появится в этом списке.',
+   121→  },
+   122→  unread: {
+   123→    title: 'Новых диалогов нет',
+   124→    hint: 'Непрочитанные обращения от клиентов будут собираться здесь.',
+   125→  },
+   126→  closed: {
+   127→    title: 'Закрытых обращений нет',
+   128→    hint: 'Завершённые диалоги сохраняются в этой категории.',
+   129→  },
+   130→};
+   131→
+   132→const FILTER_ICONS: Record<FilterKey, LucideIcon> = {
+   133→  all: MessagesSquare,
+   134→  operator: Headset,
+   135→  unread: MessageSquare,
+   136→  closed: Archive,
+   137→};
+   138→
+   139→function SourceIcon({ source, className }: { source: string; className?: string }) {
+   140→  const cls = cn('h-3.5 w-3.5', className);
+   141→  switch (source) {
+   142→    case 'telegram':
+   143→      return <Send className={cls} />;
+   144→    case 'whatsapp':
+   145→      return <MessageCircle className={cls} />;
+   146→    case 'max':
+   147→      return <MessageSquare className={cls} />;
+   148→    default:
+   149→      return <Globe className={cls} />;
+   150→  }
+   151→}
+   152→
+   153→function timeAgo(iso: string): string {
+   154→  const diff = Date.now() - new Date(iso).getTime();
+   155→  const m = Math.floor(diff / 60000);
+   156→  if (m < 1) return 'только что';
+   157→  if (m < 60) return `${m} мин назад`;
+   158→  const h = Math.floor(m / 60);
+   159→  if (h < 24) return `${h} ч назад`;
+   160→  return `${Math.floor(h / 24)} дн назад`;
+   161→}
+   162→
+   163→/** Пустое состояние: иконка в квадрате + заголовок + пояснение */
+   164→function EmptyState({ icon: Icon, title, hint }: { icon: LucideIcon; title: string; hint: string }) {
+   165→  return (
+   166→    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+   167→      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+   168→        <Icon className="h-6 w-6" aria-hidden />
+   169→      </div>
+   170→      <div className="max-w-[280px]">
+   171→        <p className="text-sm font-medium text-foreground">{title}</p>
+   172→        <p className="mt-1 text-sm text-muted-foreground">{hint}</p>
+   173→      </div>
+   174→    </div>
+   175→  );
+   176→}
+   177→
+   178→/** Скелетон строки списка диалогов */
+   179→function ConversationRowSkeleton() {
+   180→  return (
+   181→    <div className="space-y-2 py-2.5" aria-hidden>
+   182→      <div className="flex items-center gap-2">
+   183→        <Skeleton className="h-3.5 w-14 rounded-full" />
+   184→        <Skeleton className="h-4 min-w-0 flex-1" />
+   185→        <Skeleton className="h-3 w-14" />
+   186→      </div>
+   187→      <Skeleton className="h-3 w-3/4" />
+   188→    </div>
+   189→  );
+   190→}
+   191→
+   192→/**
+   193→ * Строка списка диалогов (IMP-F09): memo + только примитивные props
+   194→ * и стабильный колбэк — при поллинге перерисовываются только изменившиеся строки.
+   195→ */
+   196→interface ConversationRowProps {
+   197→  id: string;
+   198→  source: string;
+   199→  contact: string | null;
+   200→  needsOperator: boolean;
+   201→  status: string;
+   202→  unread: boolean;
+   203→  messagesCount: number;
+   204→  updatedAt: string;
+   205→  lastMessageText: string | null;
+   206→  lastMessageRole: string | null;
+   207→  selected: boolean;
+   208→  onSelect: (id: string) => void;
+   209→}
+   210→
+   211→const ConversationRow = memo(function ConversationRow({
+   212→  id,
+   213→  source,
+   214→  contact,
+   215→  needsOperator,
+   216→  status,
+   217→  unread,
+   218→  messagesCount,
+   219→  updatedAt,
+   220→  lastMessageText,
+   221→  lastMessageRole,
+   222→  selected,
+   223→  onSelect,
+   224→}: ConversationRowProps) {
+   225→  return (
+   226→    <button
+   227→      type="button"
+   228→      data-conv-id={id}
+   229→      onClick={() => onSelect(id)}
+   230→      aria-current={selected ? 'true' : undefined}
+   231→      className={cn(
+   232→        'flex w-full min-w-0 flex-col gap-1 p-3 text-left transition-colors hover:bg-muted/60',
+   233→        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+   234→        selected && 'bg-primary/5',
+   235→        unread && status === 'open' && 'bg-primary/[0.04]'
+   236→      )}
+   237→    >
+   238→      <div className="flex min-w-0 w-full items-center gap-2">
+   239→        <span
+   240→          className={cn(
+   241→            'h-2 w-2 shrink-0 rounded-full transition-colors',
+   242→            needsOperator && status === 'open' // красная точка важнее
+   243→              ? 'bg-destructive'
+   244→              : unread && status === 'open'
+   245→                ? 'bg-primary'
+   246→                : 'bg-transparent'
+   247→          )}
+   248→          aria-hidden
+   249→        />
+   250→        <span
+   251→          className={cn(
+   252→            'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+   253→            sourceChipClass(source)
+   254→          )}
+   255→        >
+   256→          <SourceIcon source={source} className="h-3 w-3" />
+   257→          {SOURCE_LABELS[source] ?? source}
+   258→        </span>
+   259→        <span
+   260→          className={cn(
+   261→            'min-w-0 flex-1 truncate text-sm',
+   262→            unread && status === 'open' ? 'font-semibold' : 'font-medium'
+   263→          )}
+   264→        >
+   265→          {contact || 'Без имени'}
+   266→        </span>
+   267→        {/* IMP-F05: относительное время + полная дата/время в title */}
+   268→        <span
+   269→          className="shrink-0 text-xs text-muted-foreground tabular-nums"
+   270→          title={new Date(updatedAt).toLocaleString('ru-RU')}
+   271→        >
+   272→          {timeAgo(updatedAt)}
+   273→        </span>
+   274→      </div>
+   275→      <p className="min-w-0 w-full truncate text-xs text-muted-foreground">
+   276→        {lastMessageText !== null
+   277→          ? `${lastMessageRole === 'user' ? '' : 'Вы: '}${lastMessageText}`
+   278→          : 'Нет сообщений'}
+   279→      </p>
+   280→      <div className="flex flex-wrap gap-1.5">
+   281→        {needsOperator && status === 'open' && (
+   282→          <Badge variant="destructive" className="h-4 animate-pulse px-1.5 text-[9px]">
+   283→            <Headset className="mr-0.5 h-2.5 w-2.5" /> требует внимания
+   284→          </Badge>
+   285→        )}
+   286→        {unread && status === 'open' && (
+   287→          <Badge className="h-4 bg-primary/15 px-1.5 text-[9px] text-primary hover:bg-primary/15">
+   288→            новое
+   289→          </Badge>
+   290→        )}
+   291→        {status === 'closed' && (
+   292→          <Badge variant="outline" className="h-4 px-1.5 text-[9px]">
+   293→            закрыт
+   294→          </Badge>
+   295→        )}
+   296→        <Badge variant="outline" className="h-4 px-1.5 text-[9px] tabular-nums">
+   297→          {messagesCount} сообщ.
+   298→        </Badge>
+   299→      </div>
+   300→    </button>
+   301→  );
+   302→});
+   303→
+   304→/** Пузырь реального сообщения (memo: ссылка стабильна благодаря дедуп-слиянию) */
+   305→const MessageBubble = memo(function MessageBubble({ m }: { m: ChatMessage }) {
+   306→  const isOperator = m.nodeId === '__operator';
+   307→  return (
+   308→    <div className={cn('flex min-w-0', m.role === 'user' ? 'justify-start' : 'justify-end')}>
+   309→      <div
+   310→        className={cn(
+   311→          'max-w-[85%] space-y-0.5 rounded-2xl px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
+   312→          m.role === 'user'
+   313→            ? 'rounded-bl-md bg-muted'
+   314→            : isOperator
+   315→              ? 'rounded-br-md bg-primary text-primary-foreground'
+   316→              : 'rounded-br-md border bg-card'
+   317→        )}
+   318→      >
+   319→        {isOperator && (
+   320→          <div className="flex items-center gap-1 text-[10px] opacity-80">
+   321→            <Headset className="h-3 w-3" /> оператор
+   322→          </div>
+   323→        )}
+   324→        <div className="whitespace-pre-wrap">{m.text}</div>
+   325→        <div
+   326→          className={cn(
+   327→            'text-right text-[10px]',
+   328→            isOperator ? 'text-primary-foreground/70' : 'text-muted-foreground'
+   329→          )}
+   330→        >
+   331→          {new Date(m.createdAt).toLocaleTimeString('ru-RU', {
+   332→            hour: '2-digit',
+   333→            minute: '2-digit',
+   334→          })}
+   335→        </div>
+   336→      </div>
+   337→    </div>
+   338→  );
+   339→});
+   340→
+   341→/** Оптимистичный пузырь ответа оператора (IMP-F02): отправляется / ошибка */
+   342→interface OptimisticMessage {
+   343→  id: string;
+   344→  convId: string;
+   345→  text: string;
+   346→  status: 'sending' | 'error';
+   347→}
+   348→
+   349→function OptimisticBubble({
+   350→  msg,
+   351→  onRetry,
+   352→}: {
+   353→  msg: OptimisticMessage;
+   354→  onRetry: (id: string) => void;
+   355→}) {
+   356→  const isError = msg.status === 'error';
+   357→  return (
+   358→    <div className="flex min-w-0 justify-end">
+   359→      <div
+   360→        className={cn(
+   361→          'max-w-[85%] space-y-0.5 rounded-2xl rounded-br-md px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
+   362→          isError
+   363→            ? 'border border-destructive/40 bg-destructive/10 text-foreground'
+   364→            : 'bg-primary text-primary-foreground opacity-70'
+   365→        )}
+   366→      >
+   367→        <div className="whitespace-pre-wrap">{msg.text}</div>
+   368→        <div className="flex items-center justify-end gap-1.5 text-[10px]">
+   369→          {isError ? (
+   370→            <>
+   371→              <span className="font-medium text-destructive">Не отправлено</span>
+   372→              <button
+   373→                type="button"
+   374→                onClick={() => onRetry(msg.id)}
+   375→                aria-label={`Повторить отправку: ${msg.text.slice(0, 50)}`}
+   376→                className="inline-flex items-center gap-1 rounded px-1 py-0.5 font-medium text-destructive underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+   377→              >
+   378→                <RotateCcw className="h-3 w-3" aria-hidden /> Повторить
+   379→              </button>
+   380→            </>
+   381→          ) : (
+   382→            <span
+   383→              className="inline-flex items-center gap-1 text-primary-foreground/70"
+   384→              aria-hidden
+   385→            >
+   386→              <Clock className="h-3 w-3" /> отправляется…
+   387→            </span>
+   388→          )}
+   389→        </div>
+   390→      </div>
+   391→    </div>
+   392→  );
+   393→}
+   394→
+   395→interface ConvOrder {
+   396→  id: string;
+   397→  number: number;
+   398→  type: string;
+   399→  status: string;
+   400→  address: string | null;
+   401→  city: string | null;
+   402→  size: string | null;
+   403→  wishDate: string | null;
+   404→  clientName: string | null;
+   405→  phone: string | null;
+   406→  assignee: string | null;
+   407→  mytkoStatus: string | null;
+   408→  mytkoInfo: string | null;
+   409→  mytkoSyncAt: string | null;
+   410→  createdAt: string;
+   411→}
+   412→
+   413→/** Панель заявок клиента: просмотр и быстрое изменение статуса/исполнителя */
+   414→function ConversationOrdersPanel({
+   415→  conversationId,
+   416→  botId,
+   417→  refreshTick,
+   418→}: {
+   419→  conversationId: string;
+   420→  botId: string;
+   421→  refreshTick: number;
+   422→}) {
+   423→  const { toast } = useToast();
+   424→  const [open, setOpen] = useState(false);
+   425→  const [orders, setOrders] = useState<ConvOrder[]>([]);
+   426→  const [mytkoEnabled, setMytkoEnabled] = useState(false);
+   427→  const [loaded, setLoaded] = useState(false);
+   428→  const [savingId, setSavingId] = useState<string | null>(null);
+   429→
+   430→  const load = useCallback(async () => {
+   431→    try {
+   432→      const d = await api<{ orders: ConvOrder[]; mytkoEnabled?: boolean }>(
+   433→        `/api/conversations/${conversationId}/orders`
+   434→      );
+   435→      setOrders(d.orders);
+   436→      setMytkoEnabled(!!d.mytkoEnabled);
+   437→    } catch {
+   438→      /* ignore */
+   439→    } finally {
+   440→      setLoaded(true);
+   441→    }
+   442→  }, [conversationId]);
+   443→
+   444→  useEffect(() => {
+   445→    load();
+   446→  }, [load, refreshTick]);
+   447→
+   448→  const patch = async (orderId: string, data: Record<string, unknown>) => {
+   449→    setSavingId(orderId);
+   450→    try {
+   451→      const d = await api<{ order: { status: string; assignee: string | null } }>(
+   452→        `/api/bots/${botId}/orders/${orderId}`,
+   453→        { method: 'PATCH', body: JSON.stringify(data) }
+   454→      );
+   455→      setOrders((prev) =>
+   456→        prev.map((o) =>
+   457→          o.id === orderId ? { ...o, status: d.order.status, assignee: d.order.assignee } : o
+   458→        )
+   459→      );
+   460→      toast({ title: 'Заявка обновлена' });
+   461→    } catch {
+   462→      toast({ title: 'Не удалось обновить заявку', variant: 'destructive' });
+   463→    } finally {
+   464→      setSavingId(null);
+   465→    }
+   466→  };
+   467→
+   468→  return (
+   469→    <div className="border-b bg-background px-4 py-2">
+   470→      <button
+   471→        className="flex w-full items-center gap-1.5 rounded text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+   472→        onClick={() => setOpen((v) => !v)}
+   473→        aria-expanded={open}
+   474→        aria-controls="conversation-orders-list"
+   475→      >
+   476→        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+   477→        <Truck className="h-3.5 w-3.5" />
+   478→        Заявки клиента <span className="tabular-nums">({orders.length})</span>
+   479→      </button>
+   480→      <div id="conversation-orders-list">
+   481→        {open && loaded && orders.length > 0 && (
+   482→          <div className="mt-2 max-h-56 space-y-1.5 overflow-y-auto pr-1">
+   483→            {orders.map((o) => (
+   484→              <div key={o.id} className="rounded-lg border p-2">
+   485→                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+   486→                  <span className="text-xs font-semibold tabular-nums">№{o.number}</span>
+   487→                  <Badge
+   488→                    variant="outline"
+   489→                    className={cn('h-4 px-1 text-[9px]', ORDER_STATUS_BADGES[o.status])}
+   490→                  >
+   491→                    {ORDER_STATUS_LABELS[o.status] ?? o.status}
+   492→                  </Badge>
+   493→                  {mytkoEnabled && <MytkoBadge status={o.mytkoStatus} />}
+   494→                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+   495→                    {ORDER_TYPE_LABELS[o.type] ?? o.type}
+   496→                    {o.address ? ` · ${o.address}` : ''}
+   497→                  </span>
+   498→                </div>
+   499→                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+   500→                  <Select
+   501→                    value={o.status}
+   502→                    onValueChange={(v) => patch(o.id, { status: v })}
+   503→                    disabled={savingId === o.id}
+   504→                  >
+   505→                    <SelectTrigger className="h-7 w-[130px] text-[11px]" aria-label="Статус заявки">
+   506→                      <SelectValue />
+   507→                    </SelectTrigger>
+   508→                    <SelectContent>
+   509→                      {Object.entries(ORDER_STATUS_LABELS).map(([k, v]) => (
+   510→                        <SelectItem key={k} value={k} className="text-xs">
+   511→                          {v}
+   512→                        </SelectItem>
+   513→                      ))}
+   514→                    </SelectContent>
+   515→                  </Select>
+   516→                  <Input
+   517→                    className="h-7 w-[120px] flex-1 text-[11px] sm:w-[140px]"
+   518→                    defaultValue={o.assignee ?? ''}
+   519→                    placeholder="Исполнитель…"
+   520→                    aria-label="Исполнитель"
+   521→                    onBlur={(e) => {
+   522→                      if (e.target.value !== (o.assignee ?? '')) patch(o.id, { assignee: e.target.value });
+   523→                    }}
+   524→                  />
+   525→                  {o.wishDate && (
+   526→                    <span className="text-[11px] text-muted-foreground">🗓 {o.wishDate}</span>
+   527→                  )}
+   528→                </div>
+   529→              </div>
+   530→            ))}
+   531→          </div>
+   532→        )}
+   533→        {open && loaded && orders.length === 0 && (
+   534→          <p className="mt-1.5 text-[11px] text-muted-foreground">У клиента пока нет заявок.</p>
+   535→        )}
+   536→        {open && !loaded && (
+   537→          <div className="mt-2 space-y-1.5" role="status" aria-label="Загрузка заявок клиента">
+   538→            <Skeleton className="h-[52px] w-full rounded-lg" />
+   539→            <Skeleton className="h-[52px] w-full rounded-lg" />
+   540→          </div>
+   541→        )}
+   542→      </div>
+   543→    </div>
+   544→  );
+   545→}
+   546→
+   547→export default function InboxView({
+   548→  bot,
+   549→  onBack,
+   550→  focusConversationId,
+   551→  onFocusConsumed,
+   552→}: {
+   553→  bot: { id: string; name: string };
+   554→  onBack: () => void;
+   555→  /** id диалога из уведомления — сразу открыть его */
+   556→  focusConversationId?: string | null;
+   557→  onFocusConsumed?: () => void;
+   558→}) {
+   559→  const { toast } = useToast();
+   560→  const [conversations, setConversations] = useState<ConversationListItem[]>([]);
+   561→  const [selectedId, setSelectedId] = useState<string | null>(null);
+   562→  const [messages, setMessages] = useState<ChatMessage[]>([]);
+   563→  const [optimistic, setOptimistic] = useState<OptimisticMessage[]>([]);
+   564→  const [contact, setContact] = useState<string | null>(null);
+   565→  const [selectedSource, setSelectedSource] = useState('web');
+   566→  const [needsOperator, setNeedsOperator] = useState(false);
+   567→  const [status, setStatus] = useState('open');
+   568→  const [reply, setReply] = useState('');
+   569→  const [loading, setLoading] = useState(true);
+   570→  const [sending, setSending] = useState(false);
+   571→  const [ordersTick, setOrdersTick] = useState(0);
+   572→  /** Фильтр списка: все / нужен оператор / новые / закрытые (persist в localStorage) */
+   573→  const [filter, setFilter] = useState<FilterKey>(() => {
+   574→    const v = readLS(LS_FILTER_KEY, 'all');
+   575→    return FILTER_KEYS.includes(v as FilterKey) ? (v as FilterKey) : 'all';
+   576→  });
+   577→  const [query, setQuery] = useState(() => readLS(LS_QUERY_KEY, ''));
+   578→  /** Свежесть данных (IMP-F08) */
+   579→  const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
+   580→  const [failStreak, setFailStreak] = useState(0);
+   581→  const scrollRef = useRef<HTMLDivElement>(null);
+   582→  /** IMP-F01: пользователь у дна переписки? — иначе не таскаем его вниз */
+   583→  const isNearBottomRef = useRef(true);
+   584→  /** Свежие ссылки для стабильных подписчиков (клавиатура/поллинг без ре-монтажа) */
+   585→  const selectedIdRef = useRef<string | null>(null);
+   586→  const visibleListRef = useRef<ConversationListItem[]>([]);
+   587→
+   588→  useEffect(() => {
+   589→    selectedIdRef.current = selectedId;
+   590→  }, [selectedId]);
+   591→
+   592→  // IMP-F07: persist фильтра и поиска
+   593→  useEffect(() => {
+   594→    writeLS(LS_FILTER_KEY, filter);
+   595→  }, [filter]);
+   596→
+   597→  useEffect(() => {
+   598→    writeLS(LS_QUERY_KEY, query);
+   599→  }, [query]);
+   600→
+   601→  const notePollSuccess = useCallback(() => {
+   602→    setFailStreak(0);
+   603→    setLastSyncAt(new Date());
+   604→  }, []);
+   605→
+   606→  const notePollFailure = useCallback(() => {
+   607→    setFailStreak((s) => s + 1);
+   608→  }, []);
+   609→
+   610→  const loadList = useCallback(async () => {
+   611→    try {
+   612→      const d = await api<{ conversations: ConversationListItem[] }>(
+   613→        `/api/bots/${bot.id}/conversations`
+   614→      );
+   615→      setConversations(d.conversations);
+   616→      notePollSuccess();
+   617→    } catch {
+   618→      notePollFailure();
+   619→      /* ignore polling errors */
+   620→    } finally {
+   621→      setLoading(false);
+   622→    }
+   623→  }, [bot.id, notePollSuccess, notePollFailure]);
+   624→
+   625→  /** Первая загрузка диалога — полная, без take (IMP-F03) */
+   626→  const loadConversationFull = useCallback(
+   627→    async (id: string) => {
+   628→      try {
+   629→        const d = await api<{
+   630→          conversation: { contact: string | null; source: string; needsOperator: boolean; status: string };
+   631→          messages: ChatMessage[];
+   632→        }>(`/api/conversations/${id}`);
+   633→        notePollSuccess();
+   634→        // Диалог могли переключить, пока летел ответ
+   635→        if (selectedIdRef.current !== id) return;
+   636→        setMessages(d.messages);
+   637→        setContact(d.conversation.contact);
+   638→        setSelectedSource(d.conversation.source);
+   639→        setNeedsOperator(d.conversation.needsOperator);
+   640→        setStatus(d.conversation.status);
+   641→        isNearBottomRef.current = true; // новая переписка — стартуем снизу
+   642→      } catch {
+   643→        notePollFailure();
+   644→      }
+   645→    },
+   646→    [notePollSuccess, notePollFailure]
+   647→  );
+   648→
+   649→  /** Фоновый поллинг диалога — ?take=50 + дедуп-слияние (IMP-F03) */
+   650→  const pollConversation = useCallback(
+   651→    async (id: string) => {
+   652→      try {
+   653→        const d = await api<{
+   654→          conversation: { contact: string | null; source: string; needsOperator: boolean; status: string };
+   655→          messages: ChatMessage[];
+   656→        }>(`/api/conversations/${id}?take=50`);
+   657→        notePollSuccess();
+   658→        if (selectedIdRef.current !== id) return;
+   659→        setMessages((prev) => mergeMessages(prev, d.messages));
+   660→        setContact(d.conversation.contact);
+   661→        setSelectedSource(d.conversation.source);
+   662→        setNeedsOperator(d.conversation.needsOperator);
+   663→        setStatus(d.conversation.status);
+   664→      } catch {
+   665→        notePollFailure();
+   666→      }
+   667→    },
+   668→    [notePollSuccess, notePollFailure]
+   669→  );
+   670→
+   671→  /** Открыть диалог: выделяем и сразу помечаем прочитанным (сервер запоминает operatorReadAt) */
+   672→  const openConversation = useCallback((id: string) => {
+   673→    setSelectedId(id);
+   674→    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, unread: false } : c)));
+   675→  }, []);
+   676→
+   677→  useEffect(() => {
+   678→    loadList();
+   679→  }, [loadList]);
+   680→
+   681→  // Переход из уведомления: сразу открываем нужный диалог
+   682→  useEffect(() => {
+   683→    if (!focusConversationId) return;
+   684→    openConversation(focusConversationId);
+   685→    onFocusConsumed?.();
+   686→  }, [focusConversationId, openConversation, onFocusConsumed]);
+   687→
+   688→  // Поллинг списка: 6с, пауза на document.hidden (IMP-F08)
+   689→  useEffect(() => {
+   690→    let timer: ReturnType<typeof setInterval> | null = null;
+   691→    const start = () => {
+   692→      if (timer === null) timer = setInterval(loadList, 6000);
+   693→    };
+   694→    const stop = () => {
+   695→      if (timer !== null) {
+   696→        clearInterval(timer);
+   697→        timer = null;
+   698→      }
+   699→    };
+   700→    const onVisibility = () => {
+   701→      if (document.hidden) stop();
+   702→      else {
+   703→        loadList();
+   704→        start();
+   705→      }
+   706→    };
+   707→    start();
+   708→    document.addEventListener('visibilitychange', onVisibility);
+   709→    return () => {
+   710→      stop();
+   711→      document.removeEventListener('visibilitychange', onVisibility);
+   712→    };
+   713→  }, [loadList]);
+   714→
+   715→  // Поллинг открытого диалога: 4с, полная загрузка при открытии, пауза на document.hidden
+   716→  useEffect(() => {
+   717→    if (!selectedId) return;
+   718→    loadConversationFull(selectedId);
+   719→    let timer: ReturnType<typeof setInterval> | null = null;
+   720→    const tick = () => pollConversation(selectedId);
+   721→    const start = () => {
+   722→      if (timer === null) timer = setInterval(tick, 4000);
+   723→    };
+   724→    const stop = () => {
+   725→      if (timer !== null) {
+   726→        clearInterval(timer);
+   727→        timer = null;
+   728→      }
+   729→    };
+   730→    const onVisibility = () => {
+   731→      if (document.hidden) stop();
+   732→      else {
+   733→        tick();
+   734→        start();
+   735→      }
+   736→    };
+   737→    start();
+   738→    document.addEventListener('visibilitychange', onVisibility);
+   739→    return () => {
+   740→      stop();
+   741→      document.removeEventListener('visibilitychange', onVisibility);
+   742→    };
+   743→  }, [selectedId, loadConversationFull, pollConversation]);
+   744→
+   745→  // IMP-F01: скроллим вниз только когда пользователь у дна (±120px)
+   746→  const onMessagesScroll = useCallback(() => {
+   747→    const el = scrollRef.current;
+   748→    if (!el) return;
+   749→    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+   750→  }, []);
+   751→
+   752→  const pendingForSelected = useMemo(
+   753→    () => optimistic.filter((o) => o.convId === selectedId),
+   754→    [optimistic, selectedId]
+   755→  );
+   756→
+   757→  useEffect(() => {
+   758→    if (!isNearBottomRef.current) return;
+   759→    requestAnimationFrame(() => {
+   760→      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+   761→    });
+   762→  }, [messages, pendingForSelected.length]);
+   763→
+   764→  /** Доставка ответа оператора (используется и при повторной отправке) */
+   765→  const deliverReply = useCallback(
+   766→    async (convId: string, tmpId: string, text: string) => {
+   767→      try {
+   768→        const d = await api<{ message: ChatMessage }>(`/api/conversations/${convId}/operator`, {
+   769→          method: 'POST',
+   770→          body: JSON.stringify({ text }),
+   771→        });
+   772→        // tmp удаляем, реальное сообщение вливаем дедуп-слиянием (поллинг его не продублирует)
+   773→        setOptimistic((prev) => prev.filter((o) => o.id !== tmpId));
+   774→        if (selectedIdRef.current === convId) {
+   775→          setMessages((prev) => mergeMessages(prev, [d.message]));
+   776→        }
+   777→      } catch {
+   778→        // Текст НИКОГДА не теряется: пузырь переходит в error-состояние с «Повторить»
+   779→        setOptimistic((prev) =>
+   780→          prev.map((o) => (o.id === tmpId ? { ...o, status: 'error' as const } : o))
+   781→        );
+   782→        toast({ title: 'Не удалось отправить', variant: 'destructive' });
+   783→      }
+   784→    },
+   785→    [toast]
+   786→  );
+   787→
+   788→  const sendReply = async () => {
+   789→    const t = reply.trim();
+   790→    if (!t || !selectedId) return;
+   791→    const convId = selectedId;
+   792→    const tmpId = `tmp-${Date.now()}`;
+   793→    setOptimistic((prev) => [...prev, { id: tmpId, convId, text: t, status: 'sending' }]);
+   794→    setReply('');
+   795→    setSending(true);
+   796→    await deliverReply(convId, tmpId, t);
+   797→    setSending(false);
+   798→  };
+   799→
+   800→  /** Повторная отправка тем же текстом (IMP-F02) */
+   801→  const retryReply = (tmpId: string) => {
+   802→    const msg = optimistic.find((o) => o.id === tmpId);
+   803→    if (!msg || msg.status === 'sending') return;
+   804→    setOptimistic((prev) =>
+   805→      prev.map((o) => (o.id === tmpId ? { ...o, status: 'sending' as const } : o))
+   806→    );
+   807→    void deliverReply(msg.convId, tmpId, msg.text);
+   808→  };
+   809→
+   810→  const closeConversation = async () => {
+   811→    if (!selectedId) return;
+   812→    try {
+   813→      await api(`/api/conversations/${selectedId}/close`, { method: 'POST' });
+   814→      setNeedsOperator(false);
+   815→      setStatus('closed');
+   816→      toast({ title: 'Обращение закрыто' });
+   817→      loadList();
+   818→    } catch {
+   819→      toast({ title: 'Ошибка', variant: 'destructive' });
+   820→    }
+   821→  };
+   822→
+   823→  const selected = conversations.find((c) => c.id === selectedId) ?? null;
+   824→
+   825→  const operatorCount = useMemo(
+   826→    () => conversations.filter((c) => c.needsOperator && c.status === 'open').length,
+   827→    [conversations]
+   828→  );
+   829→  const unreadCount = useMemo(
+   830→    () => conversations.filter((c) => c.unread && c.status === 'open').length,
+   831→    [conversations]
+   832→  );
+   833→  const closedCount = useMemo(
+   834→    () => conversations.filter((c) => c.status === 'closed').length,
+   835→    [conversations]
+   836→  );
+   837→
+   838→  // IMP-F06: инпут мгновенный, фильтрация — по отложенному значению
+   839→  const deferredQuery = useDeferredValue(query);
+   840→
+   841→  /** Сортировка: нуждаются в операторе → непрочитанные → по времени; плюс поиск и фильтр */
+   842→  const visibleList = useMemo(() => {
+   843→    const q = deferredQuery.trim().toLowerCase();
+   844→    let list = conversations.filter((c) => {
+   845→      if (filter === 'operator') return c.needsOperator && c.status === 'open';
+   846→      if (filter === 'unread') return c.unread && c.status === 'open';
+   847→      if (filter === 'closed') return c.status === 'closed';
+   848→      return true;
+   849→    });
+   850→    if (q) {
+   851→      list = list.filter(
+   852→        (c) =>
+   853→          (c.contact ?? '').toLowerCase().includes(q) ||
+   854→          (c.lastMessage?.text ?? '').toLowerCase().includes(q)
+   855→      );
+   856→    }
+   857→    const weight = (c: ConversationListItem) =>
+   858→      c.needsOperator && c.status === 'open' ? 0 : c.unread && c.status === 'open' ? 1 : 2;
+   859→    return [...list].sort((a, b) => {
+   860→      const w = weight(a) - weight(b);
+   861→      if (w !== 0) return w;
+   862→      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+   863→    });
+   864→  }, [conversations, filter, deferredQuery]);
+   865→
+   866→  useEffect(() => {
+   867→    visibleListRef.current = visibleList;
+   868→  }, [visibleList]);
+   869→
+   870→  // IMP-F04: клавиатура ↑/↓ — навигация по отфильтрованному списку диалогов с wrap
+   871→  useEffect(() => {
+   872→    const onKeyDown = (e: KeyboardEvent) => {
+   873→      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+   874→      if (e.altKey || e.ctrlKey || e.metaKey) return;
+   875→      const t = e.target as HTMLElement | null;
+   876→      if (
+   877→        t &&
+   878→        (t.tagName === 'INPUT' ||
+   879→          t.tagName === 'TEXTAREA' ||
+   880→          t.tagName === 'SELECT' ||
+   881→          t.isContentEditable)
+   882→      ) {
+   883→        return;
+   884→      }
+   885→      const list = visibleListRef.current;
+   886→      if (!list.length) return;
+   887→      e.preventDefault();
+   888→      const cur = list.findIndex((c) => c.id === selectedIdRef.current);
+   889→      const nextIdx =
+   890→        e.key === 'ArrowDown'
+   891→          ? (cur + 1 + list.length) % list.length
+   892→          : cur <= 0
+   893→            ? list.length - 1
+   894→            : cur - 1;
+   895→      const next = list[nextIdx];
+   896→      if (!next) return;
+   897→      openConversation(next.id);
+   898→      document
+   899→        .querySelector<HTMLElement>(`[data-conv-id="${CSS.escape(next.id)}"]`)
+   900→        ?.scrollIntoView({ block: 'nearest' });
+   901→    };
+   902→    window.addEventListener('keydown', onKeyDown);
+   903→    return () => window.removeEventListener('keydown', onKeyDown);
+   904→  }, [openConversation]);
+   905→
+   906→  // IMP-F08: «обновлено N с назад» — пересчитывается на каждом тике поллинга
+   907→  const syncSecondsAgo = lastSyncAt
+   908→    ? Math.max(0, Math.round((Date.now() - lastSyncAt.getTime()) / 1000))
+   909→    : null;
+   910→
+   911→  return (
+   912→    <div className="flex min-h-0 flex-1 flex-col">
+   913→      <div className="flex items-center gap-2 border-b bg-background px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+   914→        <Button
+   915→          variant="ghost"
+   916→          size="icon"
+   917→          className="h-8 w-8 shrink-0 sm:h-9 sm:w-9"
+   918→          onClick={onBack}
+   919→          aria-label="Назад"
+   920→        >
+   921→          <ChevronLeft className="h-4 w-4" />
+   922→        </Button>
+   923→        <div className="flex min-w-0 flex-1 items-center gap-2">
+   924→          <Inbox className="h-5 w-5 shrink-0 text-primary" aria-hidden />
+   925→          <h1 className="shrink-0 text-lg font-bold tracking-tight sm:text-2xl">Входящие</h1>
+   926→          <Badge variant="secondary" className="min-w-0 max-w-[110px] truncate sm:max-w-[180px]">
+   927→            {bot.name}
+   928→          </Badge>
+   929→          {operatorCount > 0 && (
+   930→            <Badge variant="destructive" className="shrink-0 animate-pulse tabular-nums">
+   931→              <Headset className="mr-1 h-3 w-3" />
+   932→              <span className="hidden sm:inline">оператор: </span>
+   933→              {operatorCount}
+   934→            </Badge>
+   935→          )}
+   936→          {unreadCount > 0 && (
+   937→            <Badge className="shrink-0 bg-primary/15 text-primary tabular-nums hover:bg-primary/15">
+   938→              <span className="hidden sm:inline">новые: </span>
+   939→              {unreadCount}
+   940→            </Badge>
+   941→          )}
+   942→          {syncSecondsAgo !== null && (
+   943→            <span
+   944→              role="status"
+   945→              title={lastSyncAt ? lastSyncAt.toLocaleString('ru-RU') : undefined}
+   946→              className="ml-auto hidden shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground sm:inline-flex"
+   947→            >
+   948→              <span
+   949→                className={cn(
+   950→                  'h-1.5 w-1.5 rounded-full',
+   951→                  failStreak >= 3 ? 'bg-destructive' : 'bg-emerald-500'
+   952→                )}
+   953→                aria-hidden
+   954→              />
+   955→              обновлено <span className="tabular-nums">{syncSecondsAgo}</span> с назад
+   956→            </span>
+   957→          )}
+   958→        </div>
+   959→      </div>
+   960→
+   961→      {failStreak >= 3 && (
+   962→        <div
+   963→          role="alert"
+   964→          className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300"
+   965→        >
+   966→          <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
+   967→          Нет связи с сервера — повторяем попытку…
+   968→        </div>
+   969→      )}
+   970→
+   971→      <div className="grid min-h-0 flex-1 md:grid-cols-[340px_1fr]">
+   972→        {/* Список диалогов */}
+   973→        <div className={cn('flex min-h-0 flex-col border-r', selected && 'hidden md:flex')}>
+   974→          {/* Фильтры: все / нужен оператор / новые / закрытые + поиск */}
+   975→          <div className="flex flex-wrap items-center gap-1.5 border-b bg-background px-2.5 py-2 sm:px-3">
+   976→            {(
+   977→              [
+   978→                { key: 'all', label: 'Все', count: conversations.length },
+   979→                { key: 'operator', label: 'Требуют внимания', count: operatorCount },
+   980→                { key: 'unread', label: 'Новые', count: unreadCount },
+   981→                { key: 'closed', label: 'Закрытые', count: closedCount },
+   982→              ] as const
+   983→            ).map((f) => (
+   984→              <button
+   985→                key={f.key}
+   986→                type="button"
+   987→                onClick={() => setFilter(f.key)}
+   988→                aria-pressed={filter === f.key}
+   989→                className={cn(
+   990→                  'h-8 rounded-full px-3 text-xs font-medium transition-colors',
+   991→                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+   992→                  filter === f.key
+   993→                    ? 'border border-transparent bg-primary text-primary-foreground'
+   994→                    : 'border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+   995→                )}
+   996→              >
+   997→                {f.label}
+   998→                {f.count > 0 && (
+   999→                  <span className={cn('ml-1 tabular-nums', filter === f.key ? 'opacity-80' : 'opacity-60')}>
+  1000→                    {f.count}
+  1001→                  </span>
+  1002→                )}
+  1003→              </button>
+  1004→            ))}
+  1005→            <div className="relative ml-auto w-full sm:w-40">
+  1006→              <Search
+  1007→                className="absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground"
+  1008→                aria-hidden
+  1009→              />
+  1010→              <Input
+  1011→                className="h-8 pl-7 text-xs"
+  1012→                placeholder="Поиск по имени…"
+  1013→                aria-label="Поиск диалогов"
+  1014→                value={query}
+  1015→                onChange={(e) => setQuery(e.target.value)}
+  1016→              />
+  1017→            </div>
+  1018→          </div>
+  1019→          {loading ? (
+  1020→            <div className="space-y-1 p-3" role="status" aria-label="Загрузка диалогов">
+  1021→              {Array.from({ length: 7 }).map((_, i) => (
+  1022→                <ConversationRowSkeleton key={i} />
+  1023→              ))}
+  1024→            </div>
+  1025→          ) : conversations.length === 0 ? (
+  1026→            <EmptyState
+  1027→              icon={FILTER_ICONS.all}
+  1028→              title={EMPTY_STATES.all.title}
+  1029→              hint={EMPTY_STATES.all.hint}
+  1030→            />
+  1031→          ) : visibleList.length === 0 ? (
+  1032→            deferredQuery.trim() ? (
+  1033→              <EmptyState
+  1034→                icon={SearchCheck}
+  1035→                title="Ничего не найдено"
+  1036→                hint="Попробуйте изменить запрос или выбрать другой фильтр."
+  1037→              />
+  1038→            ) : (
+  1039→              <EmptyState
+  1040→                icon={FILTER_ICONS[filter]}
+  1041→                title={EMPTY_STATES[filter].title}
+  1042→                hint={EMPTY_STATES[filter].hint}
+  1043→              />
+  1044→            )
+  1045→          ) : (
+  1046→            <ScrollArea className="min-h-0 flex-1">
+  1047→              <div className="divide-y">
+  1048→                {visibleList.map((c) => (
+  1049→                  <ConversationRow
+  1050→                    key={c.id}
+  1051→                    id={c.id}
+  1052→                    source={c.source}
+  1053→                    contact={c.contact}
+  1054→                    needsOperator={c.needsOperator}
+  1055→                    status={c.status}
+  1056→                    unread={c.unread}
+  1057→                    messagesCount={c.messagesCount}
+  1058→                    updatedAt={c.updatedAt}
+  1059→                    lastMessageText={c.lastMessage?.text ?? null}
+  1060→                    lastMessageRole={c.lastMessage?.role ?? null}
+  1061→                    selected={selectedId === c.id}
+  1062→                    onSelect={openConversation}
+  1063→                  />
+  1064→                ))}
+  1065→              </div>
+  1066→            </ScrollArea>
+  1067→          )}
+  1068→        </div>
+  1069→
+  1070→        {/* Просмотр диалога */}
+  1071→        <div className={cn('flex min-h-0 flex-col', !selected && 'hidden md:flex')}>
+  1072→          {!selected ? (
+  1073→            <EmptyState
+  1074→              icon={MessagesSquare}
+  1075→              title="Выберите диалог"
+  1076→              hint="Список обращений слева: клик откроет переписку и заявки клиента."
+  1077→            />
+  1078→          ) : (
+  1079→            <>
+  1080→              <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-2.5">
+  1081→                <Button
+  1082→                  variant="ghost"
+  1083→                  size="icon"
+  1084→                  className="h-8 w-8 md:hidden"
+  1085→                  onClick={() => setSelectedId(null)}
+  1086→                  aria-label="К списку диалогов"
+  1087→                >
+  1088→                  <ChevronLeft className="h-4 w-4" />
+  1089→                </Button>
+  1090→                <span
+  1091→                  className={cn(
+  1092→                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+  1093→                    sourceChipClass(selectedSource)
+  1094→                  )}
+  1095→                >
+  1096→                  <SourceIcon source={selectedSource} className="h-3 w-3" />
+  1097→                  {SOURCE_LABELS[selectedSource] ?? selectedSource}
+  1098→                </span>
+  1099→                <span className="text-sm font-medium">{contact || 'Гость'}</span>
+  1100→                {needsOperator && status === 'open' && (
+  1101→                  <Badge variant="destructive" className="animate-pulse">
+  1102→                    <Headset className="mr-1 h-3 w-3" /> требует внимания
+  1103→                  </Badge>
+  1104→                )}
+  1105→                {status === 'closed' && <Badge variant="outline">закрыт</Badge>}
+  1106→                <div className="ml-auto flex gap-2">
+  1107→                  {needsOperator && status === 'open' && (
+  1108→                    <Button size="sm" variant="outline" onClick={closeConversation}>
+  1109→                      <Headset className="h-3.5 w-3.5" /> Закрыть обращение
+  1110→                    </Button>
+  1111→                  )}
+  1112→                </div>
+  1113→              </div>
+  1114→
+  1115→              <ConversationOrdersPanel conversationId={selected.id} botId={bot.id} refreshTick={ordersTick} />
+  1116→
+  1117→              <div
+  1118→                ref={scrollRef}
+  1119→                onScroll={onMessagesScroll}
+  1120→                aria-live="polite"
+  1121→                aria-label="История сообщений"
+  1122→                className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/40 p-4"
+  1123→              >
+  1124→                {messages.map((m) => (
+  1125→                  <MessageBubble key={m.id} m={m} />
+  1126→                ))}
+  1127→                {pendingForSelected.map((o) => (
+  1128→                  <OptimisticBubble key={o.id} msg={o} onRetry={retryReply} />
+  1129→                ))}
+  1130→                {messages.length === 0 && pendingForSelected.length === 0 && (
+  1131→                  <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+  1132→                    <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+  1133→                      <Bot className="h-6 w-6" aria-hidden />
+  1134→                    </div>
+  1135→                    <p className="text-sm font-medium text-foreground">Сообщений пока нет</p>
+  1136→                    <p className="max-w-[260px] text-sm text-muted-foreground">
+  1137→                      Ответьте клиенту — сообщение появится в этой переписке.
+  1138→                    </p>
+  1139→                  </div>
+  1140→                )}
+  1141→              </div>
+  1142→
+  1143→              <form
+  1144→                className="flex items-center gap-2 border-t bg-background p-3"
+  1145→                onSubmit={(e) => {
+  1146→                  e.preventDefault();
+  1147→                  sendReply();
+  1148→                }}
+  1149→              >
+  1150→                <Input
+  1151→                  placeholder="Ответить как оператор…"
+  1152→                  aria-label="Ответить как оператор"
+  1153→                  value={reply}
+  1154→                  onChange={(e) => setReply(e.target.value)}
+  1155→                />
+  1156→                <Button
+  1157→                  type="submit"
+  1158→                  size="icon"
+  1159→                  className="h-10 w-10 shrink-0"
+  1160→                  disabled={sending || !reply.trim()}
+  1161→                  aria-label="Отправить"
+  1162→                >
+  1163→                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+  1164→                </Button>
+  1165→              </form>
+  1166→            </>
+  1167→          )}
+  1168→        </div>
+  1169→      </div>
+  1170→    </div>
+  1171→  );
+  1172→}
+  1173→

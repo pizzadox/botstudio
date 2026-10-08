@@ -3,10 +3,9 @@ import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { geocodeAddress, reverseGeocode } from '@/lib/orders';
 import { parseMytkoConfig } from '@/lib/mytko';
+import { checkStatusTransition } from '@/lib/order-status';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
-
-const FINAL_STATUSES = ['completed', 'cancelled'];
 
 async function loadOwnedOrder(req: NextRequest, botId: string, orderId: string) {
   const user = await getSessionUser(req);
@@ -88,9 +87,22 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     const body = await req.json();
     const data: Record<string, unknown> = {};
 
-    if (typeof body.status === 'string' && ['new', 'assigned', 'in_progress', 'completed', 'cancelled'].includes(body.status)) {
-      data.status = body.status;
-      data.completedAt = FINAL_STATUSES.includes(body.status) ? new Date() : null;
+    // IMP-BE22-09: матрица переходов статусов. Из финальных (completed/cancelled)
+    // — только с force (?force=1 или body.force); completedAt ставится только при
+    // переходе в completed и НЕ сбрасывается обратно (раньше затирался null'ом).
+    if (typeof body.status === 'string' && body.status) {
+      const force = body.force === true || req.nextUrl.searchParams.get('force') === '1';
+      const check = checkStatusTransition(order.status, body.status, force);
+      if (!check.ok) {
+        return NextResponse.json(
+          { error: check.error ?? 'Недопустимый переход статуса' },
+          { status: 400 }
+        );
+      }
+      if (body.status !== order.status) {
+        data.status = body.status;
+        if (body.status === 'completed') data.completedAt = new Date();
+      }
     }
     if (typeof body.assignee === 'string') data.assignee = body.assignee.trim().slice(0, 120) || null;
     if (typeof body.comment === 'string') data.comment = body.comment.trim().slice(0, 1000) || null;

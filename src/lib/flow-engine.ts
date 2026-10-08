@@ -1,6 +1,7 @@
 import ZAI from 'z-ai-web-dev-sdk';
 import { db } from '@/lib/db';
 import { createOrder, geocodeVerify } from '@/lib/orders';
+import { inc } from '@/lib/metrics';
 import type {
   ConditionOp,
   EngineMessage,
@@ -12,6 +13,8 @@ import type {
 
 const MAX_STEPS = 30;
 const MEMORY_TAIL = 12;
+/** BE22-14: общий бюджет выполнения сценария на один ввод (~25 с) */
+const RUN_BUDGET_MS = 25_000;
 
 // ─── ZAI-синглтон ────────────────────────────────────────────────────────────────
 // ZAI.create() устанавливает соединение — раньше оно создавалось заново на каждый
@@ -155,6 +158,58 @@ export function interpolate(
   out = out.replace(/,\s*,+/g, ', ');
   out = out.replace(/,\s*$/gm, '');
   return out;
+}
+
+const VAR_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
+
+/** BE22-11: подстановка {{var}} в URL http-узла — значения проходят
+ *  encodeURIComponent, кириллица/пробелы/& в переменных не ломают адрес. */
+function interpolateUrl(
+  text: string | undefined,
+  vars: Record<string, string>,
+  input?: string
+): string {
+  if (!text) return '';
+  return text.replace(VAR_RE, (_m, key: string) => {
+    const v = key === 'input' && input !== undefined ? input : (vars[key] ?? '');
+    return encodeURIComponent(v);
+  });
+}
+
+/** BE22-11: JSON-безопасная подстановка {{var}} в body http-узла —
+ *  кавычки/бэкслеши/переводы строки экранируются, подстановка не может
+ *  сломать структуру JSON или внедрить произвольные поля. */
+function interpolateJson(
+  text: string | undefined,
+  vars: Record<string, string>,
+  input?: string
+): string {
+  if (!text) return '';
+  return text.replace(VAR_RE, (_m, key: string) => {
+    const v = key === 'input' && input !== undefined ? input : (vars[key] ?? '');
+    return JSON.stringify(v).slice(1, -1);
+  });
+}
+
+/**
+ * BE22-11 (SSRF): сценарии рисуют пользователи — http-узел не должен ходить
+ * во внутреннюю сеть хостинга (метаданные облаков, админки на localhost и т.п.).
+ */
+function isPrivateHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h === '::1' || h === '::' || h === '0.0.0.0') return true;
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (a === 127 || a === 10 || a === 0) return true; // loopback, приватные, 0.0.0.0/8
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 169 && b === 254) return true; // link-local (метаданные облаков)
+  }
+  return false;
 }
 
 function findNode(flow: Flow, id: string): FlowNode | null {
@@ -317,6 +372,10 @@ async function runAI(
         if (typeof aiTimer.unref === 'function') aiTimer.unref();
       }),
     ]);
+  } catch (e) {
+    // метрика: зависший/неуспешный ИИ-вызов (22-BE2 metrics)
+    if (e instanceof Error && e.message.startsWith('AI timeout')) inc('aiTimeouts');
+    throw e;
   } finally {
     // очищаем таймер, чтобы не течь (иначе гонка «ответ пришёл последним» держит handle)
     if (aiTimer) clearTimeout(aiTimer);
@@ -542,7 +601,23 @@ export async function runEngine(
 
   // 3. Главный цикл traversal'а
   let steps = 0;
+  const startedAt = Date.now(); // BE22-14: общий бюджет времени
   while (current && steps < MAX_STEPS) {
+    if (Date.now() - startedAt > RUN_BUDGET_MS) {
+      // BE22-14: досрочный выход с fallback-сообщением — сценарий с цепочкой
+      // долгих узлов (ИИ, delay) не должен держать вебхук минутами.
+      console.warn('[flow-engine] бюджет времени исчерпан', {
+        botId: ctx?.botId,
+        conversationId: ctx?.conversationId,
+        steps,
+      });
+      const budgetText = 'Обработка заняла слишком много времени. Попробуйте ещё раз.';
+      messages.push({ text: budgetText, nodeId: '__budget' });
+      state.history.push({ role: 'bot', text: budgetText });
+      state.waiting = 'none';
+      state.currentNodeId = null;
+      break;
+    }
     steps++;
     const node = current;
     switch (node.type) {
@@ -650,19 +725,40 @@ export async function runEngine(
         break;
       }
       case 'http': {
-        const url = interpolate(node.data.url, state.vars, lastInput || undefined);
+        // BE22-11: подстановки в URL кодируются, приватные хосты запрещены —
+        // при запрете/невалидном URL узел не падает, а выставляет
+        // __http_status='error' (сценарий обрабатывает это условием)
+        const url = interpolateUrl(node.data.url, state.vars, lastInput || undefined);
         if (url.trim()) {
+          let allowed = false;
           try {
-            const method = (node.data.method || 'GET').toUpperCase();
-            const init: RequestInit = { method };
-            if (method !== 'GET' && node.data.body) {
-              init.body = interpolate(node.data.body, state.vars, lastInput || undefined);
-              init.headers = { 'Content-Type': 'application/json' };
+            const parsed = new URL(url);
+            if (isPrivateHostname(parsed.hostname)) {
+              console.warn(
+                '[flow-engine] http-узел: внешний вызов на приватный адрес запрещён:',
+                parsed.hostname,
+                { botId: ctx?.botId, conversationId: ctx?.conversationId }
+              );
+              state.vars['__http_status'] = 'error';
+            } else {
+              allowed = true;
             }
-            const res = await fetch(url, { ...init, signal: AbortSignal.timeout(10000) });
-            state.vars['__http_status'] = String(res.status);
           } catch {
             state.vars['__http_status'] = 'error';
+          }
+          if (allowed) {
+            try {
+              const method = (node.data.method || 'GET').toUpperCase();
+              const init: RequestInit = { method };
+              if (method !== 'GET' && node.data.body) {
+                init.body = interpolateJson(node.data.body, state.vars, lastInput || undefined);
+                init.headers = { 'Content-Type': 'application/json' };
+              }
+              const res = await fetch(url, { ...init, signal: AbortSignal.timeout(10000) });
+              state.vars['__http_status'] = String(res.status);
+            } catch {
+              state.vars['__http_status'] = 'error';
+            }
           }
         }
         lastInput = '';
@@ -700,6 +796,12 @@ export async function runEngine(
   }
 
   if (steps >= MAX_STEPS) {
+    // BE22-14: причина «бот замолчал» должна быть видна в логах
+    console.warn('[flow-engine] MAX_STEPS исчерпан', {
+      botId: ctx?.botId,
+      conversationId: ctx?.conversationId,
+      steps,
+    });
     state.waiting = 'none';
     state.currentNodeId = null;
   }

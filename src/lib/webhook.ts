@@ -3,6 +3,7 @@ import { runEngine, askAssistant, isMainMenuCommand } from '@/lib/flow-engine';
 import type { AiAssistantConfig } from '@/lib/flow-engine';
 import { loadAssistantConfig } from '@/lib/ai-assistant';
 import { getFlowCached } from '@/lib/flow-cache';
+import { inc } from '@/lib/metrics';
 import { ORDER_STATUS_LABELS, ORDER_TYPE_LABELS } from '@/lib/orders';
 import type { EngineState, Flow } from '@/lib/flow-types';
 import type { Conversation } from '@prisma/client';
@@ -55,6 +56,11 @@ const BTN_MY_ORDERS = '📦 Мои заявки';
 const BTN_CALL_OPERATOR = '🎧 Позвать оператора';
 const BTN_FREE_CHAT = '💬 Свободный чат';
 const BTN_MAIN_MENU = '🏠 Главное меню';
+
+/** Fallback при сбое движка (BE22-01а): клиент получает обычный ответ бота,
+ *  а не тишину/ошибку мессенджера. В лог идёт только botId/convId + стектрейс,
+ *  БЕЗ текста сообщения клиента (PII, см. также BE22-13). */
+const TECH_ERROR_TEXT = 'Техническая ошибка, попробуйте позже';
 
 /** Максимальное число рядов inline-клавиатуры MAX */
 const MAX_KEYBOARD_ROWS = 8;
@@ -191,6 +197,7 @@ function withConversationLock<T>(conversationId: string, fn: () => Promise<T>): 
  * доступны пользователю постоянно.
  */
 export async function processInbound(channelId: string, msg: InboundMessage): Promise<InboundResult> {
+  inc('inbound');
   const channel = await db.channel.findUnique({
     where: { id: channelId },
     include: { bot: true },
@@ -434,15 +441,28 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
       dropVar(st.vars, '__orderNumber');
       st.waiting = 'none';
       st.currentNodeId = null;
-      const result = await runEngine(flow, '/start', st, await getAssistant(), {
-        botId: channel.botId,
-        conversationId: conv.id,
-        externalUserId: conv.externalUserId,
-      });
-      for (const m of result.messages) messages.push({ text: m.text, buttons: m.buttons });
-      appendPersistentButtons(messages);
-      await persistBotMessages();
-      return finish(result.state);
+      try {
+        const result = await runEngine(flow, '/start', st, await getAssistant(), {
+          botId: channel.botId,
+          conversationId: conv.id,
+          externalUserId: conv.externalUserId,
+        });
+        for (const m of result.messages) messages.push({ text: m.text, buttons: m.buttons });
+        appendPersistentButtons(messages);
+        await persistBotMessages();
+        return finish(result.state);
+      } catch (err) {
+        // BE22-01а: падение движка не должно терять сообщение клиента и ронять
+        // вебхук — отвечаем fallback-текстом через обычный reply-механизм.
+        inc('inboundErrors');
+        console.error('[webhook] ошибка движка (главное меню)', {
+          botId: channel.botId,
+          conversationId: conv.id,
+        }, err);
+        pushBot(TECH_ERROR_TEXT);
+        await persistBotMessages();
+        return finish(st);
+      }
     }
 
     if (isMyOrdersCommand(text)) {
@@ -626,19 +646,32 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
     }
 
     // ─── Обычный режим: выполнение сценария ──────────────────────────────────
-    const result = await runEngine(flow, msg.text, state, await getAssistant(), {
-      botId: channel.botId,
-      conversationId: conv.id,
-      externalUserId: conv.externalUserId,
-    });
-    for (const m of result.messages) messages.push({ text: m.text, buttons: m.buttons });
-    // handoff-узел сценария — поднимаем флаг оператора и в БД (не только в state)
-    if (result.needsOperator) {
-      needsOperator = true;
-    } else {
-      appendPersistentButtons(messages);
+    try {
+      const result = await runEngine(flow, msg.text, state, await getAssistant(), {
+        botId: channel.botId,
+        conversationId: conv.id,
+        externalUserId: conv.externalUserId,
+      });
+      for (const m of result.messages) messages.push({ text: m.text, buttons: m.buttons });
+      // handoff-узел сценария — поднимаем флаг оператора и в БД (не только в state)
+      if (result.needsOperator) {
+        needsOperator = true;
+      } else {
+        appendPersistentButtons(messages);
+      }
+      await persistBotMessages();
+      return finish(result.state);
+    } catch (err) {
+      // BE22-01а: сбой движка → fallback клиенту через обычный reply-механизм,
+      // состояние НЕ перезаписываем — пользователь сможет повторить тот же ввод.
+      inc('inboundErrors');
+      console.error('[webhook] ошибка движка (сценарий)', {
+        botId: channel.botId,
+        conversationId: conv.id,
+      }, err);
+      pushBot(TECH_ERROR_TEXT);
+      await persistBotMessages();
+      return finish(baseState());
     }
-    await persistBotMessages();
-    return finish(result.state);
   });
 }

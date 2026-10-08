@@ -17,8 +17,9 @@ export async function GET(req: NextRequest) {
       updatedAt: true,
       /// Настройки MyTKO — для бейджа «синхронизировано с MyTKO» на карточке
       mytkoConfig: true,
-      channels: { select: { id: true, type: true, active: true } },
-      _count: { select: { conversations: true, channels: true } },
+      // IMP-BE22 (22-BE2): lastStatus для бейджа «канал ОК/ошибка» на карточке
+      channels: { select: { id: true, type: true, active: true, lastStatus: true } },
+      _count: { select: { conversations: true, channels: true, orders: true } },
     },
     where: { userId: user.id },
     orderBy: { updatedAt: 'desc' },
@@ -59,6 +60,9 @@ export async function GET(req: NextRequest) {
         mytko,
         channelsCount: b._count.channels,
         conversationsCount: b._count.conversations,
+        // IMP-BE22 (22-BE2): счётчик заявок и статусы каналов для карточек на дашборде
+        ordersCount: b._count.orders,
+        channelStatuses: b.channels.map((c) => ({ type: c.type, lastStatus: c.lastStatus })),
         channelTypes: b.channels.map((c) => c.type),
       };
     }),

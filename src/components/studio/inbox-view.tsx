@@ -15,7 +15,9 @@ import {
   ChevronLeft,
   ChevronDown,
   ChevronRight,
+  ClipboardCopy,
   Clock,
+  Copy,
   Globe,
   Headset,
   Inbox,
@@ -23,12 +25,16 @@ import {
   MessageCircle,
   MessagesSquare,
   MessageSquare,
+  MoreHorizontal,
+  Pin,
+  PinOff,
   RotateCcw,
   Search,
   Send,
   SearchCheck,
   Truck,
   WifiOff,
+  XCircle,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '@/lib/client-api';
@@ -43,6 +49,24 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Select,
   SelectContent,
@@ -200,6 +224,7 @@ interface ConversationRowProps {
   needsOperator: boolean;
   status: string;
   unread: boolean;
+  pinned: boolean;
   messagesCount: number;
   updatedAt: string;
   lastMessageText: string | null;
@@ -215,6 +240,7 @@ const ConversationRow = memo(function ConversationRow({
   needsOperator,
   status,
   unread,
+  pinned,
   messagesCount,
   updatedAt,
   lastMessageText,
@@ -229,7 +255,7 @@ const ConversationRow = memo(function ConversationRow({
       onClick={() => onSelect(id)}
       aria-current={selected ? 'true' : undefined}
       className={cn(
-        'flex w-full min-w-0 flex-col gap-1 p-3 text-left transition-colors hover:bg-muted/60',
+        'flex w-full min-w-0 flex-col gap-1 py-3 pl-3 pr-12 text-left transition-colors hover:bg-muted/60',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
         selected && 'bg-primary/5',
         unread && status === 'open' && 'bg-primary/[0.04]'
@@ -278,6 +304,15 @@ const ConversationRow = memo(function ConversationRow({
           : 'Нет сообщений'}
       </p>
       <div className="flex flex-wrap gap-1.5">
+        {pinned && (
+          <Badge
+            variant="outline"
+            className="h-4 gap-0.5 px-1.5 text-[9px]"
+            title="Диалог закреплён"
+          >
+            <Pin className="h-2.5 w-2.5" aria-hidden /> закреплён
+          </Badge>
+        )}
         {needsOperator && status === 'open' && (
           <Badge variant="destructive" className="h-4 animate-pulse px-1.5 text-[9px]">
             <Headset className="mr-0.5 h-2.5 w-2.5" /> требует внимания
@@ -298,6 +333,69 @@ const ConversationRow = memo(function ConversationRow({
         </Badge>
       </div>
     </button>
+  );
+});
+
+/** FE22-25: контекстное меню строки диалога — закрепить / копировать / закрыть.
+ *  Триггер «…» — отдельный элемент поверх строки (строка кликабельна целиком,
+ *  stopPropagation не даёт открыть диалог при клике по меню). */
+interface ConversationRowMenuProps {
+  convId: string;
+  contact: string | null;
+  pinned: boolean;
+  status: string;
+  onPin: (convId: string, pinned: boolean) => void;
+  onCopyContact: (contact: string | null) => void;
+  onCopyTranscript: (convId: string, contact: string | null) => void;
+  onCloseRequest: (convId: string, contact: string | null) => void;
+}
+
+const ConversationRowMenu = memo(function ConversationRowMenu({
+  convId,
+  contact,
+  pinned,
+  status,
+  onPin,
+  onCopyContact,
+  onCopyTranscript,
+  onCloseRequest,
+}: ConversationRowMenuProps) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Действия с диалогом: ${contact || 'гость'}`}
+          onClick={(e) => e.stopPropagation()}
+          className="absolute right-0.5 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <MoreHorizontal className="h-4 w-4" aria-hidden />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuItem onSelect={() => onPin(convId, pinned)}>
+          {pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+          {pinned ? 'Открепить' : 'Закрепить'}
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!contact} onSelect={() => onCopyContact(contact)}>
+          <Copy className="h-4 w-4" /> Копировать контакт
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onCopyTranscript(convId, contact)}>
+          <ClipboardCopy className="h-4 w-4" /> Скопировать переписку
+        </DropdownMenuItem>
+        {status === 'open' && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={() => onCloseRequest(convId, contact)}
+            >
+              <XCircle className="h-4 w-4" /> Закрыть обращение
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 });
 
@@ -557,7 +655,9 @@ export default function InboxView({
   onFocusConsumed?: () => void;
 }) {
   const { toast } = useToast();
-  const [conversations, setConversations] = useState<ConversationListItem[]>([]);
+  /** FE22-25: API возвращает pinned/pinnedAt (закреплённые сверху) — расширяем локально */
+  type ConvRow = ConversationListItem & { pinned?: boolean };
+  const [conversations, setConversations] = useState<ConvRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [optimistic, setOptimistic] = useState<OptimisticMessage[]>([]);
@@ -565,7 +665,6 @@ export default function InboxView({
   const [selectedSource, setSelectedSource] = useState('web');
   const [needsOperator, setNeedsOperator] = useState(false);
   const [status, setStatus] = useState('open');
-  const [reply, setReply] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [ordersTick, setOrdersTick] = useState(0);
@@ -579,15 +678,56 @@ export default function InboxView({
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [failStreak, setFailStreak] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** FE22-24: auto-grow textarea ответа (до 4 строк) */
+  const replyTaRef = useRef<HTMLTextAreaElement>(null);
   /** IMP-F01: пользователь у дна переписки? — иначе не таскаем его вниз */
   const isNearBottomRef = useRef(true);
   /** Свежие ссылки для стабильных подписчиков (клавиатура/поллинг без ре-монтажа) */
   const selectedIdRef = useRef<string | null>(null);
   const visibleListRef = useRef<ConversationListItem[]>([]);
+  /** Зеркало messages для «Скопировать переписку» без зависимостей колбэка (FE22-25) */
+  const messagesRef = useRef<ChatMessage[]>([]);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  /** FE22-24: черновики ответов per-диалог — Map в state + persist в localStorage.
+   *  Переключение диалогов сохраняет тексты, отправка — очищает. */
+  const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
+  const reply = selectedId ? (drafts.get(selectedId) ?? '') : '';
+  const setReply = useCallback((text: string) => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    setDrafts((prev) => {
+      if (prev.get(id) === text) return prev;
+      const next = new Map(prev);
+      next.set(id, text);
+      return next;
+    });
+  }, []);
+
+  // FE22-24: debounce-запись черновиков в localStorage (bstudio.inbox.draft.<convId>)
+  useEffect(() => {
+    if (drafts.size === 0) return;
+    const t = setTimeout(() => {
+      drafts.forEach((text, id) => writeLS(`bstudio.inbox.draft.${id}`, text));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [drafts]);
+
+  // FE22-24: auto-grow до 4 строк (fallback для браузеров без field-sizing);
+  // сброс высоты при очистке (отправка/переключение диалога)
+  useEffect(() => {
+    const el = replyTaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 98)}px`;
+  }, [reply]);
 
   // IMP-F07: persist фильтра и поиска
   useEffect(() => {
@@ -609,7 +749,7 @@ export default function InboxView({
 
   const loadList = useCallback(async () => {
     try {
-      const d = await api<{ conversations: ConversationListItem[] }>(
+      const d = await api<{ conversations: ConvRow[] }>(
         `/api/bots/${bot.id}/conversations`
       );
       setConversations(d.conversations);
@@ -668,10 +808,19 @@ export default function InboxView({
     [notePollSuccess, notePollFailure]
   );
 
-  /** Открыть диалог: выделяем и сразу помечаем прочитанным (сервер запоминает operatorReadAt) */
+  /** Открыть диалог: выделяем, помечаем прочитанным (сервер запоминает operatorReadAt)
+   *  и подтягиваем сохранённый черновик этого диалога (FE22-24) */
   const openConversation = useCallback((id: string) => {
     setSelectedId(id);
     setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, unread: false } : c)));
+    setDrafts((prev) => {
+      if (prev.has(id)) return prev;
+      const stored = readLS(`bstudio.inbox.draft.${id}`, '');
+      if (!stored) return prev;
+      const next = new Map(prev);
+      next.set(id, stored);
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -791,7 +940,14 @@ export default function InboxView({
     const convId = selectedId;
     const tmpId = `tmp-${Date.now()}`;
     setOptimistic((prev) => [...prev, { id: tmpId, convId, text: t, status: 'sending' }]);
-    setReply('');
+    // FE22-24: черновик отправлен — очищаем и в state, и в localStorage
+    setDrafts((prev) => {
+      if (!prev.has(convId)) return prev;
+      const next = new Map(prev);
+      next.delete(convId);
+      return next;
+    });
+    writeLS(`bstudio.inbox.draft.${convId}`, '');
     setSending(true);
     await deliverReply(convId, tmpId, t);
     setSending(false);
@@ -807,18 +963,107 @@ export default function InboxView({
     void deliverReply(msg.convId, tmpId, msg.text);
   };
 
-  const closeConversation = async () => {
-    if (!selectedId) return;
+  /** FE22-25: закрытие обращения по id — из шапки (любой открытый диалог)
+   *  или из контекстного меню строки; подтверждение — в AlertDialog */
+  const [closeTarget, setCloseTarget] = useState<{ id: string; contact: string | null } | null>(
+    null
+  );
+  const [closingBusy, setClosingBusy] = useState(false);
+
+  const requestClose = useCallback((id: string, contactName: string | null) => {
+    setCloseTarget({ id, contact: contactName });
+  }, []);
+
+  const closeById = async (id: string) => {
+    setClosingBusy(true);
     try {
-      await api(`/api/conversations/${selectedId}/close`, { method: 'POST' });
-      setNeedsOperator(false);
-      setStatus('closed');
+      await api(`/api/conversations/${id}/close`, { method: 'POST' });
+      if (selectedIdRef.current === id) {
+        setNeedsOperator(false);
+        setStatus('closed');
+      }
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, status: 'closed', needsOperator: false } : c))
+      );
+      setCloseTarget(null);
       toast({ title: 'Обращение закрыто' });
       loadList();
     } catch {
       toast({ title: 'Ошибка', variant: 'destructive' });
+    } finally {
+      setClosingBusy(false);
     }
   };
+
+  /** FE22-25: закрепить/открепить — оптимистично, при ошибке откат */
+  const togglePin = useCallback(
+    async (convId: string, pinned: boolean) => {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === convId ? { ...c, pinned: !pinned } : c))
+      );
+      try {
+        await api(`/api/bots/${bot.id}/conversations/${convId}/pin`, {
+          method: 'POST',
+          body: JSON.stringify({ pinned: !pinned }),
+        });
+        toast({ title: pinned ? 'Диалог откреплён' : 'Диалог закреплён' });
+        loadList(); // подтверждаем порядок списка (закреплённые сверху)
+      } catch {
+        setConversations((prev) =>
+          prev.map((c) => (c.id === convId ? { ...c, pinned } : c))
+        );
+        toast({ title: 'Не удалось изменить закрепление', variant: 'destructive' });
+      }
+    },
+    [bot.id, toast, loadList]
+  );
+
+  /** FE22-25: копирование контакта (паттерн CopyButton) */
+  const copyContact = useCallback(
+    async (contactName: string | null) => {
+      if (!contactName) return;
+      try {
+        await navigator.clipboard.writeText(contactName);
+        toast({ title: 'Скопировано: контакт' });
+      } catch {
+        toast({ title: 'Не удалось скопировать', variant: 'destructive' });
+      }
+    },
+    [toast]
+  );
+
+  /** FE22-25: переписка текстом «Кто: сообщение» — из загруженных сообщений
+   *  открытого диалога, иначе точечный запрос */
+  const copyTranscript = useCallback(
+    async (convId: string, contactName: string | null) => {
+      let msgs: ChatMessage[] | null = null;
+      if (convId === selectedIdRef.current && messagesRef.current.length > 0) {
+        msgs = messagesRef.current;
+      } else {
+        try {
+          const d = await api<{ messages: ChatMessage[] }>(`/api/conversations/${convId}`);
+          msgs = d.messages;
+        } catch {
+          toast({ title: 'Не удалось загрузить переписку', variant: 'destructive' });
+          return;
+        }
+      }
+      if (!msgs || msgs.length === 0) {
+        toast({ title: 'Переписка пуста' });
+        return;
+      }
+      const who = (m: ChatMessage) =>
+        m.role === 'user' ? contactName || 'Клиент' : m.nodeId === '__operator' ? 'Оператор' : 'Бот';
+      const text = msgs.map((m) => `${who(m)}: ${m.text}`).join('\n');
+      try {
+        await navigator.clipboard.writeText(text);
+        toast({ title: `Скопировано: ${msgs.length} сообщ.` });
+      } catch {
+        toast({ title: 'Не удалось скопировать', variant: 'destructive' });
+      }
+    },
+    [toast]
+  );
 
   const selected = conversations.find((c) => c.id === selectedId) ?? null;
 
@@ -854,8 +1099,14 @@ export default function InboxView({
           (c.lastMessage?.text ?? '').toLowerCase().includes(q)
       );
     }
-    const weight = (c: ConversationListItem) =>
-      c.needsOperator && c.status === 'open' ? 0 : c.unread && c.status === 'open' ? 1 : 2;
+    const weight = (c: ConvRow) =>
+      c.pinned // закреплённые — всегда сверху (синхронно с orderBy сервера)
+        ? -1
+        : c.needsOperator && c.status === 'open'
+          ? 0
+          : c.unread && c.status === 'open'
+            ? 1
+            : 2;
     return [...list].sort((a, b) => {
       const w = weight(a) - weight(b);
       if (w !== 0) return w;
@@ -1046,21 +1297,33 @@ export default function InboxView({
             <ScrollArea className="min-h-0 flex-1">
               <div className="divide-y">
                 {visibleList.map((c) => (
-                  <ConversationRow
-                    key={c.id}
-                    id={c.id}
-                    source={c.source}
-                    contact={c.contact}
-                    needsOperator={c.needsOperator}
-                    status={c.status}
-                    unread={c.unread}
-                    messagesCount={c.messagesCount}
-                    updatedAt={c.updatedAt}
-                    lastMessageText={c.lastMessage?.text ?? null}
-                    lastMessageRole={c.lastMessage?.role ?? null}
-                    selected={selectedId === c.id}
-                    onSelect={openConversation}
-                  />
+                  <div key={c.id} className="relative">
+                    <ConversationRow
+                      id={c.id}
+                      source={c.source}
+                      contact={c.contact}
+                      needsOperator={c.needsOperator}
+                      status={c.status}
+                      unread={c.unread}
+                      pinned={!!c.pinned}
+                      messagesCount={c.messagesCount}
+                      updatedAt={c.updatedAt}
+                      lastMessageText={c.lastMessage?.text ?? null}
+                      lastMessageRole={c.lastMessage?.role ?? null}
+                      selected={selectedId === c.id}
+                      onSelect={openConversation}
+                    />
+                    <ConversationRowMenu
+                      convId={c.id}
+                      contact={c.contact}
+                      pinned={!!c.pinned}
+                      status={c.status}
+                      onPin={togglePin}
+                      onCopyContact={copyContact}
+                      onCopyTranscript={copyTranscript}
+                      onCloseRequest={requestClose}
+                    />
+                  </div>
                 ))}
               </div>
             </ScrollArea>
@@ -1104,9 +1367,15 @@ export default function InboxView({
                 )}
                 {status === 'closed' && <Badge variant="outline">закрыт</Badge>}
                 <div className="ml-auto flex gap-2">
-                  {needsOperator && status === 'open' && (
-                    <Button size="sm" variant="outline" onClick={closeConversation}>
-                      <Headset className="h-3.5 w-3.5" /> Закрыть обращение
+                  {/* FE22-25: закрыть можно ЛЮБОЙ открытый диалог (не только needsOperator);
+                      подтверждение — общий AlertDialog */}
+                  {status === 'open' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setCloseTarget({ id: selected.id, contact })}
+                    >
+                      <XCircle className="h-3.5 w-3.5" /> Закрыть обращение
                     </Button>
                   )}
                 </div>
@@ -1141,17 +1410,28 @@ export default function InboxView({
               </div>
 
               <form
-                className="flex items-center gap-2 border-t bg-background p-3"
+                className="flex items-end gap-2 border-t bg-background p-3"
                 onSubmit={(e) => {
                   e.preventDefault();
                   sendReply();
                 }}
               >
-                <Input
+                {/* FE22-24: многострочный ответ — Enter отправляет, Shift+Enter переносит,
+                    auto-grow до 4 строк */}
+                <Textarea
+                  ref={replyTaRef}
+                  rows={1}
+                  aria-label="Ответ клиенту"
                   placeholder="Ответить как оператор…"
-                  aria-label="Ответить как оператор"
                   value={reply}
+                  className="min-h-[40px] max-h-[98px] resize-none py-2 text-sm"
                   onChange={(e) => setReply(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      sendReply();
+                    }
+                  }}
                 />
                 <Button
                   type="submit"
@@ -1167,6 +1447,38 @@ export default function InboxView({
           )}
         </div>
       </div>
+
+      {/* FE22-25: подтверждение закрытия обращения — из шапки и из контекстного меню */}
+      <AlertDialog
+        open={!!closeTarget}
+        onOpenChange={(o) => {
+          if (!o && !closingBusy) setCloseTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Закрыть обращение?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Обращение{closeTarget?.contact ? ` с «${closeTarget.contact}»` : ''} будет закрыто —
+              управление вернётся боту, клиент получит сообщение главного меню.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={closingBusy}>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60"
+              disabled={closingBusy}
+              onClick={(e) => {
+                e.preventDefault(); // не закрываем диалог — ждём ответ сервера (busy виден)
+                if (closeTarget) closeById(closeTarget.id);
+              }}
+            >
+              {closingBusy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              Закрыть обращение
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

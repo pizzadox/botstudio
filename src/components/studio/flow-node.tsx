@@ -68,6 +68,20 @@ export const FlowCard = memo(function FlowCard({ data, selected }: NodeProps<Flo
   const meta = NODE_META[node.type];
   const Icon = NODE_ICONS[node.type];
 
+  // IMP-FE22-11: ненастроенный узел — янтарная точка в шапке (текст/url не заполнены)
+  const isUnconfigured = (): boolean => {
+    switch (node.type) {
+      case 'message':
+      case 'question':
+      case 'handoff':
+        return !node.data.text?.trim();
+      case 'http':
+        return !node.data.url?.trim();
+      default:
+        return false;
+    }
+  };
+
   const preview = (): string | null => {
     switch (node.type) {
       case 'message':
@@ -93,11 +107,14 @@ export const FlowCard = memo(function FlowCard({ data, selected }: NodeProps<Flo
 
   const buttons = node.type === 'buttons' ? node.data.buttons ?? [] : [];
   const isCondition = node.type === 'condition';
+  // IMP-FE22-12б: чипы кнопок — первые 6, остальные скрыты за «+N»
+  const visibleButtons = buttons.slice(0, 6);
+  const hiddenButtons = buttons.slice(6);
 
   return (
     <div
       className={cn(
-        'w-56 rounded-lg border bg-card shadow-sm transition-shadow sm:w-60',
+        'relative w-56 rounded-lg border bg-card shadow-sm transition-shadow sm:w-60',
         selected ? 'ring-2 ring-primary ring-offset-1 ring-offset-background' : 'hover:shadow-md'
       )}
     >
@@ -117,12 +134,24 @@ export const FlowCard = memo(function FlowCard({ data, selected }: NodeProps<Flo
         >
           <Icon className="h-4 w-4" aria-hidden />
         </div>
-        <div className="min-w-0">
+        {/* IMP-FE22-12в: без своего label не дублируем meta.title в подзаголовке */}
+        <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-semibold leading-tight">
-            {node.data.label || meta.title}
+            {node.data.label?.trim() || meta.title}
           </div>
-          <div className="text-[10px] leading-tight text-muted-foreground">{meta.title}</div>
+          {node.data.label?.trim() && (
+            <div className="text-[10px] leading-tight text-muted-foreground">{meta.title}</div>
+          )}
         </div>
+        {isUnconfigured() && (
+          // IMP-FE22-11: маркер «не настроен» (пустой текст/url)
+          <span
+            role="img"
+            aria-label="Не настроен"
+            title="Не настроен"
+            className="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+          />
+        )}
       </div>
 
       <div className="space-y-1.5 p-2.5">
@@ -131,7 +160,7 @@ export const FlowCard = memo(function FlowCard({ data, selected }: NodeProps<Flo
         )}
         {buttons.length > 0 && (
           <div className="flex flex-wrap gap-1 pb-1">
-            {buttons.map((b) => (
+            {visibleButtons.map((b) => (
               <span
                 key={b.id}
                 className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] leading-tight text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300"
@@ -139,6 +168,14 @@ export const FlowCard = memo(function FlowCard({ data, selected }: NodeProps<Flo
                 {b.text}
               </span>
             ))}
+            {hiddenButtons.length > 0 && (
+              <span
+                title={hiddenButtons.map((b) => b.text).join('\n')}
+                className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300"
+              >
+                +{hiddenButtons.length}
+              </span>
+            )}
           </div>
         )}
         {node.type === 'question' && node.data.variable && (
@@ -167,20 +204,33 @@ export const FlowCard = memo(function FlowCard({ data, selected }: NodeProps<Flo
         ))}
       {isCondition && (
         <>
+          {/* IMP-FE22-12б: хендлы 16px (hit-area) + подписи «да»/«нет» */}
           <Handle
             id="yes"
             type="source"
             position={Position.Bottom}
             style={{ left: '30%' }}
-            className={cn(HANDLE_CLS, '!bg-emerald-500', '-bottom-1.5')}
+            className={cn(HANDLE_CLS, '!h-4 !w-4 !bg-emerald-500', '-bottom-1.5')}
           />
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute -bottom-[22px] left-[30%] -translate-x-1/2 text-[9px] leading-none text-muted-foreground"
+          >
+            да
+          </span>
           <Handle
             id="no"
             type="source"
             position={Position.Bottom}
             style={{ left: '70%' }}
-            className={cn(HANDLE_CLS, '!bg-rose-500', '-bottom-1.5')}
+            className={cn(HANDLE_CLS, '!h-4 !w-4 !bg-rose-500', '-bottom-1.5')}
           />
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute -bottom-[22px] left-[70%] -translate-x-1/2 text-[9px] leading-none text-muted-foreground"
+          >
+            нет
+          </span>
         </>
       )}
       {!['buttons', 'condition', 'end'].includes(node.type) && (

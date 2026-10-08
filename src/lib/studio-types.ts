@@ -17,7 +17,10 @@ export interface BotListItem {
   mytko?: { enabled: boolean; hasToken: boolean } | null;
   channelsCount: number;
   conversationsCount: number;
+  ordersCount?: number;
   channelTypes: string[];
+  /// lastStatus каналов для бейджа «канал ОК/ошибка» (заполняется с волны 22)
+  channelStatuses?: { type: string; lastStatus: string | null }[];
 }
 
 export interface Stats {

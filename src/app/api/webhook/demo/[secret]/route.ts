@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { processInbound } from '@/lib/webhook';
 import { getFlowCached } from '@/lib/flow-cache';
 import { clientIp, rateLimit } from '@/lib/rate-limit';
+import { inc } from '@/lib/metrics';
 import crypto from 'crypto';
 
 /** Cap для ?take — защита от «выкачаем всю таблицу» */
@@ -124,6 +125,13 @@ export async function POST(req: NextRequest, { params }: Params) {
 
 export async function GET(req: NextRequest, { params }: Params) {
   const { secret } = await params;
+
+  // IMP-BE22-17: polling GET тоже дорогой — не больше 60 опросов с одного ip в минуту
+  if (!rateLimit(`demog:${clientIp(req)}`, 60, 60_000)) {
+    inc('rateLimited');
+    return noStoreJson({ error: 'Слишком много запросов' }, 429);
+  }
+
   const channel = await db.channel.findUnique({ where: { secret }, include: { bot: true } });
   if (!channel || channel.type !== 'web') {
     return noStoreJson({ error: 'Канал не найден' }, 404);

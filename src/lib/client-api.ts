@@ -59,7 +59,8 @@ export async function api<T>(url: string, options?: RequestInit): Promise<T> {
     const msg =
       (data as { error?: string })?.error ||
       `Ошибка запроса (${res.status})`;
-    throw new Error(msg);
+    // IMP-FE22-15: status — аддитивно (DemoChat отличает 429 от прочих сбоев)
+    throw Object.assign(new Error(msg), { status: res.status });
   }
   return data as T;
 }

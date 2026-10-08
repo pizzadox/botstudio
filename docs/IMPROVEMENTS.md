@@ -148,3 +148,67 @@
 - 45 улучшений выполнено (BE1: 10, BE2: 11, FE1: 9, FE2: 16 — с учётом фикса сериализации).
 - Критичные: защита от затирания сценария (data loss), рабочий «Проверить» канал, маскирование всех секретов в API, шифрование пароля MyTKO, защита демо-виджета от инъекций в чужие диалоги.
 - tsc: 0; lint: 0; browser-верификация: см. worklog Task 21.
+
+---
+
+# Реестр улучшений BotStudio — волна 22 (2026-10-08)
+
+Источник: третий аудит (2 Explore-агента: 25 FE- + 20 BE-находок). Реализовано 4 агентами (22-BE1, 22-BE2, 22-FE1, 22-FE2) + интегратор (метрики).
+
+## A. Движок и мессенджеры (агент 22-BE1)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-BE22-01 | Crash-safety: try/catch вокруг runEngine (fallback клиенту, состояние сохраняется), нормализация битого flow в кэше, per-update try/catch в MAX-poller (батч не теряется) | ✅ |
+| IMP-BE22-02 | src/lib/flow-validate.ts normalizeFlow: whitelist типов, text ≤4000, buttons ≤20, ≤500 узлов, ≤1МБ; подключён в PUT bots/[id] (400 на мусор) | ✅ |
+| IMP-BE22-03 | Чанкование сообщений: MAX ≤3900 (кнопки в последний чанк), Telegram ≤4000, sendReplies без обрыва | ✅ |
+| IMP-BE22-04 | Telegram: callback_query → текст кнопки движку, дедуп update_id, inline_keyboard, callback_data ≤64 байт (длинные — текстовой подсказкой) | ✅ |
+| IMP-BE22-05 | Экспоненциальный backoff long-polling (5с·2^n, cap 2мин; 401 — 5мин) | ✅ |
+| IMP-BE22-10 | Ретрай доставки ×1 (сеть/5xx) | ✅ |
+| IMP-BE22-13 | PII-логи убраны (длина + chatId) | ✅ |
+| IMP-BE22-14 | Бюджет runEngine 25с → вежливый fallback; warn при MAX_STEPS | ✅ |
+| IMP-BE22-15/16 | getMe-ретрай раз в 30 циклов; claim ПОСЛЕ обработки (unique externalKey страхует) | ✅ |
+| IMP-BE22-19 | Нормализация полей заявки из сценария (slice/phone) | ✅ |
+| IMP-BE22-11 | http-узел: encodeURIComponent, JSON-escape, запрет приватных хостов (SSRF) | ✅ |
+
+## B. API-возможности (агент 22-BE2)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-BE22-06 | POST /api/auth/password: смена пароля (verify, ≥6, другие сессии инвалидируются, rate-limit) | ✅ |
+| IMP-BE22-07 | GET /api/bots/[id]/orders/export: CSV с BOM, фильтры status/from/to | ✅ |
+| IMP-BE22-08 | GET /api/health {ok, uptime, db, metrics} + src/lib/metrics.ts (6 счётчиков на globalThis) | ✅ |
+| IMP-BE22-09 | Матрица переходов статусов (финальные без force → 400), completedAt не затирается; POST orders/bulk | ✅ |
+| IMP-BE22-12 | Conversation.pinnedAt + POST .../pin; закреплённые сверху; джоба чистки пустых web-диалогов 7д (instrumentation) | ✅ |
+| IMP-BE22-17 | Demo GET rate-limit 60/мин | ✅ |
+| IMP-BE22-20 | clientIp: XFF только при TRUST_PROXY=1 | ✅ |
+| IMP-BE22-21 | bots GET: ordersCount + channelStatuses (типы готовы) | ✅ |
+| (метрики) | Интегратор: inc() подключены в webhook (inbound/inboundErrors), flow-engine (aiTimeouts), deliver (deliveries/deliveryFailures), auth (rateLimited) | ✅ |
+
+## C. Заявки и инбокс (агент 22-FE1)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-FE22-01 | Быстрые чипы статуса «Взять в работу»/«Выполнить» (+disabled при saving) | ✅ |
+| IMP-FE22-02 | Мини-таймлайн статусов (Создана→Обновлена→Выполнена) | ✅ |
+| IMP-FE22-03 | Фильтры дат «Сегодня/7 дней/Всё» (persist) | ✅ |
+| IMP-FE22-04 | «Скопировать заявку» целиком | ✅ |
+| IMP-FE22-05 | «Открыть диалог» из карточки (CustomEvent → инбокс) | ✅ |
+| IMP-FE22-06 | Скелетон чата заявки вместо ложного пустого состояния | ✅ |
+| IMP-FE22-07 | AlertDialog удаления заявки | ✅ |
+| IMP-FE22-08/09 | memo lng; h1 конвенция | ✅ |
+| IMP-FE22-10 | Поля disabled при saving; открытие созданной заявки; «Экспорт CSV» | ✅ |
+| IMP-FE22-24 | Черновики per-диалог (persist) + Textarea Enter/Shift+Enter | ✅ |
+| IMP-FE22-25 | Меню «…» строки: закрепить, копировать контакт/переписку, закрыть обращение (любой открытый) | ✅ |
+
+## D. Виджет, профиль, глобал (агент 22-FE2)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-FE22-17 | Публичный виджет /w/[secret] (standalone HTML, launcher, safe-area, мобайл dvh) + «Код для сайта» (iframe-сниппет) | ✅ |
+| IMP-FE22-14/15/16/18 | «Бот печатает…», 429 → cooldown 60с, скелетон+приветствие, статус шапки по 409, тач-чипы, aria-live, поллинг-пауза | ✅ |
+| IMP-FE22-23 | Профиль: кнопка имени + «Ещё»-меню, Dialog смены пароля (API BE2) | ✅ |
+| IMP-FE22-19 | Skip-link + focus-visible-сетка в globals.css | ✅ |
+| IMP-FE22-20 | overflow-wrap:anywhere в пузырях + prefers-reduced-motion | ✅ |
+| IMP-FE22-21 | Обзор-панель дашборда: кликабельные «Новых заявок»/«Требуют внимания», бейдж каналов, ordersCount | ✅ |
+| IMP-FE22-11/12/13 | flow-node: индикация «Не настроен», подписи да/нет, «+N» кнопок, без дублей заголовка | ✅ |
+
+## Итог волны 22
+- 47 улучшений (BE1: 12, BE2: 10+метрики, FE1: 12, FE2: 11).
+- tsc 0; lint 0; /api/health, /w/[secret], demo-вебхук, движок — проверены живьём; browser-верификация — worklog Task 22.

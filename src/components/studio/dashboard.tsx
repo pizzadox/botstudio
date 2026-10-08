@@ -7,6 +7,7 @@ import {
   Headset,
   Inbox,
   Loader2,
+  MapPin,
   MessagesSquare,
   MoreVertical,
   Pencil,
@@ -68,9 +69,15 @@ const BOTS_SKELETON_COUNT = 3;
 export default function Dashboard({
   onOpenBot,
   onBotsChanged,
+  newOrders = 0,
+  onOpenView,
 }: {
   onOpenBot: (bot: BotListItem, view: ViewKey) => void;
   onBotsChanged: () => void;
+  /** Новых заявок — живое число из NotificationsWatcher в app-root (IMP-FE22-21) */
+  newOrders?: number;
+  /** Переход в раздел по клику на обзорную карточку (заявки/инбокс) */
+  onOpenView?: (v: ViewKey) => void;
 }) {
   const { toast } = useToast();
   const [bots, setBots] = useState<BotListItem[]>([]);
@@ -267,6 +274,45 @@ export default function Dashboard({
         </div>
       )}
 
+      {/* Обзор: кликабельные сводки (IMP-FE22-21). needsOperator приходит из
+          stats этого же дашборда, newOrders — из notifications-totals app-root. */}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={() => onOpenView?.('orders')}
+          aria-label={`Новых заявок: ${newOrders}. Открыть раздел «Заявки»`}
+          className="rounded-xl border bg-card p-4 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">
+              <Inbox className="h-5 w-5" aria-hidden="true" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-2xl font-bold leading-tight tabular-nums">{newOrders}</div>
+              <div className="truncate text-xs text-muted-foreground">Новых заявок</div>
+            </div>
+          </div>
+        </button>
+        <button
+          type="button"
+          onClick={() => onOpenView?.('inbox')}
+          aria-label={`Требуют внимания: ${stats?.needsOperator ?? 0}. Открыть раздел «Входящие»`}
+          className="rounded-xl border bg-card p-4 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400">
+              <Headset className="h-5 w-5" aria-hidden="true" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-2xl font-bold leading-tight tabular-nums">
+                {stats?.needsOperator ?? 0}
+              </div>
+              <div className="truncate text-xs text-muted-foreground">Требуют внимания</div>
+            </div>
+          </div>
+        </button>
+      </div>
+
       {/* Список ботов */}
       <div>
         <h2 className="mb-3 text-lg font-semibold tracking-tight">Мои боты</h2>
@@ -385,6 +431,38 @@ export default function Dashboard({
                         MyTKO {bot.mytko.hasToken ? '✓' : '…'}
                       </Badge>
                     )}
+                    {/* IMP-FE22-21: сводный бейдж статусов каналов (channelStatuses из GET /api/bots) */}
+                    {(() => {
+                      const withStatus = (bot.channelStatuses ?? []).filter((c) => c.lastStatus);
+                      if (withStatus.length === 0) return null;
+                      const hasError = withStatus.some(
+                        (c) => c.lastStatus && !c.lastStatus.startsWith('OK')
+                      );
+                      const title = withStatus
+                        .map((c) => `${SOURCE_LABELS[c.type] ?? c.type}: ${c.lastStatus}`)
+                        .join('\n');
+                      return (
+                        <Badge
+                          variant="outline"
+                          title={title}
+                          className={
+                            hasError
+                              ? 'border-rose-200 bg-rose-100 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-300'
+                              : 'border-emerald-200 bg-emerald-100 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300'
+                          }
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              'h-1.5 w-1.5 rounded-full',
+                              hasError ? 'bg-rose-500' : 'bg-emerald-500'
+                            )}
+                          />
+                          <span className="sr-only">Каналы: </span>
+                          {hasError ? 'Ошибка канала' : 'Каналы ОК'}
+                        </Badge>
+                      );
+                    })()}
                   </div>
                 </CardContent>
                 <CardFooter className="gap-2 border-t pt-3">
@@ -422,6 +500,21 @@ export default function Dashboard({
                     <Inbox className="h-4 w-4" aria-hidden="true" />{' '}
                     <span className="tabular-nums">{bot.conversationsCount}</span>
                   </Button>
+                  {/* IMP-FE22-21: счётчик заявок (ordersCount приходит из GET /api/bots) */}
+                  {typeof bot.ordersCount === 'number' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      aria-label={`Заявки: ${bot.ordersCount}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenBot(bot, 'orders');
+                      }}
+                    >
+                      <MapPin className="h-4 w-4" aria-hidden="true" />{' '}
+                      <span className="tabular-nums">{bot.ordersCount}</span>
+                    </Button>
+                  )}
                 </CardFooter>
               </Card>
             ))}

@@ -182,3 +182,21 @@
 .react-flow__handle:hover {
   box-shadow: 0 0 0 4px oklch(0.596 0.145 163.225 / 25%);
 }
+
+/* IMP-FE22-19: страховочная сетка клавиатурного фокуса на ВСЕ интерактивные
+   элементы — в т.ч. без focus-visible:ring-классов (нативные кнопки виджета,
+   ссылки и т.п.). ring — это box-shadow, outline — отдельный слой: у shadcn-
+   кнопок с ring-классами получится двойная индикация, это допустимо. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* IMP-FE22-20: prefers-reduced-motion — анимации индикаторов (скелетоны,
+   «бот печатает») замирают вместо дёргания */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-bounce {
+    animation: none;
+  }
+}

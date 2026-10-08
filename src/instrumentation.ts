@@ -32,4 +32,27 @@ export async function register(): Promise<void> {
   const timer = setInterval(cleanupSessions, 60 * 60 * 1000);
   // не удерживаем процесс из-за таймера
   if (typeof timer.unref === 'function') timer.unref();
+
+  // 22-BE2 (IMP-BE22): часовая чистка «мусорных» веб-диалогов — source='web',
+  // без единого сообщения, старше 7 дней (виджет открыли и не написали /
+  // диалог создался впустую). Каскад удалит нечего — сообщений нет, заявок нет.
+  const cleanupEmptyWebConversations = (): void => {
+    void db.conversation
+      .deleteMany({
+        where: {
+          source: 'web',
+          createdAt: { lt: new Date(Date.now() - 7 * 24 * 3600 * 1000) },
+          messages: { none: {} },
+        },
+      })
+      .then((r) => {
+        if (r.count > 0) console.log(`[instrumentation] удалено пустых web-диалогов: ${r.count}`);
+      })
+      .catch(() => {
+        // таблица может ещё не существовать при первом db:push — не критично
+      });
+  };
+  cleanupEmptyWebConversations();
+  const cleanupTimer = setInterval(cleanupEmptyWebConversations, 60 * 60 * 1000);
+  if (typeof cleanupTimer.unref === 'function') cleanupTimer.unref();
 }

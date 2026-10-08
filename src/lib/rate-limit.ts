@@ -36,9 +36,24 @@ export function rateLimit(key: string, limit: number, windowMs: number): boolean
   return true;
 }
 
-/** IP-адрес из заголовков прокси (Caddy) или запроса */
+/**
+ * IP-адрес клиента для ключей rate-limit'а.
+ *
+ * IMP-BE22-20: заголовки X-Forwarded-For / X-Real-IP подделываются клиентом,
+ * поэтому доверяем им ТОЛЬКО когда приложение точно стоит за reverse-proxy —
+ * флаг process.env.TRUST_PROXY === '1' (в песочнице/проде Caddy всегда ставит
+ * XFF, в .env.local добавлен TRUST_PROXY=1).
+ *
+ * Если TRUST_PROXY не задан (прямая экспозиция без прокси) — возвращаем
+ * 'unknown': лимитеры становятся общими «глобальными» бакетами. Это осознанный
+ * безопасный дефолт: злоумышленник не может обойти лимит подменой заголовков
+ * (цена — более грубое ограничение на таком развёртывании).
+ */
 export function clientIp(req: Request): string {
-  const fwd = req.headers.get('x-forwarded-for');
-  if (fwd) return fwd.split(',')[0].trim();
-  return req.headers.get('x-real-ip') ?? 'unknown';
+  if (process.env.TRUST_PROXY === '1') {
+    const fwd = req.headers.get('x-forwarded-for');
+    if (fwd) return fwd.split(',')[0].trim();
+    return req.headers.get('x-real-ip') ?? 'unknown';
+  }
+  return 'unknown';
 }

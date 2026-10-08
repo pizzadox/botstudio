@@ -75,9 +75,12 @@ async function handleMessageCreated(
   if (!chatId) return;
 
   // Защита от дублей: MAX может доставить сообщение и через long polling,
-  // и через вебхук, плюс ретраи после таймаутов
+  // и через вебхук, плюс ретраи после таймаутов. BE22-16: in-memory claim
+  // перенесён ПОСЛЕ успешной обработки — при сбое ключ не расходуется и
+  // повторная доставка сможет обработать сообщение. Конкурентные дубли ловит
+  // unique(conversationId, externalKey) в БД (processInbound отвечает
+  // duplicate:true без повторного ответа) — проверено по schema.prisma.
   const mid = msg.body?.mid;
-  if (mid && !claimInboundKey(`${channelId}:${mid}`)) return;
 
   const contact = sender.name ?? sender.first_name ?? sender.username ?? undefined;
   const externalUserId = sender.user_id != null ? String(sender.user_id) : undefined;
@@ -97,6 +100,9 @@ async function handleMessageCreated(
     console.warn('[max] сообщение пропущено:', result.error);
     return;
   }
+  // BE22-16: помечаем обработанным только после успешного ответа движка
+  // (в т.ч. duplicate — сообщение уже обработано ранее)
+  if (mid) claimInboundKey(`${channelId}:${mid}`);
   if (result.duplicate) return; // уже отвечали на это сообщение
 
   await sendReplies(channelId, token, chatId, result.messages);
@@ -122,11 +128,6 @@ async function handleMessageCallback(
   // В callback MAX иногда передаёт контекст сообщения — chat_id
   const chatHint = cb.message?.recipient?.chat_id != null ? String(cb.message.recipient.chat_id) : undefined;
 
-  if (callbackId && !claimInboundKey(`${channelId}:cb:${callbackId}`)) {
-    await ackCallback(token, callbackId);
-    return;
-  }
-
   const contact = cb.user?.name ?? cb.user?.first_name ?? cb.user?.username ?? undefined;
 
   const result = await processInbound(channelId, {
@@ -142,6 +143,9 @@ async function handleMessageCallback(
     await ackCallback(token, callbackId);
     return;
   }
+  // BE22-16: claim после успешной обработки — конкурентные дубли ловит
+  // unique(conversationId, externalKey) в БД (externalKey = cb:<callback_id>)
+  if (callbackId) claimInboundKey(`${channelId}:cb:${callbackId}`);
   if (result.duplicate) {
     await ackCallback(token, callbackId);
     return;
@@ -228,12 +232,18 @@ export async function sendReplies(
   chatId: string,
   messages: { text: string; buttons?: { id: string; text: string }[] }[]
 ): Promise<void> {
-  let sent = 0;
+  // BE22-03: неудача отправки одного ответа не отменяет остальные —
+  // логируем, считаем failures и продолжаем (частичная доставка лучше полной тишины).
+  let first = true;
+  let failures = 0;
   for (const m of messages) {
-    if (sent > 0) await sleep(THROTTLE_MS);
+    if (!first) await sleep(THROTTLE_MS);
+    first = false;
     const ok = await sendOne(channelId, token, chatId, m);
-    if (!ok) break;
-    sent += 1;
+    if (!ok) failures += 1;
+  }
+  if (failures > 0) {
+    console.warn(`[max] sendReplies: не доставлено ${failures} из ${messages.length} (чат ${chatId})`);
   }
 }
 
@@ -249,7 +259,8 @@ async function sendOne(
     await markStatus(channelId, `Ошибка отправки: ${res.error}`);
     return false;
   }
-  console.log(`[max] ответ → чат ${chatId}: ${m.text.slice(0, 60).replace(/\n/g, ' ')}`);
+  // BE22-13: PII — текст сообщения клиента в лог не попадает (только длина)
+  console.log(`[max] ответ → чат ${chatId}: ${m.text.length} симв.`);
   return true;
 }
 

@@ -42,6 +42,13 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
+        {/* IMP-FE22-19: skip-link — первый элемент body, виден при первом Tab */}
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-primary-foreground"
+        >
+          Перейти к содержимому
+        </a>
         <ThemeProvider
           attribute="class"
           defaultTheme="light"

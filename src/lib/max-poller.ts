@@ -26,11 +26,21 @@ const LONG_POLL_SEC = 25;
 /** Не отвечаем на сообщения старше 2 минут (например, накопившиеся до подключения канала). */
 const STALE_MS = 2 * 60 * 1000;
 
+/** BE22-05: экспоненциальный backoff: delay = min(5000 * 2^n, cap).
+ *  cap 120000 (2 мин) — сетевые сбои/5xx; cap 300000 (5 мин) — 401/403. */
+function backoffDelay(attempt: number, capMs: number): number {
+  const n = Math.max(attempt - 1, 0);
+  return Math.min(5000 * 2 ** n, capMs);
+}
+
 interface ChannelLoop {
   stopped: boolean;
   marker?: number;
   botUserId?: number;
   webhooksCleared?: boolean;
+  /** BE22-15: если getMe не удался — сколько циклов пропустить до повторной попытки
+   *  (не кэшируем «-1»: токен мог быть заменён, нужно получить реальный user_id). */
+  meRetryIn?: number;
 }
 
 interface PollerGlobal {
@@ -86,7 +96,10 @@ async function syncLoop(): Promise<void> {
 /** Цикл Long Polling для одного канала. */
 async function channelLoop(channelId: string, loop: ChannelLoop): Promise<void> {
   console.log('[max-poller] канал запущен:', channelId);
+  /** Счётчик сетевых сбоев/5xx подряд (сбрасывается успехом) */
   let errorCount = 0;
+  /** Счётчик отказов авторизации подряд (BE22-05: до 5 минут) */
+  let authErrorCount = 0;
   /** Токен, для которого актуален marker (при смене токена маркер сбрасывается) */
   let markerToken: string | null = null;
 
@@ -103,12 +116,30 @@ async function channelLoop(channelId: string, loop: ChannelLoop): Promise<void> 
         loop.marker = undefined;
         loop.botUserId = undefined;
         loop.webhooksCleared = false;
+        loop.meRetryIn = undefined;
       }
 
-      // Один раз узнаём user_id бота, чтобы игнорировать собственные сообщения
+      // Один раз узнаём user_id бота, чтобы игнорировать собственные сообщения.
+      // BE22-15: при неудаче НЕ кэшируем «-1» навсегда — пробуем раз в 30 циклов,
+      // пока getMe не ответит (например, токен только что создан/заменён).
       if (loop.botUserId === undefined) {
-        const me = await maxGetMe(token);
-        loop.botUserId = me.ok ? me.bot.user_id : -1;
+        if ((loop.meRetryIn ?? 0) > 0) {
+          loop.meRetryIn = (loop.meRetryIn ?? 0) - 1;
+        } else {
+          const me = await maxGetMe(token);
+          if (me.ok) {
+            loop.botUserId = me.bot.user_id;
+            loop.meRetryIn = undefined;
+          } else {
+            loop.meRetryIn = 30;
+            console.warn(
+              '[max-poller] канал',
+              channelId,
+              '— getMe не удался, повтор через 30 циклов:',
+              me.error
+            );
+          }
+        }
       }
 
       // Гарантия одиночной доставки: если у бота есть вебхук-подписки —
@@ -127,22 +158,42 @@ async function channelLoop(channelId: string, loop: ChannelLoop): Promise<void> 
         if (res.status === 401 || res.status === 403) {
           // Токен отклонён: ждём внутри цикла (не завершая его) — если
           // пользователь заменит токен, подхватим его автоматически.
+          // BE22-05: экспоненциальный backoff до 5 минут, чтобы не долбить API.
+          authErrorCount += 1;
+          const delay = backoffDelay(authErrorCount, 300000);
           await db.channel
             .update({ where: { id: channelId }, data: { lastStatus: 'Ошибка: MAX отклонил токен' } })
             .catch(() => {});
-          console.warn('[max-poller] канал', channelId, '— токен отклонён, повтор через 30с');
-          await sleep(30000);
+          if (authErrorCount <= 3 || authErrorCount % 10 === 0) {
+            console.warn(
+              '[max-poller] канал',
+              channelId,
+              '— токен отклонён, повтор через',
+              Math.round(delay / 1000),
+              'с'
+            );
+          }
+          await sleep(delay);
           continue;
         }
+        // Сетевой сбой/5xx: экспоненциальный backoff до 2 минут (BE22-05)
         errorCount += 1;
+        const delay = backoffDelay(errorCount, 120000);
         if (errorCount <= 3 || errorCount % 20 === 0) {
-          console.error('[max-poller] канал', channelId, '—', res.error);
+          console.error(
+            '[max-poller] канал',
+            channelId,
+            '—',
+            res.error,
+            `| повтор через ${Math.round(delay / 1000)}с`
+          );
         }
-        await sleep(5000);
+        await sleep(delay);
         continue;
       }
 
       errorCount = 0;
+      authErrorCount = 0;
 
       if (loop.marker === undefined) {
         // Первый успешный опрос: запоминаем маркер. Последнее «висящее»
@@ -150,26 +201,53 @@ async function channelLoop(channelId: string, loop: ChannelLoop): Promise<void> 
         // processInbound дедуплицирует по mid/callback_id).
         loop.marker = res.marker;
         const fresh = res.updates.filter((u) => (u.timestamp ?? 0) > Date.now() - STALE_MS);
-        for (const upd of fresh) {
-          await handleMaxUpdate(channelId, token, upd, { botUserId: loop.botUserId });
-        }
+        await handleUpdatesSafely(channelId, token, fresh, loop.botUserId);
         await markConnected(channelId);
         continue;
       }
 
+      // Маркер продвигаем ДО обработки: падение одного апдейта (BE22-01в)
+      // не остановит батч и не приведёт к повторной обработке остальных.
       loop.marker = res.marker ?? loop.marker;
-      for (const upd of res.updates) {
-        await handleMaxUpdate(channelId, token, upd, { botUserId: loop.botUserId });
-      }
+      await handleUpdatesSafely(channelId, token, res.updates, loop.botUserId);
     } catch (e) {
-      console.error('[max-poller] канал', channelId, '— непредвиденная ошибка:', e);
-      await sleep(5000);
+      // BE22-05: непредвиденная ошибка тоже с экспоненциальным backoff
+      errorCount += 1;
+      const delay = backoffDelay(errorCount, 120000);
+      console.error(
+        '[max-poller] канал',
+        channelId,
+        '— непредвиденная ошибка:',
+        e,
+        `| повтор через ${Math.round(delay / 1000)}с`
+      );
+      await sleep(delay);
     }
   }
 
   loop.stopped = true;
   g.__maxPoller?.loops.delete(channelId);
   console.log('[max-poller] канал завершён:', channelId);
+}
+
+/**
+ * BE22-01в: каждый апдейт обрабатывается в собственном try/catch —
+ * падение одного сообщения/кнопки не убивает весь батч и не влияет
+ * на продвижение маркера (он уже выставлен вызывающим кодом).
+ */
+async function handleUpdatesSafely(
+  channelId: string,
+  token: string,
+  updates: MaxUpdate[],
+  botUserId?: number
+): Promise<void> {
+  for (const upd of updates) {
+    try {
+      await handleMaxUpdate(channelId, token, upd, { botUserId });
+    } catch (e) {
+      console.error('[max-poller] апдейт не обработан (канал', channelId, '):', e);
+    }
+  }
 }
 
 async function markConnected(channelId: string): Promise<void> {

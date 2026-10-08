@@ -5,18 +5,22 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Map as MlMap, Marker as MlMarker } from 'maplibre-gl';
 import {
   Archive,
+  Check,
   ChevronDown,
   ChevronLeft,
   Clock,
   Copy,
   Crosshair,
+  Download,
   Globe,
   Headset,
   List,
   Loader2,
   MapPin,
+  MessageCircle,
   MessageSquare,
   Phone,
+  Play,
   Plus,
   RefreshCw,
   Search,
@@ -26,7 +30,7 @@ import {
   User,
   WifiOff,
 } from 'lucide-react';
-import { api } from '@/lib/client-api';
+import { api, getAuthToken } from '@/lib/client-api';
 import { cityButtons, composeAddress, SERVICE_CITIES } from '@/lib/cities';
 import type { OrderDto, OrderMessageDto } from '@/lib/studio-types';
 import {
@@ -37,6 +41,16 @@ import {
   SOURCE_COLORS,
   SOURCE_LABELS,
 } from '@/lib/studio-types';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -139,6 +153,17 @@ function fmtDate(iso: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+/** FE22-02: относительная дата для мини-таймлайна заявки (старше суток — точная дата) */
+function fmtRel(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'только что';
+  if (m < 60) return `${m} мин назад`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} ч назад`;
+  return fmtDate(iso);
 }
 
 // ─── Карта OpenFreeMap (MapLibre GL, бесплатные векторные тайлы без ключа) ───
@@ -534,6 +559,8 @@ function OrderChat({
   const { toast } = useToast();
   const [messages, setMessages] = useState<OrderMessageDto[]>([]);
   const [pending, setPending] = useState<PendingMessage[]>([]);
+  /** FE22-06: получен ли первый ответ сервера — до него показываем скелетон, а не пустое состояние */
+  const [initialLoaded, setInitialLoaded] = useState(false);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -556,6 +583,8 @@ function OrderChat({
         setMessages((prev) => mergeMessages(prev, d.messages));
       } catch {
         /* polling errors ignored */
+      } finally {
+        setInitialLoaded(true);
       }
     },
     [botId, orderId]
@@ -565,6 +594,7 @@ function OrderChat({
     activeKeyRef.current = `${botId}/${orderId}`;
     setMessages([]);
     setPending([]);
+    setInitialLoaded(false);
     isNearBottomRef.current = true;
     fetchMessages(null); // полная первая загрузка
     let timer: ReturnType<typeof setInterval> | null = setInterval(() => fetchMessages(50), 3000);
@@ -654,7 +684,21 @@ function OrderChat({
         onScroll={handleScroll}
         className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/30 p-3"
       >
-        {messages.length === 0 && pending.length === 0 && (
+        {/* FE22-06: до первого ответа fetchMessages — скелетон (3 пузыря-заглушки),
+            пустое состояние — только после реального пустого ответа сервера */}
+        {!initialLoaded && messages.length === 0 && pending.length === 0 && (
+          <div
+            className="flex h-full flex-col justify-center gap-2.5 px-4"
+            role="status"
+            aria-label="Загружаем сообщения"
+          >
+            <span className="sr-only">Загружаем сообщения…</span>
+            <div className="h-12 w-3/4 animate-pulse rounded-xl rounded-bl-md bg-muted" />
+            <div className="ml-auto h-9 w-2/3 animate-pulse rounded-xl rounded-br-md bg-muted" />
+            <div className="h-14 w-4/5 animate-pulse rounded-xl rounded-bl-md bg-muted" />
+          </div>
+        )}
+        {initialLoaded && messages.length === 0 && pending.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-muted-foreground">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary" aria-hidden>
               <MessageSquare className="h-5 w-5" />
@@ -885,6 +929,8 @@ function OrderDetailDialog({
   const [geoLoading, setGeoLoading] = useState(false);
   const [confirmGeo, setConfirmGeo] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /** FE22-07: busy у кнопки-действия AlertDialog — двойной клик невозможен */
+  const [deleting, setDeleting] = useState(false);
   const [mytkoBusy, setMytkoBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -913,6 +959,7 @@ function OrderDetailDialog({
       setOrder(null);
       setClientOrders([]);
       setConfirmDelete(false);
+      setDeleting(false);
       setConfirmGeo(false);
     }
   }, [open, orderId, load]);
@@ -975,14 +1022,49 @@ function OrderDetailDialog({
   };
 
   const remove = async () => {
-    if (!orderId) return;
+    if (!orderId || deleting) return;
+    setDeleting(true);
     try {
       await api(`/api/bots/${botId}/orders/${orderId}`, { method: 'DELETE' });
       toast({ title: `Заявка удалена` });
+      setConfirmDelete(false);
       onDataChanged();
       onClose();
     } catch {
       toast({ title: 'Не удалось удалить', variant: 'destructive' });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /** FE22-04: вся заявка текстом — построчно «Метка: значение», пустые поля пропускаются */
+  const copyOrderText = async () => {
+    if (!order) return;
+    const lines = (
+      [
+        ['Номер', `№${order.number}`],
+        ['Тип', ORDER_TYPE_LABELS[order.type] ?? order.type],
+        ['Статус', ORDER_STATUS_LABELS[order.status] ?? order.status],
+        ['Клиент', order.clientName || order.conversation?.contact || ''],
+        ['Телефон', order.phone ?? ''],
+        ['Город', order.city ?? ''],
+        ['Адрес', order.address ?? ''],
+        ['Размер', order.size ?? ''],
+        ['Дата подачи', order.wishDate ?? ''],
+        ['Комментарий', order.comment ?? ''],
+        [
+          'Координаты',
+          order.lat != null ? `${order.lat.toFixed(5)}, ${(order.lng ?? 0).toFixed(5)}` : '',
+        ],
+      ] as const
+    )
+      .filter(([, v]) => v !== '')
+      .map(([k, v]) => `${k}: ${v}`);
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      toast({ title: 'Заявка скопирована' });
+    } catch {
+      toast({ title: 'Не удалось скопировать', variant: 'destructive' });
     }
   };
 
@@ -1015,6 +1097,29 @@ function OrderDetailDialog({
 
   const hasManualPoint = order?.geoSource === 'manual';
 
+  /** FE22-01: чипы следующего шага по схеме статусов. Реальные статусы — из
+   *  ORDER_STATUS_LABELS (new/assigned/in_progress/completed/cancelled):
+   *  new/assigned → in_progress «Взять в работу», in_progress → completed «Выполнить».
+   *  Финальные статусы чипов не имеют (и без force PATCH вернёт 400) — остаётся Select. */
+  const quickStatusActions: { to: string; label: string; icon: typeof Check; cls: string }[] = [];
+  if (order && !ARCHIVE_STATUSES.includes(order.status)) {
+    if (order.status === 'in_progress') {
+      quickStatusActions.push({
+        to: 'completed',
+        label: 'Выполнить',
+        icon: Check,
+        cls: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300 dark:hover:bg-emerald-500/20',
+      });
+    } else {
+      quickStatusActions.push({
+        to: 'in_progress',
+        label: 'Взять в работу',
+        icon: Play,
+        cls: 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/15',
+      });
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="grid h-[100dvh] w-screen max-w-none grid-rows-[auto_1fr] gap-0 overflow-hidden rounded-none border-0 p-0 sm:h-[92dvh] sm:w-[calc(100%-2rem)] sm:max-w-4xl sm:rounded-xl sm:border md:h-[85vh]">
@@ -1034,6 +1139,35 @@ function OrderDetailDialog({
             )}
             {mytkoEnabled && order && <MytkoBadge status={order.mytkoStatus} className="text-[10px] h-5" />}
             {order && <CopyButton value={String(order.number)} label="номер заявки" className="-ml-1" />}
+            {order && (
+              <button
+                type="button"
+                onClick={copyOrderText}
+                aria-label="Скопировать заявку"
+                title="Скопировать заявку"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Copy className="h-3.5 w-3.5" aria-hidden />
+              </button>
+            )}
+            {/* FE22-05: переход в диалог клиента (listener bstudio:open-conversation — в app-root, Task 22-FE2) */}
+            {order?.conversation && order.conversationId && (
+              <button
+                type="button"
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent('bstudio:open-conversation', {
+                      detail: { conversationId: order.conversationId },
+                    })
+                  )
+                }
+                aria-label="Открыть диалог клиента"
+                title="Открыть диалог клиента"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <MessageCircle className="h-3.5 w-3.5" aria-hidden />
+              </button>
+            )}
           </DialogTitle>
           <DialogDescription className="sr-only">
             Карточка заявки: данные клиента, статус и встроенный чат
@@ -1133,6 +1267,7 @@ function OrderDetailDialog({
                     <Select
                       value={order.status}
                       onValueChange={(v) => patch({ status: v }, 'Статус обновлён')}
+                      disabled={saving}
                     >
                       <SelectTrigger className="h-9 w-full">
                         <SelectValue />
@@ -1145,6 +1280,58 @@ function OrderDetailDialog({
                         ))}
                       </SelectContent>
                     </Select>
+                    {/* FE22-01: быстрые действия статуса (отмены/откаты — через Select) */}
+                    {quickStatusActions.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-0.5">
+                        {quickStatusActions.map((a) => (
+                          <button
+                            key={a.to}
+                            type="button"
+                            disabled={saving}
+                            onClick={() => patch({ status: a.to }, 'Статус обновлён')}
+                            aria-label={`Статус: ${a.label}`}
+                            className={cn(
+                              'inline-flex h-8 items-center gap-1 rounded-lg border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50',
+                              a.cls
+                            )}
+                          >
+                            <a.icon className="h-3.5 w-3.5" aria-hidden />
+                            {a.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {/* FE22-02: мини-таймлайн — Создана → Обновлена → Выполнена */}
+                    {(() => {
+                      const created = new Date(order.createdAt).getTime();
+                      const updated = new Date(order.updatedAt).getTime();
+                      const points: { label: string; iso: string; done?: boolean }[] = [
+                        { label: 'Создана', iso: order.createdAt },
+                      ];
+                      if (Math.abs(updated - created) > 60_000)
+                        points.push({ label: 'Обновлена', iso: order.updatedAt });
+                      if (order.completedAt)
+                        points.push({ label: 'Выполнена', iso: order.completedAt, done: true });
+                      return (
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 pt-0.5 text-[11px] text-muted-foreground">
+                          {points.map((p, i) => (
+                            <span key={p.label} className="flex items-center gap-1.5">
+                              {i > 0 && <span className="h-px w-2.5 bg-border" aria-hidden />}
+                              <span
+                                className={cn(
+                                  'h-1.5 w-1.5 rounded-full',
+                                  p.done ? 'bg-emerald-500' : 'bg-muted-foreground/40'
+                                )}
+                                aria-hidden
+                              />
+                              <span className="tabular-nums" title={fmtDate(p.iso)}>
+                                {p.label} {fmtRel(p.iso)}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs font-medium text-muted-foreground">Желаемая дата</Label>
@@ -1170,6 +1357,7 @@ function OrderDetailDialog({
                       value={assignee}
                       placeholder="Бригада / водитель"
                       onChange={(e) => setAssignee(e.target.value)}
+                      disabled={saving}
                     />
                     <Button
                       size="sm"
@@ -1190,6 +1378,7 @@ function OrderDetailDialog({
                       onValueChange={(v) =>
                         patch({ city: v === '__none' ? null : v }, 'Город обновлён')
                       }
+                      disabled={saving}
                     >
                       <SelectTrigger className="h-9 w-full">
                         <SelectValue placeholder="Город" />
@@ -1346,6 +1535,7 @@ function OrderDetailDialog({
                     value={comment}
                     placeholder="Заметки по заявке…"
                     onChange={(e) => setComment(e.target.value)}
+                    disabled={saving}
                   />
                   <Button
                     size="sm"
@@ -1359,29 +1549,13 @@ function OrderDetailDialog({
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-2 text-[11px] text-muted-foreground">
                   <span>Создана: {fmtDate(order.createdAt)}</span>
-                  {confirmDelete ? (
-                    <span className="flex items-center gap-1.5">
-                      Удалить заявку?
-                      <Button size="sm" variant="destructive" className="h-7" onClick={remove}>
-                        Да
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7"
-                        onClick={() => setConfirmDelete(false)}
-                      >
-                        Нет
-                      </Button>
-                    </span>
-                  ) : (
-                    <button
-                      className="flex items-center gap-1 text-muted-foreground transition-colors hover:text-destructive"
-                      onClick={() => setConfirmDelete(true)}
-                    >
-                      <Trash2 className="h-3 w-3" /> удалить
-                    </button>
-                  )}
+                  <button
+                    className="flex items-center gap-1 text-muted-foreground transition-colors hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => setConfirmDelete(true)}
+                    aria-label="Удалить заявку"
+                  >
+                    <Trash2 className="h-3 w-3" /> удалить
+                  </button>
                 </div>
               </div>
             </div>
@@ -1399,6 +1573,37 @@ function OrderDetailDialog({
           </div>
         )}
       </DialogContent>
+      {/* FE22-07: подтверждение удаления через AlertDialog (паттерн волны 21, dashboard deleteBot) */}
+      <AlertDialog
+        open={confirmDelete}
+        onOpenChange={(o) => {
+          if (!o && !deleting) setConfirmDelete(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить заявку?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Заявка №{order?.number ?? '—'} будет удалена безвозвратно. Это действие нельзя
+              отменить.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60"
+              disabled={deleting}
+              onClick={(e) => {
+                e.preventDefault(); // диалог не закрываем — ждём ответ сервера (busy виден)
+                remove();
+              }}
+            >
+              {deleting && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              Удалить безвозвратно
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
@@ -1414,7 +1619,8 @@ function NewOrderDialog({
   botId: string;
   open: boolean;
   onClose: () => void;
-  onCreated: () => void;
+  /** FE22-10: POST возвращает созданную заявку — её id сразу открываем в карточке */
+  onCreated: (orderId: string) => void;
 }) {
   const { toast } = useToast();
   const [saving, setSaving] = useState(false);
@@ -1440,7 +1646,7 @@ function NewOrderDialog({
     }
     setSaving(true);
     try {
-      await api(`/api/bots/${botId}/orders`, {
+      const d = await api<{ order: OrderDto }>(`/api/bots/${botId}/orders`, {
         method: 'POST',
         body: JSON.stringify({
           type: form.type,
@@ -1465,7 +1671,7 @@ function NewOrderDialog({
         wishDate: '',
         comment: '',
       });
-      onCreated();
+      onCreated(d.order.id);
       onClose();
     } catch {
       toast({ title: 'Не удалось создать заявку', variant: 'destructive' });
@@ -1694,6 +1900,7 @@ const OrderRow = memo(
     a.order.size === b.order.size &&
     a.order.wishDate === b.order.wishDate &&
     a.order.lat === b.order.lat &&
+    a.order.lng === b.order.lng &&
     a.order.createdAt === b.order.createdAt &&
     a.order.messagesCount === b.order.messagesCount &&
     a.order.mytkoStatus === b.order.mytkoStatus
@@ -1733,11 +1940,18 @@ export default function OrdersView({
     const v = typeof window === 'undefined' ? null : readStored('bstudio.orders.typeFilter');
     return v === 'waste' || v === 'kgm' ? v : 'all';
   });
+  /** FE22-03: фильтр по дате создания — клиентский, persist bstudio.orders.dateFilter */
+  const [dateFilter, setDateFilter] = useState<'today' | 'week' | 'all'>(() => {
+    const v = typeof window === 'undefined' ? null : readStored('bstudio.orders.dateFilter');
+    return v === 'today' || v === 'week' ? v : 'all';
+  });
   const [search, setSearch] = useState<string>(() =>
     typeof window === 'undefined' ? '' : (readStored('bstudio.orders.search') ?? '')
   );
   const [newOpen, setNewOpen] = useState(false);
   const [mytkoEnabled, setMytkoEnabled] = useState(false);
+  /** FE22-10: busy кнопки экспорта CSV */
+  const [exporting, setExporting] = useState(false);
   // IMP-F15: свежесть данных и индикация потери связи
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
   const [connLost, setConnLost] = useState(false);
@@ -1796,6 +2010,9 @@ export default function OrdersView({
   useEffect(() => {
     writeStored('bstudio.orders.typeFilter', typeFilter);
   }, [typeFilter]);
+  useEffect(() => {
+    writeStored('bstudio.orders.dateFilter', dateFilter);
+  }, [dateFilter]);
   useEffect(() => {
     writeStored('bstudio.orders.showCompleted', showCompleted ? '1' : '0');
   }, [showCompleted]);
@@ -1868,6 +2085,39 @@ export default function OrdersView({
     [placementId, bot.id, load, toast]
   );
 
+  /** FE22-10: выгрузка CSV — с сервера приходит готовый файл (status/from/to);
+   *  из клиентских фильтров отдаём диапазон даты создания (фильтр FE22-03) */
+  const exportCsv = useCallback(async () => {
+    setExporting(true);
+    try {
+      const sp = new URLSearchParams();
+      // экспорт-роут ждёт ISO/дату — отдаём ISO-строку границы диапазона
+      if (dateFilter === 'today')
+        sp.set('from', new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
+      if (dateFilter === 'week')
+        sp.set('from', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+      const token = getAuthToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`/api/bots/${bot.id}/orders/export?${sp}`, { headers });
+      if (!res.ok) throw new Error(`export ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `orders-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast({ title: 'CSV выгружен' });
+    } catch {
+      toast({ title: 'Не удалось выгрузить CSV', variant: 'destructive' });
+    } finally {
+      setExporting(false);
+    }
+  }, [bot.id, dateFilter, toast]);
+
   // IMP-F12: все производные списки — один useMemo (раньше filtered() вызывался дважды за рендер)
   const { active, archive, newCount, withoutGeo, mapOrders, listOrders } = useMemo(() => {
     const active = orders.filter((o) => ACTIVE_STATUSES.includes(o.status));
@@ -1876,6 +2126,13 @@ export default function OrdersView({
     const applyFilters = (list: OrderDto[]) => {
       let r = list;
       if (typeFilter !== 'all') r = r.filter((o) => o.type === typeFilter);
+      if (dateFilter !== 'all') {
+        const from =
+          dateFilter === 'today'
+            ? new Date().setHours(0, 0, 0, 0)
+            : Date.now() - 7 * 24 * 60 * 60 * 1000;
+        r = r.filter((o) => new Date(o.createdAt).getTime() >= from);
+      }
       if (q) {
         r = r.filter(
           (o) =>
@@ -1895,7 +2152,7 @@ export default function OrdersView({
       mapOrders: applyFilters(orders),
       listOrders: tab === 'active' ? applyFilters(active) : applyFilters(archive),
     };
-  }, [orders, typeFilter, search, tab]);
+  }, [orders, typeFilter, dateFilter, search, tab]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1905,7 +2162,7 @@ export default function OrdersView({
           <ChevronLeft className="h-4 w-4" />
         </Button>
         <MapPin className="h-5 w-5 shrink-0 text-primary" aria-hidden />
-        <h1 className="shrink-0 text-lg font-bold tracking-tight sm:text-xl">Заявки</h1>
+        <h1 className="shrink-0 text-lg font-bold tracking-tight sm:text-2xl">Заявки</h1>
         <Badge variant="secondary" className="max-w-[130px] truncate sm:max-w-[180px]">
           {bot.name}
         </Badge>
@@ -1972,6 +2229,48 @@ export default function OrdersView({
             <SelectItem value="kgm">📦 КГМ</SelectItem>
           </SelectContent>
         </Select>
+        {/* FE22-03: фильтр по дате создания (клиентский, persist bstudio.orders.dateFilter) */}
+        <div className="flex items-center gap-1" role="group" aria-label="Фильтр по дате создания">
+          {(
+            [
+              { v: 'today', label: 'Сегодня' },
+              { v: 'week', label: '7 дней' },
+              { v: 'all', label: 'Всё' },
+            ] as const
+          ).map((d) => (
+            <button
+              key={d.v}
+              type="button"
+              onClick={() => setDateFilter(d.v)}
+              aria-pressed={dateFilter === d.v}
+              className={cn(
+                'h-8 rounded-full px-2.5 text-xs font-medium transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                dateFilter === d.v
+                  ? 'border border-transparent bg-primary text-primary-foreground'
+                  : 'border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              {d.label}
+            </button>
+          ))}
+        </div>
+        {/* FE22-10: экспорт CSV — готовый файл с сервера, с учётом фильтра дат */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8"
+          onClick={exportCsv}
+          disabled={exporting}
+          aria-label="Экспорт заявок в CSV"
+        >
+          {exporting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Download className="h-3.5 w-3.5" />
+          )}
+          <span className="hidden sm:inline">CSV</span>
+        </Button>
         {tab === 'map' && (
           <Label
             htmlFor="orders-show-completed"
@@ -2096,7 +2395,10 @@ export default function OrdersView({
         botId={bot.id}
         open={newOpen}
         onClose={() => setNewOpen(false)}
-        onCreated={load}
+        onCreated={(orderId) => {
+          load();
+          openOrder(orderId); // FE22-10: сразу открываем созданную заявку
+        }}
       />
     </div>
   );

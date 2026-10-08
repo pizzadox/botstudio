@@ -27,7 +27,9 @@ export async function GET(req: NextRequest, { params }: Params) {
 
   const conversations = await db.conversation.findMany({
     where: { botId: bot.id },
-    orderBy: { updatedAt: 'desc' },
+    // IMP-BE22-12b: закреплённые диалоги сверху (pinnedAt desc, null'ы — в конец),
+    // далее — обычный порядок по активности
+    orderBy: [{ pinnedAt: 'desc' }, { updatedAt: 'desc' }],
     take,
     select: {
       id: true,
@@ -39,6 +41,7 @@ export async function GET(req: NextRequest, { params }: Params) {
       needsOperator: true,
       status: true,
       operatorReadAt: true,
+      pinnedAt: true,
       createdAt: true,
       updatedAt: true,
       // Последнее сообщение — лёгкий select (id/role/text/createdAt)
@@ -66,6 +69,9 @@ export async function GET(req: NextRequest, { params }: Params) {
         needsOperator: c.needsOperator,
         status: c.status,
         unread,
+        // IMP-BE22-12b: флаг закрепления (ставится через POST .../conversations/[id]/pin)
+        pinned: c.pinnedAt != null,
+        pinnedAt: c.pinnedAt,
         messagesCount: c._count.messages,
         updatedAt: c.updatedAt,
         lastMessage: last,

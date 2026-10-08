@@ -294,13 +294,36 @@ export async function reverseGeocode(
   return promise;
 }
 
+/**
+ * BE22-19: телефон — только цифры и ведущий «+», длина ≤ 20.
+ * «+7 (900) 123-45-67» → «+79001234567».
+ */
+function normalizePhone(input?: string | null): string | null {
+  const raw = (input ?? '').trim();
+  if (!raw) return null;
+  const plus = raw.startsWith('+') ? '+' : '';
+  const digits = raw.slice(plus.length).replace(/\D/g, '');
+  const phone = (plus + digits).slice(0, 20);
+  return phone || null;
+}
+
 export async function createOrder(input: CreateOrderInput) {
+  // BE22-19: нормализация полей из сценария (бот собирает их из {{переменных}} —
+  // длина/формат не гарантированы). Пределы согласованы с операторской формой
+  // (см. POST /api/bots/[id]/orders); нормализация здесь защищает ВСЕХ вызывающих.
+  const clientName = input.clientName?.trim().slice(0, 200) || null;
+  const city = input.city?.trim().slice(0, 100) || null;
+  const address = input.address?.trim().slice(0, 300) || null;
+  const comment = input.comment?.trim().slice(0, 1000) || null;
+  const wishDate = input.wishDate?.trim().slice(0, 30) || null;
+  const phone = normalizePhone(input.phone);
+
   // Координаты — сразу при создании (метка появляется на карте моментально):
   // геокодим до вставки, кэш делает результат детерминированным.
   let lat = input.lat ?? null;
   let lng = input.lng ?? null;
   let geoSource = input.geoSource ?? null;
-  const fullAddress = input.address?.trim() ? input.address : null;
+  const fullAddress = address;
   let needsGeoRetry = false;
   if (lat == null && lng == null && fullAddress) {
     try {
@@ -328,13 +351,13 @@ export async function createOrder(input: CreateOrderInput) {
           externalUserId: input.externalUserId ?? null,
           number: await nextNumber(input.botId),
           type: input.type ?? 'waste',
-          clientName: input.clientName ?? null,
-          phone: input.phone ?? null,
-          city: input.city ?? null,
-          address: input.address ?? null,
+          clientName,
+          phone,
+          city,
+          address,
           size: input.size ?? null,
-          wishDate: input.wishDate ?? null,
-          comment: input.comment ?? null,
+          wishDate,
+          comment,
           status: input.status ?? 'new',
           lat,
           lng,

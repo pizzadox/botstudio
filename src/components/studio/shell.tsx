@@ -11,6 +11,7 @@ import {
   MoreVertical,
   Search,
   Sun,
+  UserRound,
   Workflow,
   Plug,
   Sparkles,
@@ -82,9 +83,12 @@ function ThemeToggle({ className }: { className?: string }) {
  */
 function MobileMoreMenu({
   onOpenPalette,
+  onOpenProfile,
   onLogout,
 }: {
   onOpenPalette?: () => void;
+  /** Открыть диалог «Профиль» (смена пароля) — перед «Выйти» (IMP-FE22-23) */
+  onOpenProfile?: () => void;
   onLogout: () => void;
 }) {
   const { resolvedTheme, setTheme } = useTheme();
@@ -123,6 +127,13 @@ function MobileMoreMenu({
             <DropdownMenuShortcut aria-hidden="true">Ctrl K</DropdownMenuShortcut>
           </DropdownMenuItem>
         )}
+        {/* IMP-FE22-23: «Профиль» на мобиле доступен из «Ещё»-меню */}
+        {onOpenProfile && (
+          <DropdownMenuItem onSelect={() => onOpenProfile()}>
+            <UserRound aria-hidden="true" />
+            Профиль
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onSelect={onLogout}>
           <LogOut aria-hidden="true" />
@@ -141,6 +152,7 @@ export default function Shell({
   onLogout,
   badges,
   onOpenPalette,
+  onOpenProfile,
   children,
 }: {
   user: SessionUser;
@@ -151,6 +163,8 @@ export default function Shell({
   badges?: { inbox?: number; orders?: number };
   /** Открыть палитру команд (Ctrl+K) — триггер в сайдбаре возле навигации */
   onOpenPalette?: () => void;
+  /** Открыть диалог «Профиль» (IMP-FE22-23): кнопка-блок в сайдбаре */
+  onOpenProfile?: () => void;
   children: ReactNode;
 }) {
   const badgeFor = (key: ViewKey): number =>
@@ -190,8 +204,8 @@ export default function Shell({
               </Tooltip>
             ))}
             <div aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
-            {/* «Ещё»-меню вместо отдельной кнопки «Выйти» — тема/палитра/выход (IMP-FE21-02) */}
-            <MobileMoreMenu onOpenPalette={onOpenPalette} onLogout={onLogout} />
+            {/* «Ещё»-меню вместо отдельной кнопки «Выйти» — тема/палитра/профиль/выход (IMP-FE21-02, IMP-FE22-23) */}
+            <MobileMoreMenu onOpenPalette={onOpenPalette} onOpenProfile={onOpenProfile} onLogout={onLogout} />
           </nav>
         </header>
 
@@ -276,14 +290,20 @@ export default function Shell({
             )}
 
             <div className="border-t p-3">
-              <div className="flex items-center gap-2 rounded-xl px-2 py-1.5">
+              <div className="flex items-center gap-1.5 rounded-xl px-2 py-1.5">
                 <div aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary text-sm font-bold uppercase">
                   {user.name?.[0] ?? user.username[0]}
                 </div>
-                <div className="min-w-0 flex-1">
+                {/* IMP-FE22-23: блок имени/@username — кнопка, открывающая диалог «Профиль» */}
+                <button
+                  type="button"
+                  onClick={onOpenProfile}
+                  aria-label="Профиль"
+                  className="min-w-0 flex-1 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
                   <div className="truncate text-sm font-medium">{user.name ?? user.username}</div>
                   <div className="truncate text-xs text-muted-foreground">@{user.username}</div>
-                </div>
+                </button>
                 {/* Тумблер темы — размер соседа (h-8 w-8), десктоп. В мобильный хедер
                     кнопка не добавляется (на 390px нет слота) — тема доступна из
                     «Ещё»-меню и палитры команд (IMP-FE21-02). */}
@@ -304,7 +324,10 @@ export default function Shell({
             </div>
           </aside>
 
-          <main className="flex-1 min-w-0 min-h-0 flex flex-col">{children}</main>
+          {/* IMP-FE22-19: цель skip-link; tabIndex=-1 — фокус после перехода по ссылке */}
+          <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 min-h-0 flex flex-col outline-none">
+            {children}
+          </main>
         </div>
       </div>
     </TooltipProvider>
