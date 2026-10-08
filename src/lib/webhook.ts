@@ -2,8 +2,10 @@ import { db } from '@/lib/db';
 import { runEngine, askAssistant, isMainMenuCommand } from '@/lib/flow-engine';
 import type { AiAssistantConfig } from '@/lib/flow-engine';
 import { loadAssistantConfig } from '@/lib/ai-assistant';
+import { getFlowCached } from '@/lib/flow-cache';
 import { ORDER_STATUS_LABELS, ORDER_TYPE_LABELS } from '@/lib/orders';
 import type { EngineState, Flow } from '@/lib/flow-types';
+import type { Conversation } from '@prisma/client';
 
 export interface InboundMessage {
   externalId?: string;
@@ -197,7 +199,7 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
   if (!channel.active) return { ok: false, error: 'channel_inactive' };
   if (channel.bot.status !== 'published') return { ok: false, error: 'bot_not_published' };
 
-  let conversation = null;
+  let conversation: Conversation | null = null;
 
   // 1. Демо-чат передаёт прямой ID диалога
   if (msg.conversationId) {
@@ -283,15 +285,17 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
   }
 
   // Критическая секция: состояние диалога читаем/пишем только под мьютексом
-  return withConversationLock(conversation.id, async (): Promise<InboundResult> => {
+  const convId = conversation.id;
+  return withConversationLock(convId, async (): Promise<InboundResult> => {
     // перечитываем диалог — пока мы брали блокировку, предыдущее сообщение
     // могло обновить состояние (режим оператора, позицию в сценарии)
-    conversation = await db.conversation.findUnique({ where: { id: conversation.id } });
-    if (!conversation) return { ok: false, error: 'conversation_not_found' };
+    const conv = await db.conversation.findUnique({ where: { id: convId } });
+    if (!conv) return { ok: false, error: 'conversation_not_found' };
+    conversation = conv;
 
     let state: EngineState | null = null;
     try {
-      state = conversation.state ? (JSON.parse(conversation.state) as EngineState) : null;
+      state = conv.state ? (JSON.parse(conv.state) as EngineState) : null;
     } catch {
       state = null;
     }
@@ -305,7 +309,7 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
     try {
       await db.message.create({
         data: {
-          conversationId: conversation.id,
+          conversationId: conv.id,
           role: 'user',
           text: msg.text,
           externalKey: msg.externalKey ?? null,
@@ -325,37 +329,38 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
           ok: true,
           replies: [],
           messages: [],
-          conversationId: conversation.id,
-          chatId: conversation.externalId ?? undefined,
-          needsOperator: conversation.needsOperator,
+          conversationId: conv.id,
+          chatId: conv.externalId ?? undefined,
+          needsOperator: conv.needsOperator,
           duplicate: true,
         };
       }
       throw e;
     }
 
-    let flow: Flow = { nodes: [], edges: [] };
-    try {
-      flow = JSON.parse(channel.bot.flow) as Flow;
-    } catch {
-      flow = { nodes: [], edges: [] };
-    }
+    // Распарсенный сценарий кэшируется по botId+updatedAt (см. flow-cache.ts)
+    const flow: Flow = getFlowCached(channel.botId, channel.bot.updatedAt, channel.bot.flow);
 
-    const assistant: AiAssistantConfig = await loadAssistantConfig(
-      channel.botId,
-      channel.bot.aiConfig
-    );
+    // ИИ-конфиг грузим ЛЕНЬВО: в режимах оператора/заявок/чата по заявке он не нужен,
+    // и лишний запрос базы знаний делать не стоит
+    let assistantConfig: AiAssistantConfig | null = null;
+    const getAssistant = async (): Promise<AiAssistantConfig> => {
+      if (!assistantConfig) {
+        assistantConfig = await loadAssistantConfig(channel.botId, channel.bot.aiConfig);
+      }
+      return assistantConfig;
+    };
 
     const replies: string[] = [];
     const messages: OutboundMessage[] = [];
-    let needsOperator = conversation.needsOperator;
+    let needsOperator = conv.needsOperator;
 
     /** Записать исходящие сообщения бота в БД */
     const persistBotMessages = async (orderId?: string | null) => {
       for (const m of messages) {
         await db.message.create({
           data: {
-            conversationId: conversation.id,
+            conversationId: conv.id,
             role: 'bot',
             text: m.text,
             nodeId: '__bot',
@@ -373,12 +378,12 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
     ): Promise<InboundResult> => {
       const operatorMode = opts?.operator ? true : needsOperator;
       await db.conversation.update({
-        where: { id: conversation.id },
+        where: { id: conv.id },
         data: {
           state: JSON.stringify(newState),
           needsOperator: operatorMode,
-          contact: conversation.contact ?? msg.contact ?? null,
-          channelId: conversation.channelId ?? channel.id,
+          contact: conv.contact ?? msg.contact ?? null,
+          channelId: conv.channelId ?? channel.id,
           status: 'open',
           updatedAt: new Date(),
         },
@@ -387,8 +392,8 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
         ok: true,
         replies,
         messages,
-        conversationId: conversation.id,
-        chatId: conversation.externalId ?? undefined,
+        conversationId: conv.id,
+        chatId: conv.externalId ?? undefined,
         needsOperator: operatorMode,
       };
     };
@@ -417,10 +422,10 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
       dropVar(st.vars, '__orderNumber');
       st.waiting = 'none';
       st.currentNodeId = null;
-      const result = await runEngine(flow, '/start', st, assistant, {
+      const result = await runEngine(flow, '/start', st, await getAssistant(), {
         botId: channel.botId,
-        conversationId: conversation.id,
-        externalUserId: conversation.externalUserId,
+        conversationId: conv.id,
+        externalUserId: conv.externalUserId,
       });
       for (const m of result.messages) messages.push({ text: m.text, buttons: m.buttons });
       appendPersistentButtons(messages);
@@ -437,7 +442,7 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
       const orders = await db.order.findMany({
         where: {
           botId: channel.botId,
-          externalUserId: conversation.externalUserId ?? '__none__',
+          externalUserId: conv.externalUserId ?? '__none__',
         },
         orderBy: { createdAt: 'desc' },
         take: 5,
@@ -491,6 +496,7 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
       st.vars['__mode'] = 'chat';
       st.waiting = 'none';
       st.currentNodeId = null;
+      const assistant = await getAssistant();
       if (assistant.enabled) {
         pushBot('💬 Свободный чат: спрашивайте что угодно — отвечу сразу.');
         withButtons(messages, [BTN_MY_ORDERS, BTN_CALL_OPERATOR, BTN_MAIN_MENU]);
@@ -515,7 +521,7 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
             where: {
               botId: channel.botId,
               number: num,
-              externalUserId: conversation.externalUserId ?? '__none__',
+              externalUserId: conv.externalUserId ?? '__none__',
             },
           })
         : null;
@@ -540,7 +546,7 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
       const orders = await db.order.findMany({
         where: {
           botId: channel.botId,
-          externalUserId: conversation.externalUserId ?? '__none__',
+          externalUserId: conv.externalUserId ?? '__none__',
         },
         orderBy: { createdAt: 'desc' },
         take: 5,
@@ -580,6 +586,7 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
     if (mode === 'chat') {
       const st = baseState();
       st.history.push({ role: 'user', text: msg.text });
+      const assistant = await getAssistant();
       const answer = assistant.enabled ? await askAssistant(assistant, st, msg.text) : null;
 
       if (answer && answer.toUpperCase().includes('OPERATOR_REQUEST')) {
@@ -607,10 +614,10 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
     }
 
     // ─── Обычный режим: выполнение сценария ──────────────────────────────────
-    const result = await runEngine(flow, msg.text, state, assistant, {
+    const result = await runEngine(flow, msg.text, state, await getAssistant(), {
       botId: channel.botId,
-      conversationId: conversation.id,
-      externalUserId: conversation.externalUserId,
+      conversationId: conv.id,
+      externalUserId: conv.externalUserId,
     });
     for (const m of result.messages) messages.push({ text: m.text, buttons: m.buttons });
     // handoff-узел сценария — поднимаем флаг оператора и в БД (не только в state)

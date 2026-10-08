@@ -30,6 +30,16 @@ import {
 import { api } from '@/lib/client-api';
 import type { ChannelItem } from '@/lib/studio-types';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -116,6 +126,8 @@ export default function ChannelsView({
   const [busy, setBusy] = useState(false);
   const [demoChannel, setDemoChannel] = useState<ChannelItem | null>(null);
   const [origin, setOrigin] = useState('');
+  // Подтверждение удаления (AlertDialog): state-target + open={!!target}
+  const [deleteTarget, setDeleteTarget] = useState<ChannelItem | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -204,7 +216,7 @@ export default function ChannelsView({
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+            <h1 className="flex items-center gap-2 text-lg font-bold tracking-tight sm:text-2xl">
               <Plug className="h-6 w-6 text-primary" /> Каналы
             </h1>
             <p className="text-sm text-muted-foreground">Подключение бота «{bot.name}» к мессенджерам</p>
@@ -360,8 +372,8 @@ export default function ChannelsView({
                       size="sm"
                       variant="outline"
                       className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      onClick={() => deleteChannel(ch)}
-                      aria-label="Удалить канал"
+                      onClick={() => setDeleteTarget(ch)}
+                      aria-label={`Удалить канал «${ch.title}»`}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -481,6 +493,32 @@ export default function ChannelsView({
           {demoChannel && <DemoChat secret={demoChannel.secret} />}
         </DialogContent>
       </Dialog>
+
+      {/* Подтверждение удаления канала — безвозвратно */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить канал?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Канал «{deleteTarget?.title}» ({deleteTarget ? CHANNEL_META[deleteTarget.type].label : ''})
+              и все его настройки будут удалены безвозвратно. Это действие нельзя отменить.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60"
+              onClick={() => {
+                const target = deleteTarget;
+                setDeleteTarget(null);
+                if (target) deleteChannel(target);
+              }}
+            >
+              Удалить безвозвратно
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -680,6 +718,9 @@ interface MytkoReportItem {
   notRemoved: number;
 }
 
+/** Рендерим первые N строк отчётов (весь список может быть тысячами) */
+const REPORTS_DEFAULT_LIMIT = 100;
+
 interface MytkoDirectionsUi {
   areas: boolean;
   driverReports: boolean;
@@ -744,6 +785,9 @@ function MytkoCard({ botId }: { botId: string }) {
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState<'login' | 'test' | 'reports' | 'save' | 'areas' | null>(null);
   const [reports, setReports] = useState<MytkoReportItem[] | null>(null);
+  // Показываем первые REPORTS_DEFAULT_LIMIT строк; расширяем кнопкой «Показать все».
+  // При обновлении данных лимит намеренно НЕ сбрасывается.
+  const [reportsLimit, setReportsLimit] = useState(REPORTS_DEFAULT_LIMIT);
   const [connectionName, setConnectionName] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1223,23 +1267,24 @@ function MytkoCard({ botId }: { botId: string }) {
               </div>
             </div>
             {reports && (
-              <div className="max-h-64 overflow-y-auto rounded-lg border">
-                {reports.length === 0 ? (
-                  <div className="p-3 text-xs text-muted-foreground">
-                    Отчётов за последние 7 дней по указанным КП нет.
-                  </div>
-                ) : (
-                  <table className="w-full text-xs tabular-nums">
-                    <thead className="sticky top-0 bg-muted/70 text-left text-muted-foreground">
-                      <tr>
-                        <th className="px-2 py-1.5 font-medium">Дата вывоза</th>
-                        <th className="px-2 py-1.5 font-medium">КП</th>
-                        <th className="px-2 py-1.5 font-medium">Машина</th>
-                        <th className="px-2 py-1.5 font-medium">Факт</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {reports.map((r) => (
+              <>
+                <div className="max-h-64 overflow-y-auto rounded-lg border">
+                  {reports.length === 0 ? (
+                    <div className="p-3 text-xs text-muted-foreground">
+                      Отчётов за последние 7 дней по указанным КП нет.
+                    </div>
+                  ) : (
+                    <table className="w-full text-xs tabular-nums">
+                      <thead className="sticky top-0 bg-muted/70 text-left text-muted-foreground">
+                        <tr>
+                          <th className="px-2 py-1.5 font-medium">Дата вывоза</th>
+                          <th className="px-2 py-1.5 font-medium">КП</th>
+                          <th className="px-2 py-1.5 font-medium">Машина</th>
+                          <th className="px-2 py-1.5 font-medium">Факт</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reports.slice(0, reportsLimit).map((r) => (
                         <tr key={r.id} className="border-t">
                           <td className="whitespace-nowrap px-2 py-1.5">
                             {r.removalTs
@@ -1260,11 +1305,22 @@ function MytkoCard({ botId }: { botId: string }) {
                             )}
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+                {reports.length > reportsLimit && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => setReportsLimit(reports.length)}
+                  >
+                    Показать все ({reports.length})
+                  </Button>
                 )}
-              </div>
+              </>
             )}
             <details className="group">
               <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-primary [&::-webkit-details-marker]:hidden">

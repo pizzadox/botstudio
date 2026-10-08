@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import {
   CircleHelp,
   FlagTriangleRight,
@@ -56,7 +57,13 @@ export type FlowCardNode = Node<FlowCardData, 'flowCard'>;
 
 const HANDLE_CLS = '!h-3 !w-3 !rounded-full !border-2 !border-background';
 
-export function FlowCard({ data, selected }: NodeProps<FlowCardNode>) {
+/**
+ * IMP-F22: memo — при наборе текста в инспекторе (или drag'е одного узла) ReactFlow
+ * меняет ссылку data только у изменённого узла, остальные 60+ карточек не перерисовываются.
+ * Props от ReactFlow стабильны: updateNode/drag создают новые объекты только для
+ * затронутых узлов, selected меняется только при выделении.
+ */
+export const FlowCard = memo(function FlowCard({ data, selected }: NodeProps<FlowCardNode>) {
   const node = data.node;
   const meta = NODE_META[node.type];
   const Icon = NODE_ICONS[node.type];
@@ -185,6 +192,6 @@ export function FlowCard({ data, selected }: NodeProps<FlowCardNode>) {
       )}
     </div>
   );
-}
+});
 
 export const flowNodeTypes = { flowCard: FlowCard };

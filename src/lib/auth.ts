@@ -1,24 +1,33 @@
 import { db } from '@/lib/db';
 import { NextRequest } from 'next/server';
 import crypto from 'crypto';
+import { promisify } from 'util';
 
 const SESSION_COOKIE = 'bstudio_session';
 const SESSION_DAYS = 30;
 
+/** scryptSync блокирует event loop (~100 мс на вызов) — на логине/регистрации
+ *  подвешивал весь сервер. Промисифицированный асинхронный crypto.scrypt. */
+const scryptAsync = promisify(crypto.scrypt) as (
+  password: string,
+  salt: string,
+  keylen: number
+) => Promise<Buffer>;
+
 // ─── Пароли ──────────────────────────────────────────────────────────────────
 
-export function hashPassword(password: string): string {
+export async function hashPassword(password: string): Promise<string> {
   const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  const hash = (await scryptAsync(password, salt, 64)).toString('hex');
   return `${salt}:${hash}`;
 }
 
-export function verifyPassword(password: string, stored: string): boolean {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [salt, hash] = stored.split(':');
   if (!salt || !hash) return false;
-  const test = crypto.scryptSync(password, salt, 64).toString('hex');
   try {
-    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(test, 'hex'));
+    const test = await scryptAsync(password, salt, 64);
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), test);
   } catch {
     return false;
   }

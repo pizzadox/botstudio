@@ -1,12 +1,33 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, LayoutDashboard, Loader2 } from 'lucide-react';
+import {
+  Bot,
+  Inbox,
+  LayoutDashboard,
+  Loader2,
+  LogOut,
+  MapPin,
+  Moon,
+  Plug,
+  Sparkles,
+  Sun,
+  Workflow,
+} from 'lucide-react';
+import { useTheme } from 'next-themes';
 import { api, clearAuthToken } from '@/lib/client-api';
 import type { SessionUser, BotListItem, ViewKey } from '@/lib/studio-types';
 import { useToast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
 import LoginView from './login-view';
 import Shell from './shell';
 import Dashboard from './dashboard';
@@ -45,6 +66,124 @@ export type NotificationTarget = {
   /** null — просто открыть раздел (сводное уведомление) */
   id: string | null;
 };
+
+/** Разделы, для которых нужен выбранный бот (в палитре — disabled без него) */
+const BOT_VIEWS: ViewKey[] = ['editor', 'ai', 'channels', 'inbox', 'orders'];
+
+const PALETTE_VIEWS: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[] = [
+  { key: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
+  { key: 'editor', label: 'Конструктор', icon: Workflow },
+  { key: 'ai', label: 'ИИ-ассистент', icon: Sparkles },
+  { key: 'channels', label: 'Каналы', icon: Plug },
+  { key: 'inbox', label: 'Входящие', icon: Inbox },
+  { key: 'orders', label: 'Заявки', icon: MapPin },
+];
+
+/**
+ * Палитра команд (Ctrl/Cmd+K, cmdk): переход по разделам, переключение
+ * текущего бота, тумблер темы и выход. Список ботов грузится лениво — при
+ * первом открытии.
+ */
+function CommandPalette({
+  open,
+  onOpenChange,
+  view,
+  onViewChange,
+  currentBotId,
+  onSelectBot,
+  onLogout,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  view: ViewKey;
+  onViewChange: (v: ViewKey) => void;
+  currentBotId: string | null;
+  onSelectBot: (bot: BotListItem) => void;
+  onLogout: () => void;
+}) {
+  const { resolvedTheme, setTheme } = useTheme();
+  const [bots, setBots] = useState<BotListItem[] | null>(null);
+
+  useEffect(() => {
+    if (!open || bots !== null) return;
+    api<{ bots: BotListItem[] }>('/api/bots')
+      .then((d) => setBots(d.bots))
+      .catch(() => setBots([]));
+  }, [open, bots]);
+
+  /** Выполнить действие и закрыть палитру */
+  const run = (action: () => void) => {
+    action();
+    onOpenChange(false);
+  };
+
+  return (
+    <CommandDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Палитра команд"
+      description="Переход по разделам, переключение бота и быстрые действия"
+    >
+      <CommandInput placeholder="Введите команду или название бота…" aria-label="Поиск команды" />
+      <CommandList>
+        <CommandEmpty>Ничего не найдено</CommandEmpty>
+
+        <CommandGroup heading="Разделы">
+          {PALETTE_VIEWS.map((v) => (
+            <CommandItem
+              key={v.key}
+              disabled={BOT_VIEWS.includes(v.key) && !currentBotId}
+              onSelect={() => run(() => onViewChange(v.key))}
+            >
+              <v.icon aria-hidden="true" />
+              <span className="truncate">{v.label}</span>
+              {view === v.key && (
+                <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  текущий
+                </span>
+              )}
+            </CommandItem>
+          ))}
+        </CommandGroup>
+
+        <CommandGroup heading="Боты">
+          {bots === null ? (
+            <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground" role="status">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Загрузка ботов…
+            </div>
+          ) : bots.length === 0 ? (
+            <div className="px-2 py-3 text-sm text-muted-foreground">Ботов пока нет — создайте на дашборде</div>
+          ) : (
+            bots.map((b) => (
+              <CommandItem key={b.id} value={b.name} onSelect={() => run(() => onSelectBot(b))}>
+                <Bot aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate">{b.name}</span>
+                {currentBotId === b.id && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    текущий
+                  </span>
+                )}
+              </CommandItem>
+            ))
+          )}
+        </CommandGroup>
+
+        <CommandGroup heading="Действия">
+          <CommandItem
+            onSelect={() => run(() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark'))}
+          >
+            {resolvedTheme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
+            Переключить тему
+          </CommandItem>
+          <CommandItem onSelect={() => run(onLogout)}>
+            <LogOut aria-hidden="true" />
+            Выйти
+          </CommandItem>
+        </CommandGroup>
+      </CommandList>
+    </CommandDialog>
+  );
+}
 
 /**
  * Фоновый наблюдатель: раз в 12 секунд спрашивает /api/notifications и
@@ -135,10 +274,32 @@ function NotificationsWatcher({
       }
     };
     poll();
-    const t = setInterval(poll, 12000);
+    // Поллинг ставится на паузу, пока вкладка скрыта (document.hidden) —
+    // экономим батарею и трафик; при возврате — немедленный тик + рестарт.
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const stopTimer = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const startTimer = () => {
+      if (timer === null) timer = setInterval(poll, 12000);
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopTimer();
+      } else {
+        poll();
+        startTimer();
+      }
+    };
+    startTimer();
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       stopped = true;
-      clearInterval(t);
+      stopTimer();
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [onTotals, onOpenTarget, toast]);
 
@@ -155,6 +316,8 @@ export default function AppRoot() {
   // Фокус из уведомления: открыть раздел и подсветить нужную заявку/диалог
   const [orderFocus, setOrderFocus] = useState<string | null>(null);
   const [chatFocus, setChatFocus] = useState<string | null>(null);
+  // Палитра команд (Ctrl/Cmd+K)
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const refreshBots = useCallback(() => setBotsVersion((v) => v + 1), []);
   const onTotals = useCallback(
@@ -217,6 +380,32 @@ export default function AppRoot() {
     []
   );
 
+  /** Переключение текущего бота из палитры команд */
+  const selectBotFromPalette = useCallback((bot: BotListItem) => {
+    setCurrentBot(bot);
+  }, []);
+
+  const logout = useCallback(async () => {
+    await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    clearAuthToken();
+    setUser(null);
+    setCurrentBot(null);
+    setView('dashboard');
+  }, []);
+
+  // Ctrl/Cmd+K — открыть/закрыть палитру команд (только у авторизованных)
+  useEffect(() => {
+    if (!user) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [user]);
+
   if (loading) {
     return (
       <div aria-busy="true" className="min-h-screen flex flex-col items-center justify-center gap-3 bg-background">
@@ -241,14 +430,18 @@ export default function AppRoot() {
       onViewChange={setView}
       currentBot={currentBot}
       badges={{ inbox: badges.openConvs, orders: badges.newOrders }}
-      onLogout={async () => {
-        await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
-        clearAuthToken();
-        setUser(null);
-        setCurrentBot(null);
-        setView('dashboard');
-      }}
+      onOpenPalette={() => setPaletteOpen(true)}
+      onLogout={logout}
     >
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        view={view}
+        onViewChange={setView}
+        currentBotId={currentBot?.id ?? null}
+        onSelectBot={selectBotFromPalette}
+        onLogout={logout}
+      />
       <NotificationsWatcher onTotals={onTotals} onOpenTarget={openTarget} />
       {view === 'dashboard' && (
         <Dashboard
@@ -259,6 +452,7 @@ export default function AppRoot() {
       )}
       {view === 'editor' && currentBot && (
         <EditorView
+          key={currentBot.id}
           bot={{ id: currentBot.id, name: currentBot.name, status: currentBot.status }}
           onBack={() => setView('dashboard')}
           onOpenInbox={() => setView('inbox')}
@@ -269,6 +463,7 @@ export default function AppRoot() {
       )}
       {view === 'ai' && currentBot && (
         <AiAssistantView
+          key={currentBot.id}
           bot={{ id: currentBot.id, name: currentBot.name, status: currentBot.status }}
           onBack={() => setView('dashboard')}
           onOpenInbox={() => setView('inbox')}
@@ -276,6 +471,7 @@ export default function AppRoot() {
       )}
       {view === 'channels' && currentBot && (
         <ChannelsView
+          key={currentBot.id}
           bot={{ id: currentBot.id, name: currentBot.name, status: currentBot.status }}
           onBack={() => setView('dashboard')}
           onOpenEditor={() => setView('editor')}
@@ -283,6 +479,7 @@ export default function AppRoot() {
       )}
       {view === 'inbox' && currentBot && (
         <InboxView
+          key={currentBot.id}
           bot={{ id: currentBot.id, name: currentBot.name }}
           onBack={() => setView('dashboard')}
           focusConversationId={chatFocus}
@@ -291,6 +488,7 @@ export default function AppRoot() {
       )}
       {view === 'orders' && currentBot && (
         <OrdersView
+          key={currentBot.id}
           bot={{ id: currentBot.id, name: currentBot.name }}
           onBack={() => setView('dashboard')}
           focusOrderId={orderFocus}

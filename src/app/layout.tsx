@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { ThemeProvider } from "next-themes";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 
@@ -19,6 +20,9 @@ export const metadata: Metadata = {
     "Создавайте ботов для MAX, Telegram, WhatsApp и сайта в визуальном редакторе. ИИ-ответы, память диалога, передача оператору.",
   keywords: ["бот", "конструктор", "Telegram", "WhatsApp", "MAX", "техподдержка", "визуальный редактор"],
   applicationName: "BotStudio",
+  // Safari не должен превращать телефоны клиентов в ссылки внутри чатов/карточек
+  // (именно metadata, а НЕ viewport: в типе Viewport этого поля нет)
+  formatDetection: { telephone: false },
 };
 
 export const viewport: Viewport = {
@@ -26,8 +30,6 @@ export const viewport: Viewport = {
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
     { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
   ],
-  // Safari не должен превращать телефоны клиентов в ссылки внутри чатов/карточек
-  formatDetection: { telephone: false },
 };
 
 export default function RootLayout({
@@ -40,8 +42,15 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
-        {children}
-        <Toaster />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="light"
+          enableSystem={false}
+          disableTransitionOnChange
+        >
+          {children}
+          <Toaster />
+        </ThemeProvider>
       </body>
     </html>
   );

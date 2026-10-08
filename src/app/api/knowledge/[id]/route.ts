@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { invalidateAssistantConfig } from '@/lib/ai-assistant';
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -38,6 +39,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
       where: { id },
       data: { title, content },
     });
+    invalidateAssistantConfig(found.item.botId); // сброс кэша ассистента
     return NextResponse.json({ ok: true, item });
   } catch {
     return NextResponse.json({ error: 'Некорректный запрос' }, { status: 400 });
@@ -55,5 +57,6 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     );
   }
   await db.knowledgeItem.delete({ where: { id } });
+  invalidateAssistantConfig(found.item.botId); // сброс кэша ассистента
   return NextResponse.json({ ok: true });
 }

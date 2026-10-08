@@ -4,6 +4,7 @@ import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { runEngine } from '@/lib/flow-engine';
 import { loadAssistantConfig } from '@/lib/ai-assistant';
+import { getFlowCached } from '@/lib/flow-cache';
 import type { EngineState, Flow } from '@/lib/flow-types';
 
 type Params = { params: Promise<{ id: string }> };
@@ -38,12 +39,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     const state: EngineState | null = body.state ?? null;
     const conversationId: string | null = body.conversationId ?? null;
 
-    let flow: Flow = { nodes: [], edges: [] };
-    try {
-      flow = JSON.parse(bot.flow) as Flow;
-    } catch {
-      flow = { nodes: [], edges: [] };
-    }
+    // Распарсенный сценарий кэшируется по botId+updatedAt (см. flow-cache.ts)
+    const flow: Flow = getFlowCached(bot.id, bot.updatedAt, bot.flow);
 
     // ── Режим реального диалога (после передачи оператору) ──
     if (conversationId) {

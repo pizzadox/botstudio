@@ -21,13 +21,16 @@ export async function POST(req: NextRequest, { params }: Params) {
     const text = String(body.text ?? '').trim().slice(0, 2000);
     if (!text) return NextResponse.json({ error: 'Пустое сообщение' }, { status: 400 });
 
-    const message = await db.message.create({
-      data: { conversationId: conversation.id, role: 'bot', text, nodeId: '__operator' },
-    });
-    await db.conversation.update({
-      where: { id: conversation.id },
-      data: { updatedAt: new Date() },
-    });
+    // Вставка сообщения и обновление времени диалога независимы — параллельно
+    const [message] = await Promise.all([
+      db.message.create({
+        data: { conversationId: conversation.id, role: 'bot', text, nodeId: '__operator' },
+      }),
+      db.conversation.update({
+        where: { id: conversation.id },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
 
     // Доставка в мессенджер клиента (MAX/Telegram); для веба клиент заберёт
     // ответ polling'ом — ошибки отправки не валим в 500

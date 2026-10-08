@@ -28,6 +28,16 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -72,6 +82,8 @@ export default function Dashboard({
   const [busy, setBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<BotListItem | null>(null);
   const [renameName, setRenameName] = useState('');
+  // Подтверждение удаления (AlertDialog): state-target + open={!!target}
+  const [deleteTarget, setDeleteTarget] = useState<BotListItem | null>(null);
 
   const load = async () => {
     try {
@@ -151,7 +163,7 @@ export default function Dashboard({
     <div className="flex-1 min-h-0 overflow-y-auto space-y-6 p-4 sm:p-6 lg:p-8">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Дашборд</h1>
+          <h1 className="text-lg font-bold tracking-tight sm:text-2xl">Дашборд</h1>
           <p className="text-sm text-muted-foreground">
             Управляйте ботами и подключайте мессенджеры
           </p>
@@ -297,7 +309,10 @@ export default function Dashboard({
                           >
                             <Pencil className="h-4 w-4" /> Переименовать
                           </DropdownMenuItem>
-                          <DropdownMenuItem className="text-destructive" onClick={() => deleteBot(bot)}>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onSelect={() => setDeleteTarget(bot)}
+                          >
                             <Trash2 className="h-4 w-4" /> Удалить
                           </DropdownMenuItem>
                         </DropdownMenuContent>
@@ -395,6 +410,32 @@ export default function Dashboard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Подтверждение удаления бота — безвозвратно, вместе с диалогами/заявками */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить бота?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Бот «{deleteTarget?.name}» и все его диалоги, заявки и каналы будут удалены
+              безвозвратно. Это действие нельзя отменить.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60"
+              onClick={() => {
+                const target = deleteTarget;
+                setDeleteTarget(null);
+                if (target) deleteBot(target);
+              }}
+            >
+              Удалить безвозвратно
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

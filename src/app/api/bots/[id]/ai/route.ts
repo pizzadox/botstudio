@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { parseAiConfig } from '@/lib/ai-assistant';
+import { parseAiConfig, invalidateAssistantConfig } from '@/lib/ai-assistant';
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -43,6 +43,8 @@ export async function PUT(req: NextRequest, { params }: Params) {
       reaskMenu: body.reaskMenu !== false,
     };
     await db.bot.update({ where: { id }, data: { aiConfig: JSON.stringify(aiConfig) } });
+    // Сбрасываем кэш конфига ассистента (TTL 60 с) — изменения вступают сразу
+    invalidateAssistantConfig(id);
     return NextResponse.json({ ok: true, aiConfig });
   } catch {
     return NextResponse.json({ error: 'Некорректный запрос' }, { status: 400 });

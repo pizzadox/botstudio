@@ -13,6 +13,21 @@ import type {
 const MAX_STEPS = 30;
 const MEMORY_TAIL = 12;
 
+// ─── ZAI-синглтон ────────────────────────────────────────────────────────────────
+// ZAI.create() устанавливает соединение — раньше оно создавалось заново на каждый
+// ИИ-вызов. Держим один общий промис на процесс (globalThis — переживает HMR);
+// при ошибке создания сбрасываем, чтобы следующая попытка была честной.
+const zaiGlobals = globalThis as unknown as {
+  __zaiPromise?: Promise<Awaited<ReturnType<typeof ZAI.create>>>;
+};
+function getZai(): Promise<Awaited<ReturnType<typeof ZAI.create>>> {
+  zaiGlobals.__zaiPromise ??= ZAI.create().catch((err) => {
+    zaiGlobals.__zaiPromise = undefined; // разрешить повторную попытку
+    throw err;
+  });
+  return zaiGlobals.__zaiPromise;
+}
+
 /**
  * Контекст движка: данные диалога, нужные для действий уровня приложения
  * (создание заявки с привязкой к клиенту).
@@ -246,7 +261,8 @@ async function runAI(
   state: EngineState,
   lastInput: string,
   extraSystem?: string
-): Promise<string> {  const zai = await ZAI.create();
+): Promise<string> {
+  const zai = await getZai();
 
   const sysParts: string[] = [];
   sysParts.push(

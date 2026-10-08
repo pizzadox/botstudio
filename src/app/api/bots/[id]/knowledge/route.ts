@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { invalidateAssistantConfig } from '@/lib/ai-assistant';
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -43,6 +44,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const item = await db.knowledgeItem.create({
       data: { botId: id, title, content },
     });
+    invalidateAssistantConfig(id); // база знаний изменилась — сброс кэша ассистента
     return NextResponse.json({ ok: true, item });
   } catch {
     return NextResponse.json({ error: 'Некорректный запрос' }, { status: 400 });

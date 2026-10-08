@@ -4,7 +4,9 @@ import { getSessionUser } from '@/lib/auth';
 
 type Params = { params: Promise<{ id: string }> };
 
-/** Список диалогов бота (инбокс оператора) */
+/** Список диалогов бота (инбокс оператора).
+ *  Select только нужных скаляров — БЕЗ тяжёлого поля state (JSON состояния
+ *  движка): инбокс его не читает, а на 100 диалогов это заметный оверхед. */
 export async function GET(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const user = await getSessionUser(req);
@@ -19,8 +21,24 @@ export async function GET(req: NextRequest, { params }: Params) {
     where: { botId: bot.id },
     orderBy: { updatedAt: 'desc' },
     take: 100,
-    include: {
-      messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+    select: {
+      id: true,
+      channelId: true,
+      source: true,
+      externalId: true,
+      externalUserId: true,
+      contact: true,
+      needsOperator: true,
+      status: true,
+      operatorReadAt: true,
+      createdAt: true,
+      updatedAt: true,
+      // Последнее сообщение — лёгкий select (id/role/text/createdAt)
+      messages: {
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        select: { id: true, role: true, text: true, createdAt: true },
+      },
       _count: { select: { messages: true } },
     },
   });

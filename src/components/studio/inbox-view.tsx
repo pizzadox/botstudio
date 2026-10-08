@@ -1,12 +1,21 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Archive,
   Bot,
   ChevronLeft,
   ChevronDown,
   ChevronRight,
+  Clock,
   Globe,
   Headset,
   Inbox,
@@ -14,10 +23,12 @@ import {
   MessageCircle,
   MessagesSquare,
   MessageSquare,
+  RotateCcw,
   Search,
   Send,
   SearchCheck,
   Truck,
+  WifiOff,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '@/lib/client-api';
@@ -61,8 +72,45 @@ function sourceChipClass(source: string): string {
   );
 }
 
+/** Ключи localStorage для persistence фильтра и поиска инбокса (IMP-F07) */
+const LS_FILTER_KEY = 'bstudio.inbox.filter';
+const LS_QUERY_KEY = 'bstudio.inbox.q';
+
+type FilterKey = 'all' | 'operator' | 'unread' | 'closed';
+
+const FILTER_KEYS: FilterKey[] = ['all', 'operator', 'unread', 'closed'];
+
+/** SSR-безопасное чтение localStorage (на сервере/в приватном режиме — fallback) */
+function readLS(key: string, fallback: string): string {
+  try {
+    return window.localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeLS(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* localStorage недоступен — не критично */
+  }
+}
+
+/**
+ * Дедуп-слияние сообщений поллинга (IMP-F03): добавляем только новые id,
+ * сортируем по createdAt. Если ничего нового — возвращаем prev как есть
+ * (ссылочная стабильность убирает лишние ре-рендеры).
+ */
+function mergeMessages(prev: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  const seen = new Set(prev.map((m) => m.id));
+  const add = incoming.filter((m) => !seen.has(m.id));
+  if (!add.length) return prev;
+  return [...prev, ...add].sort((a, b) => (a.createdAt > b.createdAt ? 1 : -1));
+}
+
 /** Осмысленные пустые состояния для каждого фильтра списка */
-const EMPTY_STATES: Record<'all' | 'operator' | 'unread' | 'closed', { title: string; hint: string }> = {
+const EMPTY_STATES: Record<FilterKey, { title: string; hint: string }> = {
   all: {
     title: 'Диалогов пока нет',
     hint: 'Опубликуйте бота и напишите ему в демо-чате или мессенджере — обращения появятся здесь.',
@@ -81,7 +129,7 @@ const EMPTY_STATES: Record<'all' | 'operator' | 'unread' | 'closed', { title: st
   },
 };
 
-const FILTER_ICONS: Record<'all' | 'operator' | 'unread' | 'closed', LucideIcon> = {
+const FILTER_ICONS: Record<FilterKey, LucideIcon> = {
   all: MessagesSquare,
   operator: Headset,
   unread: MessageSquare,
@@ -137,6 +185,209 @@ function ConversationRowSkeleton() {
         <Skeleton className="h-3 w-14" />
       </div>
       <Skeleton className="h-3 w-3/4" />
+    </div>
+  );
+}
+
+/**
+ * Строка списка диалогов (IMP-F09): memo + только примитивные props
+ * и стабильный колбэк — при поллинге перерисовываются только изменившиеся строки.
+ */
+interface ConversationRowProps {
+  id: string;
+  source: string;
+  contact: string | null;
+  needsOperator: boolean;
+  status: string;
+  unread: boolean;
+  messagesCount: number;
+  updatedAt: string;
+  lastMessageText: string | null;
+  lastMessageRole: string | null;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}
+
+const ConversationRow = memo(function ConversationRow({
+  id,
+  source,
+  contact,
+  needsOperator,
+  status,
+  unread,
+  messagesCount,
+  updatedAt,
+  lastMessageText,
+  lastMessageRole,
+  selected,
+  onSelect,
+}: ConversationRowProps) {
+  return (
+    <button
+      type="button"
+      data-conv-id={id}
+      onClick={() => onSelect(id)}
+      aria-current={selected ? 'true' : undefined}
+      className={cn(
+        'flex w-full min-w-0 flex-col gap-1 p-3 text-left transition-colors hover:bg-muted/60',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        selected && 'bg-primary/5',
+        unread && status === 'open' && 'bg-primary/[0.04]'
+      )}
+    >
+      <div className="flex min-w-0 w-full items-center gap-2">
+        <span
+          className={cn(
+            'h-2 w-2 shrink-0 rounded-full transition-colors',
+            needsOperator && status === 'open' // красная точка важнее
+              ? 'bg-destructive'
+              : unread && status === 'open'
+                ? 'bg-primary'
+                : 'bg-transparent'
+          )}
+          aria-hidden
+        />
+        <span
+          className={cn(
+            'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+            sourceChipClass(source)
+          )}
+        >
+          <SourceIcon source={source} className="h-3 w-3" />
+          {SOURCE_LABELS[source] ?? source}
+        </span>
+        <span
+          className={cn(
+            'min-w-0 flex-1 truncate text-sm',
+            unread && status === 'open' ? 'font-semibold' : 'font-medium'
+          )}
+        >
+          {contact || 'Без имени'}
+        </span>
+        {/* IMP-F05: относительное время + полная дата/время в title */}
+        <span
+          className="shrink-0 text-xs text-muted-foreground tabular-nums"
+          title={new Date(updatedAt).toLocaleString('ru-RU')}
+        >
+          {timeAgo(updatedAt)}
+        </span>
+      </div>
+      <p className="min-w-0 w-full truncate text-xs text-muted-foreground">
+        {lastMessageText !== null
+          ? `${lastMessageRole === 'user' ? '' : 'Вы: '}${lastMessageText}`
+          : 'Нет сообщений'}
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {needsOperator && status === 'open' && (
+          <Badge variant="destructive" className="h-4 animate-pulse px-1.5 text-[9px]">
+            <Headset className="mr-0.5 h-2.5 w-2.5" /> требует внимания
+          </Badge>
+        )}
+        {unread && status === 'open' && (
+          <Badge className="h-4 bg-primary/15 px-1.5 text-[9px] text-primary hover:bg-primary/15">
+            новое
+          </Badge>
+        )}
+        {status === 'closed' && (
+          <Badge variant="outline" className="h-4 px-1.5 text-[9px]">
+            закрыт
+          </Badge>
+        )}
+        <Badge variant="outline" className="h-4 px-1.5 text-[9px] tabular-nums">
+          {messagesCount} сообщ.
+        </Badge>
+      </div>
+    </button>
+  );
+});
+
+/** Пузырь реального сообщения (memo: ссылка стабильна благодаря дедуп-слиянию) */
+const MessageBubble = memo(function MessageBubble({ m }: { m: ChatMessage }) {
+  const isOperator = m.nodeId === '__operator';
+  return (
+    <div className={cn('flex min-w-0', m.role === 'user' ? 'justify-start' : 'justify-end')}>
+      <div
+        className={cn(
+          'max-w-[85%] space-y-0.5 rounded-2xl px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
+          m.role === 'user'
+            ? 'rounded-bl-md bg-muted'
+            : isOperator
+              ? 'rounded-br-md bg-primary text-primary-foreground'
+              : 'rounded-br-md border bg-card'
+        )}
+      >
+        {isOperator && (
+          <div className="flex items-center gap-1 text-[10px] opacity-80">
+            <Headset className="h-3 w-3" /> оператор
+          </div>
+        )}
+        <div className="whitespace-pre-wrap">{m.text}</div>
+        <div
+          className={cn(
+            'text-right text-[10px]',
+            isOperator ? 'text-primary-foreground/70' : 'text-muted-foreground'
+          )}
+        >
+          {new Date(m.createdAt).toLocaleTimeString('ru-RU', {
+            hour: '2-digit',
+            minute: '2-digit',
+          })}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+/** Оптимистичный пузырь ответа оператора (IMP-F02): отправляется / ошибка */
+interface OptimisticMessage {
+  id: string;
+  convId: string;
+  text: string;
+  status: 'sending' | 'error';
+}
+
+function OptimisticBubble({
+  msg,
+  onRetry,
+}: {
+  msg: OptimisticMessage;
+  onRetry: (id: string) => void;
+}) {
+  const isError = msg.status === 'error';
+  return (
+    <div className="flex min-w-0 justify-end">
+      <div
+        className={cn(
+          'max-w-[85%] space-y-0.5 rounded-2xl rounded-br-md px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
+          isError
+            ? 'border border-destructive/40 bg-destructive/10 text-foreground'
+            : 'bg-primary text-primary-foreground opacity-70'
+        )}
+      >
+        <div className="whitespace-pre-wrap">{msg.text}</div>
+        <div className="flex items-center justify-end gap-1.5 text-[10px]">
+          {isError ? (
+            <>
+              <span className="font-medium text-destructive">Не отправлено</span>
+              <button
+                type="button"
+                onClick={() => onRetry(msg.id)}
+                aria-label={`Повторить отправку: ${msg.text.slice(0, 50)}`}
+                className="inline-flex items-center gap-1 rounded px-1 py-0.5 font-medium text-destructive underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <RotateCcw className="h-3 w-3" aria-hidden /> Повторить
+              </button>
+            </>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1 text-primary-foreground/70"
+              aria-hidden
+            >
+              <Clock className="h-3 w-3" /> отправляется…
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -309,6 +560,7 @@ export default function InboxView({
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [optimistic, setOptimistic] = useState<OptimisticMessage[]>([]);
   const [contact, setContact] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState('web');
   const [needsOperator, setNeedsOperator] = useState(false);
@@ -317,10 +569,43 @@ export default function InboxView({
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [ordersTick, setOrdersTick] = useState(0);
-  /** Фильтр списка: все / нужен оператор / новые / закрытые */
-  const [filter, setFilter] = useState<'all' | 'operator' | 'unread' | 'closed'>('all');
-  const [query, setQuery] = useState('');
+  /** Фильтр списка: все / нужен оператор / новые / закрытые (persist в localStorage) */
+  const [filter, setFilter] = useState<FilterKey>(() => {
+    const v = readLS(LS_FILTER_KEY, 'all');
+    return FILTER_KEYS.includes(v as FilterKey) ? (v as FilterKey) : 'all';
+  });
+  const [query, setQuery] = useState(() => readLS(LS_QUERY_KEY, ''));
+  /** Свежесть данных (IMP-F08) */
+  const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
+  const [failStreak, setFailStreak] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** IMP-F01: пользователь у дна переписки? — иначе не таскаем его вниз */
+  const isNearBottomRef = useRef(true);
+  /** Свежие ссылки для стабильных подписчиков (клавиатура/поллинг без ре-монтажа) */
+  const selectedIdRef = useRef<string | null>(null);
+  const visibleListRef = useRef<ConversationListItem[]>([]);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  // IMP-F07: persist фильтра и поиска
+  useEffect(() => {
+    writeLS(LS_FILTER_KEY, filter);
+  }, [filter]);
+
+  useEffect(() => {
+    writeLS(LS_QUERY_KEY, query);
+  }, [query]);
+
+  const notePollSuccess = useCallback(() => {
+    setFailStreak(0);
+    setLastSyncAt(new Date());
+  }, []);
+
+  const notePollFailure = useCallback(() => {
+    setFailStreak((s) => s + 1);
+  }, []);
 
   const loadList = useCallback(async () => {
     try {
@@ -328,28 +613,60 @@ export default function InboxView({
         `/api/bots/${bot.id}/conversations`
       );
       setConversations(d.conversations);
+      notePollSuccess();
     } catch {
+      notePollFailure();
       /* ignore polling errors */
     } finally {
       setLoading(false);
     }
-  }, [bot.id]);
+  }, [bot.id, notePollSuccess, notePollFailure]);
 
-  const loadConversation = useCallback(async (id: string) => {
-    try {
-      const d = await api<{
-        conversation: { contact: string | null; source: string; needsOperator: boolean; status: string };
-        messages: ChatMessage[];
-      }>(`/api/conversations/${id}`);
-      setMessages(d.messages);
-      setContact(d.conversation.contact);
-      setSelectedSource(d.conversation.source);
-      setNeedsOperator(d.conversation.needsOperator);
-      setStatus(d.conversation.status);
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  /** Первая загрузка диалога — полная, без take (IMP-F03) */
+  const loadConversationFull = useCallback(
+    async (id: string) => {
+      try {
+        const d = await api<{
+          conversation: { contact: string | null; source: string; needsOperator: boolean; status: string };
+          messages: ChatMessage[];
+        }>(`/api/conversations/${id}`);
+        notePollSuccess();
+        // Диалог могли переключить, пока летел ответ
+        if (selectedIdRef.current !== id) return;
+        setMessages(d.messages);
+        setContact(d.conversation.contact);
+        setSelectedSource(d.conversation.source);
+        setNeedsOperator(d.conversation.needsOperator);
+        setStatus(d.conversation.status);
+        isNearBottomRef.current = true; // новая переписка — стартуем снизу
+      } catch {
+        notePollFailure();
+      }
+    },
+    [notePollSuccess, notePollFailure]
+  );
+
+  /** Фоновый поллинг диалога — ?take=50 + дедуп-слияние (IMP-F03) */
+  const pollConversation = useCallback(
+    async (id: string) => {
+      try {
+        const d = await api<{
+          conversation: { contact: string | null; source: string; needsOperator: boolean; status: string };
+          messages: ChatMessage[];
+        }>(`/api/conversations/${id}?take=50`);
+        notePollSuccess();
+        if (selectedIdRef.current !== id) return;
+        setMessages((prev) => mergeMessages(prev, d.messages));
+        setContact(d.conversation.contact);
+        setSelectedSource(d.conversation.source);
+        setNeedsOperator(d.conversation.needsOperator);
+        setStatus(d.conversation.status);
+      } catch {
+        notePollFailure();
+      }
+    },
+    [notePollSuccess, notePollFailure]
+  );
 
   /** Открыть диалог: выделяем и сразу помечаем прочитанным (сервер запоминает operatorReadAt) */
   const openConversation = useCallback((id: string) => {
@@ -368,40 +685,126 @@ export default function InboxView({
     onFocusConsumed?.();
   }, [focusConversationId, openConversation, onFocusConsumed]);
 
+  // Поллинг списка: 6с, пауза на document.hidden (IMP-F08)
   useEffect(() => {
-    const t = setInterval(loadList, 6000);
-    return () => clearInterval(t);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (timer === null) timer = setInterval(loadList, 6000);
+    };
+    const stop = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else {
+        loadList();
+        start();
+      }
+    };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [loadList]);
 
+  // Поллинг открытого диалога: 4с, полная загрузка при открытии, пауза на document.hidden
   useEffect(() => {
     if (!selectedId) return;
-    loadConversation(selectedId);
-    const t = setInterval(() => loadConversation(selectedId), 4000);
-    return () => clearInterval(t);
-  }, [selectedId, loadConversation]);
+    loadConversationFull(selectedId);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const tick = () => pollConversation(selectedId);
+    const start = () => {
+      if (timer === null) timer = setInterval(tick, 4000);
+    };
+    const stop = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else {
+        tick();
+        start();
+      }
+    };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [selectedId, loadConversationFull, pollConversation]);
+
+  // IMP-F01: скроллим вниз только когда пользователь у дна (±120px)
+  const onMessagesScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
+
+  const pendingForSelected = useMemo(
+    () => optimistic.filter((o) => o.convId === selectedId),
+    [optimistic, selectedId]
+  );
 
   useEffect(() => {
+    if (!isNearBottomRef.current) return;
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
     });
-  }, [messages]);
+  }, [messages, pendingForSelected.length]);
+
+  /** Доставка ответа оператора (используется и при повторной отправке) */
+  const deliverReply = useCallback(
+    async (convId: string, tmpId: string, text: string) => {
+      try {
+        const d = await api<{ message: ChatMessage }>(`/api/conversations/${convId}/operator`, {
+          method: 'POST',
+          body: JSON.stringify({ text }),
+        });
+        // tmp удаляем, реальное сообщение вливаем дедуп-слиянием (поллинг его не продублирует)
+        setOptimistic((prev) => prev.filter((o) => o.id !== tmpId));
+        if (selectedIdRef.current === convId) {
+          setMessages((prev) => mergeMessages(prev, [d.message]));
+        }
+      } catch {
+        // Текст НИКОГДА не теряется: пузырь переходит в error-состояние с «Повторить»
+        setOptimistic((prev) =>
+          prev.map((o) => (o.id === tmpId ? { ...o, status: 'error' as const } : o))
+        );
+        toast({ title: 'Не удалось отправить', variant: 'destructive' });
+      }
+    },
+    [toast]
+  );
 
   const sendReply = async () => {
     const t = reply.trim();
     if (!t || !selectedId) return;
-    setSending(true);
+    const convId = selectedId;
+    const tmpId = `tmp-${Date.now()}`;
+    setOptimistic((prev) => [...prev, { id: tmpId, convId, text: t, status: 'sending' }]);
     setReply('');
-    try {
-      const d = await api<{ message: ChatMessage }>(`/api/conversations/${selectedId}/operator`, {
-        method: 'POST',
-        body: JSON.stringify({ text: t }),
-      });
-      setMessages((prev) => [...prev, d.message]);
-    } catch {
-      toast({ title: 'Не удалось отправить', variant: 'destructive' });
-    } finally {
-      setSending(false);
-    }
+    setSending(true);
+    await deliverReply(convId, tmpId, t);
+    setSending(false);
+  };
+
+  /** Повторная отправка тем же текстом (IMP-F02) */
+  const retryReply = (tmpId: string) => {
+    const msg = optimistic.find((o) => o.id === tmpId);
+    if (!msg || msg.status === 'sending') return;
+    setOptimistic((prev) =>
+      prev.map((o) => (o.id === tmpId ? { ...o, status: 'sending' as const } : o))
+    );
+    void deliverReply(msg.convId, tmpId, msg.text);
   };
 
   const closeConversation = async () => {
@@ -432,9 +835,12 @@ export default function InboxView({
     [conversations]
   );
 
+  // IMP-F06: инпут мгновенный, фильтрация — по отложенному значению
+  const deferredQuery = useDeferredValue(query);
+
   /** Сортировка: нуждаются в операторе → непрочитанные → по времени; плюс поиск и фильтр */
   const visibleList = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = deferredQuery.trim().toLowerCase();
     let list = conversations.filter((c) => {
       if (filter === 'operator') return c.needsOperator && c.status === 'open';
       if (filter === 'unread') return c.unread && c.status === 'open';
@@ -455,7 +861,52 @@ export default function InboxView({
       if (w !== 0) return w;
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     });
-  }, [conversations, filter, query]);
+  }, [conversations, filter, deferredQuery]);
+
+  useEffect(() => {
+    visibleListRef.current = visibleList;
+  }, [visibleList]);
+
+  // IMP-F04: клавиатура ↑/↓ — навигация по отфильтрованному списку диалогов с wrap
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.tagName === 'SELECT' ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      const list = visibleListRef.current;
+      if (!list.length) return;
+      e.preventDefault();
+      const cur = list.findIndex((c) => c.id === selectedIdRef.current);
+      const nextIdx =
+        e.key === 'ArrowDown'
+          ? (cur + 1 + list.length) % list.length
+          : cur <= 0
+            ? list.length - 1
+            : cur - 1;
+      const next = list[nextIdx];
+      if (!next) return;
+      openConversation(next.id);
+      document
+        .querySelector<HTMLElement>(`[data-conv-id="${CSS.escape(next.id)}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [openConversation]);
+
+  // IMP-F08: «обновлено N с назад» — пересчитывается на каждом тике поллинга
+  const syncSecondsAgo = lastSyncAt
+    ? Math.max(0, Math.round((Date.now() - lastSyncAt.getTime()) / 1000))
+    : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -488,8 +939,34 @@ export default function InboxView({
               {unreadCount}
             </Badge>
           )}
+          {syncSecondsAgo !== null && (
+            <span
+              role="status"
+              title={lastSyncAt ? lastSyncAt.toLocaleString('ru-RU') : undefined}
+              className="ml-auto hidden shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground sm:inline-flex"
+            >
+              <span
+                className={cn(
+                  'h-1.5 w-1.5 rounded-full',
+                  failStreak >= 3 ? 'bg-destructive' : 'bg-emerald-500'
+                )}
+                aria-hidden
+              />
+              обновлено <span className="tabular-nums">{syncSecondsAgo}</span> с назад
+            </span>
+          )}
         </div>
       </div>
+
+      {failStreak >= 3 && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300"
+        >
+          <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          Нет связи с сервера — повторяем попытку…
+        </div>
+      )}
 
       <div className="grid min-h-0 flex-1 md:grid-cols-[340px_1fr]">
         {/* Список диалогов */}
@@ -552,7 +1029,7 @@ export default function InboxView({
               hint={EMPTY_STATES.all.hint}
             />
           ) : visibleList.length === 0 ? (
-            query.trim() ? (
+            deferredQuery.trim() ? (
               <EmptyState
                 icon={SearchCheck}
                 title="Ничего не найдено"
@@ -569,77 +1046,21 @@ export default function InboxView({
             <ScrollArea className="min-h-0 flex-1">
               <div className="divide-y">
                 {visibleList.map((c) => (
-                  <button
+                  <ConversationRow
                     key={c.id}
-                    type="button"
-                    onClick={() => openConversation(c.id)}
-                    aria-current={selectedId === c.id ? 'true' : undefined}
-                    className={cn(
-                      'flex w-full min-w-0 flex-col gap-1 p-3 text-left transition-colors hover:bg-muted/60',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                      selectedId === c.id && 'bg-primary/5',
-                      c.unread && c.status === 'open' && 'bg-primary/[0.04]'
-                    )}
-                  >
-                    <div className="flex min-w-0 w-full items-center gap-2">
-                      <span
-                        className={cn(
-                          'h-2 w-2 shrink-0 rounded-full transition-colors',
-                          c.needsOperator && c.status === 'open' // красная точка важнее
-                            ? 'bg-destructive'
-                            : c.unread && c.status === 'open'
-                              ? 'bg-primary'
-                              : 'bg-transparent'
-                        )}
-                        aria-hidden
-                      />
-                      <span
-                        className={cn(
-                          'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
-                          sourceChipClass(c.source)
-                        )}
-                      >
-                        <SourceIcon source={c.source} className="h-3 w-3" />
-                        {SOURCE_LABELS[c.source] ?? c.source}
-                      </span>
-                      <span
-                        className={cn(
-                          'min-w-0 flex-1 truncate text-sm',
-                          c.unread && c.status === 'open' ? 'font-semibold' : 'font-medium'
-                        )}
-                      >
-                        {c.contact || 'Без имени'}
-                      </span>
-                      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                        {timeAgo(c.updatedAt)}
-                      </span>
-                    </div>
-                    <p className="min-w-0 w-full truncate text-xs text-muted-foreground">
-                      {c.lastMessage
-                        ? `${c.lastMessage.role === 'user' ? '' : 'Вы: '}${c.lastMessage.text}`
-                        : 'Нет сообщений'}
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {c.needsOperator && c.status === 'open' && (
-                        <Badge variant="destructive" className="h-4 animate-pulse px-1.5 text-[9px]">
-                          <Headset className="mr-0.5 h-2.5 w-2.5" /> требует внимания
-                        </Badge>
-                      )}
-                      {c.unread && c.status === 'open' && (
-                        <Badge className="h-4 bg-primary/15 px-1.5 text-[9px] text-primary hover:bg-primary/15">
-                          новое
-                        </Badge>
-                      )}
-                      {c.status === 'closed' && (
-                        <Badge variant="outline" className="h-4 px-1.5 text-[9px]">
-                          закрыт
-                        </Badge>
-                      )}
-                      <Badge variant="outline" className="h-4 px-1.5 text-[9px] tabular-nums">
-                        {c.messagesCount} сообщ.
-                      </Badge>
-                    </div>
-                  </button>
+                    id={c.id}
+                    source={c.source}
+                    contact={c.contact}
+                    needsOperator={c.needsOperator}
+                    status={c.status}
+                    unread={c.unread}
+                    messagesCount={c.messagesCount}
+                    updatedAt={c.updatedAt}
+                    lastMessageText={c.lastMessage?.text ?? null}
+                    lastMessageRole={c.lastMessage?.role ?? null}
+                    selected={selectedId === c.id}
+                    onSelect={openConversation}
+                  />
                 ))}
               </div>
             </ScrollArea>
@@ -695,49 +1116,18 @@ export default function InboxView({
 
               <div
                 ref={scrollRef}
+                onScroll={onMessagesScroll}
                 aria-live="polite"
                 aria-label="История сообщений"
                 className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/40 p-4"
               >
-                {messages.map((m) => {
-                  const isOperator = m.nodeId === '__operator';
-                  return (
-                    <div
-                      key={m.id}
-                      className={cn('flex min-w-0', m.role === 'user' ? 'justify-start' : 'justify-end')}
-                    >
-                      <div
-                        className={cn(
-                          'max-w-[85%] space-y-0.5 rounded-2xl px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
-                          m.role === 'user'
-                            ? 'rounded-bl-md bg-muted'
-                            : isOperator
-                              ? 'rounded-br-md bg-primary text-primary-foreground'
-                              : 'rounded-br-md border bg-card'
-                        )}
-                      >
-                        {isOperator && (
-                          <div className="flex items-center gap-1 text-[10px] opacity-80">
-                            <Headset className="h-3 w-3" /> оператор
-                          </div>
-                        )}
-                        <div className="whitespace-pre-wrap">{m.text}</div>
-                        <div
-                          className={cn(
-                            'text-right text-[10px]',
-                            isOperator ? 'text-primary-foreground/70' : 'text-muted-foreground'
-                          )}
-                        >
-                          {new Date(m.createdAt).toLocaleTimeString('ru-RU', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {messages.length === 0 && (
+                {messages.map((m) => (
+                  <MessageBubble key={m.id} m={m} />
+                ))}
+                {pendingForSelected.map((o) => (
+                  <OptimisticBubble key={o.id} msg={o} onRetry={retryReply} />
+                ))}
+                {messages.length === 0 && pendingForSelected.length === 0 && (
                   <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
                     <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
                       <Bot className="h-6 w-6" aria-hidden />

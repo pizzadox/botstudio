@@ -1,8 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { processInbound } from '@/lib/webhook';
+import { getFlowCached } from '@/lib/flow-cache';
 import crypto from 'crypto';
-import type { Flow } from '@/lib/flow-types';
+
+/** Cap для ?take — защита от «выкачаем всю таблицу» */
+const MAX_TAKE = 500;
+
+/** Последние N сообщений диалога (orderBy desc + reverse → хронология в ответе) */
+function parseTake(req: NextRequest, fallback: number): number {
+  const takeParam = Number(req.nextUrl.searchParams.get('take') ?? '');
+  return Number.isFinite(takeParam) && takeParam > 0
+    ? Math.min(Math.floor(takeParam), MAX_TAKE)
+    : fallback;
+}
+
+/** Кнопки последнего блока меню — для кликабельных чипов в виджете */
+function lastMenuButtons(botId: string, botUpdatedAt: Date, botFlow: string, messages: { id: string; role: string; nodeId: string | null }[]) {
+  const lastBotWithNode = [...messages].reverse().find((m) => m.role === 'bot' && m.nodeId && m.nodeId !== '__operator');
+  if (!lastBotWithNode) return { lastBotWithNodeId: undefined as string | undefined, buttons: undefined as { id: string; text: string }[] | undefined };
+  try {
+    const flow = getFlowCached(botId, botUpdatedAt, botFlow);
+    const node = flow.nodes.find((n) => n.id === lastBotWithNode.nodeId);
+    if (node?.type === 'buttons' && node.data.buttons?.length) {
+      return { lastBotWithNodeId: lastBotWithNode.id, buttons: node.data.buttons };
+    }
+  } catch {
+    return { lastBotWithNodeId: lastBotWithNode.id, buttons: undefined };
+  }
+  return { lastBotWithNodeId: lastBotWithNode.id, buttons: undefined };
+}
 
 type Params = { params: Promise<{ secret: string }> };
 
@@ -45,26 +72,20 @@ export async function POST(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: map[result.error] ?? 'Ошибка обработки' }, { status: 409 });
     }
 
-    const messages = await db.message.findMany({
-      where: { conversationId: result.conversationId },
-      orderBy: { createdAt: 'asc' },
-      take: 100,
-    });
+    const messages = (
+      await db.message.findMany({
+        where: { conversationId: result.conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: parseTake(req, 100),
+      })
+    ).reverse();
 
-    // Кнопки последнего блока меню — для кликабельных чипов в виджете
-    let lastButtons: { id: string; text: string }[] | undefined;
-    const lastBotWithNode = [...messages].reverse().find((m) => m.role === 'bot' && m.nodeId && m.nodeId !== '__operator');
-    if (lastBotWithNode) {
-      try {
-        const flow = JSON.parse(channel.bot.flow) as Flow;
-        const node = flow.nodes.find((n) => n.id === lastBotWithNode.nodeId);
-        if (node?.type === 'buttons' && node.data.buttons?.length) {
-          lastButtons = node.data.buttons;
-        }
-      } catch {
-        lastButtons = undefined;
-      }
-    }
+    const { lastBotWithNodeId, buttons } = lastMenuButtons(
+      channel.botId,
+      channel.bot.updatedAt,
+      channel.bot.flow,
+      messages
+    );
 
     return NextResponse.json({
       conversationId: result.conversationId,
@@ -72,7 +93,7 @@ export async function POST(req: NextRequest, { params }: Params) {
         id: m.id,
         role: m.role,
         text: m.text,
-        buttons: m.id === lastBotWithNode?.id ? lastButtons : undefined,
+        buttons: m.id === lastBotWithNodeId ? buttons : undefined,
         createdAt: m.createdAt,
       })),
     });
@@ -97,33 +118,27 @@ export async function GET(req: NextRequest, { params }: Params) {
   });
   if (!conversation) return NextResponse.json({ messages: [] });
 
-  const messages = await db.message.findMany({
-    where: { conversationId: conversation.id },
-    orderBy: { createdAt: 'asc' },
-    take: 100,
-  });
+  const messages = (
+    await db.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: 'desc' },
+      take: parseTake(req, 100),
+    })
+  ).reverse();
 
-  // Кнопки последнего блока меню — и в polling-ответах
-  let lastButtons: { id: string; text: string }[] | undefined;
-  const lastBotWithNode = [...messages].reverse().find((m) => m.role === 'bot' && m.nodeId && m.nodeId !== '__operator');
-  if (lastBotWithNode) {
-    try {
-      const flow = JSON.parse(channel.bot.flow) as Flow;
-      const node = flow.nodes.find((n) => n.id === lastBotWithNode.nodeId);
-      if (node?.type === 'buttons' && node.data.buttons?.length) {
-        lastButtons = node.data.buttons;
-      }
-    } catch {
-      lastButtons = undefined;
-    }
-  }
+  const { lastBotWithNodeId, buttons } = lastMenuButtons(
+    channel.botId,
+    channel.bot.updatedAt,
+    channel.bot.flow,
+    messages
+  );
 
   return NextResponse.json({
     messages: messages.map((m) => ({
       id: m.id,
       role: m.role,
       text: m.text,
-      buttons: m.id === lastBotWithNode?.id ? lastButtons : undefined,
+      buttons: m.id === lastBotWithNodeId ? buttons : undefined,
       createdAt: m.createdAt,
     })),
   });

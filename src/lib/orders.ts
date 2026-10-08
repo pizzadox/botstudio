@@ -1,4 +1,5 @@
 import { db } from '@/lib/db';
+import type { Order } from '@prisma/client';
 
 /**
  * Заявки клиентов (вывоз отходов / КГМ).
@@ -65,29 +66,46 @@ async function nextNumber(botId: string): Promise<number> {
  * укажет точку на карте вручную.
  */
 
-const GEO_TTL_OK = 24 * 3600 * 1000; // успех — сутки (адреса не «прыгают»)
 const GEO_TTL_FAIL = 60 * 1000; // неудача — минута (можно повторить)
+const GEO_CACHE_CAP = 500; // LRU: вытесняем самые старые ключи вместо полного clear()
 
-const geoCache = new Map<string, { lat: number; lng: number; expiresAt: number } | { fail: true; expiresAt: number }>();
+type GeoHit = { lat: number; lng: number; display?: string } | null;
 
-function cacheGet(key: string): { lat: number; lng: number } | null | undefined {
-  const hit = geoCache.get(key);
-  if (!hit) return undefined; // нет в кэше
-  if (hit.expiresAt < Date.now()) {
-    geoCache.delete(key);
-    return undefined;
+/** Кэш хранит ПРОМИСЫ: одинаковые адреса от разных запросов дедуплицируются
+ *  в один полёт к Nominatim (политика сервиса — не дёргать её параллельно). */
+const geoCache = new Map<string, Promise<GeoHit>>();
+
+function lruTrim(map: Map<unknown, unknown>, cap: number): void {
+  while (map.size > cap) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
   }
-  return 'fail' in hit ? null : { lat: hit.lat, lng: hit.lng };
 }
 
-function cachePut(key: string, result: { lat: number; lng: number } | null): void {
-  if (geoCache.size > 500) geoCache.clear();
-  geoCache.set(
-    key,
-    result
-      ? { ...result, expiresAt: Date.now() + GEO_TTL_OK }
-      : { fail: true, expiresAt: Date.now() + GEO_TTL_FAIL }
+function cacheGeo(key: string, p: Promise<GeoHit>): Promise<GeoHit> {
+  geoCache.delete(key); // обновляем позицию (LRU)
+  geoCache.set(key, p);
+  lruTrim(geoCache, GEO_CACHE_CAP);
+  // «Не найдено»/сбой забываем через минуту (можно повторить), успех живёт до вытеснения
+  const forget = () => {
+    if (geoCache.get(key) === p) geoCache.delete(key);
+  };
+  void p.then(
+    (hit) => {
+      if (!hit) setTimeout(forget, GEO_TTL_FAIL);
+    },
+    () => setTimeout(forget, GEO_TTL_FAIL)
   );
+  return p;
+}
+
+// ─── Очередь Nominatim ≤ 1 запрос/сек (требование политики сервиса) ──────────
+let lastNominatimAt = 0;
+async function nominatimThrottle(): Promise<void> {
+  const wait = lastNominatimAt + 1100 - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  lastNominatimAt = Date.now();
 }
 
 async function nominatimSearch(q: string, countrycodes?: string) {
@@ -118,20 +136,30 @@ export async function geocodeAddress(
   if (!q) return null;
 
   const cacheKey = q.toLowerCase();
-  const cached = cacheGet(cacheKey);
-  if (cached !== undefined) return cached;
-
-  let result: { lat: number; lng: number } | null = null;
-  try {
-    // 1) приоритет — адреса в России; 2) fallback — весь мир
-    result = await nominatimSearch(q, 'ru,ua,kz,by');
-    if (!result) result = await nominatimSearch(q);
-  } catch {
-    result = null;
+  const cached = geoCache.get(cacheKey);
+  if (cached) {
+    const hit = await cached;
+    return hit ? { lat: hit.lat, lng: hit.lng } : null;
   }
 
-  cachePut(cacheKey, result);
-  return result;
+  const promise = (async (): Promise<GeoHit> => {
+    try {
+      // 1) приоритет — адреса в России; 2) fallback — весь мир
+      await nominatimThrottle();
+      let hit = await nominatimSearch(q, 'ru,ua,kz,by');
+      if (!hit) {
+        await nominatimThrottle();
+        hit = await nominatimSearch(q);
+      }
+      return hit ? { lat: hit.lat, lng: hit.lng } : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  cacheGeo(cacheKey, promise);
+  const hit = await promise;
+  return hit ? { lat: hit.lat, lng: hit.lng } : null;
 }
 
 /**
@@ -148,24 +176,26 @@ export async function geocodeVerify(
   if (!q) return false;
 
   const cacheKey = `verify:${q.toLowerCase()}:${(mustInclude ?? '').toLowerCase()}`;
-  const cached = cacheGet(cacheKey);
-  if (cached !== undefined) return cached !== null;
-
-  let hit: Awaited<ReturnType<typeof nominatimSearch>> = null;
-  try {
-    hit = await nominatimSearch(q, 'ru');
-  } catch {
-    hit = null;
+  const cached = geoCache.get(cacheKey);
+  if (cached) {
+    return (await cached) != null;
   }
 
-  let ok = false;
-  if (hit) {
-    const display = hit.display.toLowerCase();
-    const need = (mustInclude ?? '').trim().toLowerCase();
-    ok = !need || display.includes(need);
-  }
-  cachePut(cacheKey, ok && hit ? { lat: hit.lat, lng: hit.lng } : null);
-  return ok;
+  const promise = (async (): Promise<GeoHit> => {
+    try {
+      await nominatimThrottle();
+      const hit = await nominatimSearch(q, 'ru');
+      if (!hit) return null;
+      const need = (mustInclude ?? '').trim().toLowerCase();
+      const ok = !need || hit.display.toLowerCase().includes(need);
+      return ok ? { lat: hit.lat, lng: hit.lng } : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  cacheGeo(cacheKey, promise);
+  return (await promise) != null;
 }
 
 /** Фоновая привязка координат к заявке (повторный попытка после сбоя) */
@@ -206,11 +236,13 @@ function geocodeRetryLater(orderId: string, address: string): void {
  * Обратный геокодинг: координаты → адрес (Nominatim /reverse).
  * Используется, когда оператор ставит/сдвигает точку заявки вручную —
  * адрес в карточке подтягивается под точку на карте.
- * Кэш по округлённым координатам (5 знаков ≈ 1 м).
+ * Кэш по округлённым координатам (5 знаков ≈ 1 м), хранит промисы (дедуп полётов),
+ * LRU-очистка вместо полного clear().
  */
+const REV_CACHE_CAP = 500;
 const revCache = new Map<
   string,
-  { address: string; city: string | null } | null
+  Promise<{ address: string; city: string | null } | null>
 >();
 
 export async function reverseGeocode(
@@ -218,21 +250,23 @@ export async function reverseGeocode(
   lng: number
 ): Promise<{ address: string; city: string | null } | null> {
   const key = `${lat.toFixed(5)}:${lng.toFixed(5)}`;
-  if (revCache.has(key)) return revCache.get(key) ?? null;
+  const cached = revCache.get(key);
+  if (cached) return cached;
 
-  let result: { address: string; city: string | null } | null = null;
-  try {
-    const url = new URL('https://nominatim.openstreetmap.org/reverse');
-    url.searchParams.set('format', 'jsonv2');
-    url.searchParams.set('lat', String(lat));
-    url.searchParams.set('lon', String(lng));
-    url.searchParams.set('zoom', '18');
-    url.searchParams.set('accept-language', 'ru');
-    const res = await fetch(url.toString(), {
-      headers: { 'User-Agent': 'BotStudio/1.0 (bot support orders)' },
-      signal: AbortSignal.timeout(3500),
-    });
-    if (res.ok) {
+  const promise = (async (): Promise<{ address: string; city: string | null } | null> => {
+    try {
+      await nominatimThrottle();
+      const url = new URL('https://nominatim.openstreetmap.org/reverse');
+      url.searchParams.set('format', 'jsonv2');
+      url.searchParams.set('lat', String(lat));
+      url.searchParams.set('lon', String(lng));
+      url.searchParams.set('zoom', '18');
+      url.searchParams.set('accept-language', 'ru');
+      const res = await fetch(url.toString(), {
+        headers: { 'User-Agent': 'BotStudio/1.0 (bot support orders)' },
+        signal: AbortSignal.timeout(3500),
+      });
+      if (!res.ok) return null;
       const json = (await res.json()) as {
         address?: Record<string, string>;
         name?: string;
@@ -241,15 +275,16 @@ export async function reverseGeocode(
       const street = [a.road, a.house_number].filter(Boolean).join(', ');
       const city = a.city ?? a.town ?? a.village ?? a.municipality ?? null;
       const address = street || json.name || a.suburb || null;
-      if (address) result = { address, city };
+      return address ? { address, city } : null;
+    } catch {
+      return null;
     }
-  } catch {
-    result = null;
-  }
+  })();
 
-  if (revCache.size > 500) revCache.clear();
-  revCache.set(key, result);
-  return result;
+  revCache.delete(key); // LRU-позиция
+  revCache.set(key, promise);
+  lruTrim(revCache, REV_CACHE_CAP);
+  return promise;
 }
 
 export async function createOrder(input: CreateOrderInput) {
@@ -275,7 +310,7 @@ export async function createOrder(input: CreateOrderInput) {
     }
   }
 
-  let order = null;
+  let order: Order | null = null;
   // До 3 попыток: unique(botId, number) может нарушиться при гонке
   for (let attempt = 0; attempt < 3 && !order; attempt++) {
     try {

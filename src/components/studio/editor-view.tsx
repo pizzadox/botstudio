@@ -42,6 +42,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
@@ -92,6 +93,63 @@ function useMediaQuery(query: string) {
     },
     () => window.matchMedia(query).matches,
     () => false
+  );
+}
+
+// IMP-F24: карта цветов MiniMap вынесена на уровень модуля — не пересоздаётся на каждый рендер
+const NODE_COLOR_MAP: Record<string, string> = {
+  start: '#10b981',
+  message: '#14b8a6',
+  question: '#06b6d4',
+  buttons: '#f59e0b',
+  condition: '#f97316',
+  ai: '#8b5cf6',
+  http: '#d946ef',
+  delay: '#64748b',
+  handoff: '#f43f5e',
+  end: '#64748b',
+};
+const DEFAULT_NODE_COLOR = '#94a3b8';
+
+// IMP-F25: скелетон загрузки канваса — композиция повторяет форму реальной карточки узла
+function FlowCardSkeleton({ className }: { className?: string }) {
+  return (
+    <div className={cn('w-56 rounded-lg border bg-card shadow-sm sm:w-60', className)}>
+      <div className="flex items-center gap-2 rounded-t-[7px] border-b bg-muted/40 p-2.5">
+        <Skeleton className="h-7 w-7 shrink-0 rounded-full" />
+        <div className="min-w-0 flex-1 space-y-1">
+          <Skeleton className="h-2.5 w-3/4" />
+          <Skeleton className="h-2 w-1/2" />
+        </div>
+      </div>
+      <div className="space-y-1.5 p-2.5">
+        <Skeleton className="h-2.5 w-full" />
+        <Skeleton className="h-2.5 w-2/3" />
+      </div>
+    </div>
+  );
+}
+
+function CanvasSkeleton() {
+  return (
+    <div role="status" className="relative h-full w-full overflow-hidden">
+      <FlowCardSkeleton className="absolute left-[8%] top-[10%]" />
+      <FlowCardSkeleton className="absolute left-[40%] top-[34%] hidden sm:block" />
+      <FlowCardSkeleton className="absolute left-[14%] top-[58%]" />
+      <span className="sr-only">Загружаем сценарий…</span>
+    </div>
+  );
+}
+
+/** Скелетон колонки палитры на время загрузки сценария (9 блоков, как в реальной палитре) */
+function PaletteSkeleton() {
+  return (
+    <div aria-hidden="true" className="flex h-full flex-col gap-1.5 overflow-hidden p-3">
+      <Skeleton className="h-3.5 w-28 shrink-0" />
+      {Array.from({ length: 9 }, (_, i) => (
+        <Skeleton key={i} className="h-[52px] w-full shrink-0 rounded-lg" />
+      ))}
+    </div>
   );
 }
 
@@ -178,23 +236,77 @@ function EditorInner({
     };
   }, [nodes, edges]);
 
-  // Автосохранение сценария (только когда есть несохранённые изменения)
+  // Немедленное сохранение сценария — используется и автосейвом, и Ctrl/Cmd+S (IMP-F19)
+  const saveNow = useCallback(async () => {
+    setSaveState('saving');
+    try {
+      await api(`/api/bots/${bot.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ flow: buildFlow() }),
+      });
+      setSaveState('saved');
+    } catch {
+      setSaveState('unsaved');
+    }
+  }, [buildFlow, bot.id]);
+
+  // Автосохранение сценария (debounce 900 мс, только когда есть несохранённые изменения)
   useEffect(() => {
     if (!loadedRef.current || saveState !== 'unsaved') return;
-    const t = setTimeout(async () => {
-      setSaveState('saving');
-      try {
-        await api(`/api/bots/${bot.id}`, {
-          method: 'PUT',
-          body: JSON.stringify({ flow: buildFlow() }),
-        });
-        setSaveState('saved');
-      } catch {
-        setSaveState('unsaved');
-      }
-    }, 900);
+    const t = setTimeout(saveNow, 900);
     return () => clearTimeout(t);
-  }, [saveState, nodes, edges, bot.id, buildFlow]);
+  }, [saveState, nodes, edges, bot.id, saveNow]);
+
+  // IMP-F19: Ctrl/Cmd+S — форс-сохранение сценария. e.code — для нелатинских раскладок (Ctrl+Ы)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 's' || e.code === 'KeyS')) {
+        e.preventDefault();
+        if (saveState === 'unsaved') void saveNow();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [saveState, saveNow]);
+
+  // IMP-F20: Esc закрывает инспектор, затем тест-чат; не мешаем полям ввода и Radix-диалогам
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      // Открыт Radix-диалог/шит/меню/селект — он закрывается сам
+      if (document.querySelector('[role="dialog"], [data-radix-popper-content-wrapper]')) return;
+      if (selectedId) {
+        setSelectedId(null);
+        e.preventDefault();
+      } else if (testOpen) {
+        setTestOpen(false);
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedId, testOpen]);
+
+  // IMP-F21: предупреждение при закрытии/перезагрузке вкладки с несохранёнными правками
+  useEffect(() => {
+    if (saveState === 'saved') return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [saveState]);
 
   const addNode = useCallback(
     (type: FlowNodeType, position: XYPosition) => {
@@ -297,17 +409,29 @@ function EditorInner({
     [setNodes, setEdges]
   );
 
-  // Обёртки над изменениями React Flow — отмечают сценарий «грязным»
+  // Обёртки над изменениями React Flow — отмечают сценарий «грязным».
+  // IMP-F23: позиция/размер/выделение не меняют содержимое сценария — функциональный сет
+  // не даёт лишнего ре-рендера, когда состояние уже 'unsaved' (drag = десятки событий на
+  // mousemove). Контентные изменения (add/remove/replace) сетятся напрямую, как раньше.
+  // Autosave-таймер не затронут: он пересоздаётся по изменению самих nodes/edges.
   const handleNodesChange = useCallback(
     (changes: Parameters<typeof onNodesChange>[0]) => {
-      if (loadedRef.current && changes.length > 0) setSaveState('unsaved');
+      if (loadedRef.current && changes.length > 0) {
+        const geometryOnly = changes.every(
+          (c) => c.type === 'position' || c.type === 'dimensions' || c.type === 'select'
+        );
+        setSaveState((prev) => (geometryOnly && prev === 'unsaved' ? prev : 'unsaved'));
+      }
       onNodesChange(changes);
     },
     [onNodesChange]
   );
   const handleEdgesChange = useCallback(
     (changes: Parameters<typeof onEdgesChange>[0]) => {
-      if (loadedRef.current && changes.length > 0) setSaveState('unsaved');
+      if (loadedRef.current && changes.length > 0) {
+        const selectionOnly = changes.every((c) => c.type === 'select');
+        setSaveState((prev) => (selectionOnly && prev === 'unsaved' ? prev : 'unsaved'));
+      }
       onEdgesChange(changes);
     },
     [onEdgesChange]
@@ -386,7 +510,15 @@ function EditorInner({
         </div>
 
         {/* Группа: статус сохранения */}
-        <div className="hidden items-center border-l pl-2 sm:flex">{saveIndicator}</div>
+        <div className="hidden items-center border-l pl-2 sm:flex">
+          {saveIndicator}
+          <span
+            className="ml-2 hidden text-[11px] text-muted-foreground sm:inline"
+            title="Сохранить сценарий: Ctrl+S (⌘S)"
+          >
+            Ctrl+S — сохранить
+          </span>
+        </div>
 
         {/* Группа: публикация и тест */}
         <div className="ml-auto flex items-center gap-2 border-l pl-2">
@@ -421,16 +553,14 @@ function EditorInner({
         {/* Палитра (десктоп) */}
         {isDesktop && (
           <div className="w-56 shrink-0 border-r bg-muted/30 xl:w-60">
-            <NodePalette onAdd={addNodeCenter} className="h-full" />
+            {loading ? <PaletteSkeleton /> : <NodePalette onAdd={addNodeCenter} className="h-full" />}
           </div>
         )}
 
         {/* Канвас */}
         <div className="relative min-w-0 flex-1">
           {loading ? (
-            <div role="status" className="flex h-full items-center justify-center text-muted-foreground">
-              <Loader2 aria-hidden="true" className="mr-2 h-5 w-5 animate-spin" /> Загрузка сценария…
-            </div>
+            <CanvasSkeleton />
           ) : (
             <ReactFlow
               nodes={nodes}
@@ -461,22 +591,7 @@ function EditorInner({
                 pannable
                 zoomable
                 className="!hidden md:!block"
-                nodeColor={(n) => {
-                  const t = (n as FlowCardNode).data.node.type;
-                  const map: Record<string, string> = {
-                    start: '#10b981',
-                    message: '#14b8a6',
-                    question: '#06b6d4',
-                    buttons: '#f59e0b',
-                    condition: '#f97316',
-                    ai: '#8b5cf6',
-                    http: '#d946ef',
-                    delay: '#64748b',
-                    handoff: '#f43f5e',
-                    end: '#64748b',
-                  };
-                  return map[t] ?? '#94a3b8';
-                }}
+                nodeColor={(n) => NODE_COLOR_MAP[(n as FlowCardNode).data.node.type] ?? DEFAULT_NODE_COLOR}
               />
             </ReactFlow>
           )}

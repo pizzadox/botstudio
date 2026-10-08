@@ -20,6 +20,16 @@ import { api } from '@/lib/client-api';
 import type { AiConfig, KnowledgeItemDto } from '@/lib/studio-types';
 import type { EngineState } from '@/lib/flow-types';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -67,6 +77,8 @@ export default function AiAssistantView({
   const [knowledge, setKnowledge] = useState<KnowledgeItemDto[]>([]);
   const [editing, setEditing] = useState<{ id: string | null; title: string; content: string } | null>(null);
   const [kbBusy, setKbBusy] = useState(false);
+  // Подтверждение удаления (AlertDialog): state-target + open={!!target}
+  const [deleteTarget, setDeleteTarget] = useState<KnowledgeItemDto | null>(null);
 
   // ── Тест-чат ──
   const [chat, setChat] = useState<ChatItem[]>([]);
@@ -257,7 +269,7 @@ export default function AiAssistantView({
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <div className="min-w-0">
-            <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+            <h1 className="flex items-center gap-2 text-lg font-bold tracking-tight sm:text-2xl">
               <Sparkles className="h-6 w-6 shrink-0 text-primary" aria-hidden /> ИИ-ассистент
             </h1>
             <p className="truncate text-sm text-muted-foreground">
@@ -497,7 +509,7 @@ export default function AiAssistantView({
                             size="icon"
                             className="h-8 w-8 text-muted-foreground hover:text-destructive"
                             aria-label={`Удалить запись «${k.title}»`}
-                            onClick={() => deleteItem(k.id)}
+                            onClick={() => setDeleteTarget(k)}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
@@ -651,6 +663,32 @@ export default function AiAssistantView({
           </CardContent>
         </Card>
       </div>
+
+      {/* Подтверждение удаления записи базы знаний — безвозвратно */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить запись?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Запись «{deleteTarget?.title}» будет удалена из базы знаний безвозвратно. ИИ больше
+              не сможет опираться на неё при ответах. Это действие нельзя отменить.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60"
+              onClick={() => {
+                const target = deleteTarget;
+                setDeleteTarget(null);
+                if (target) deleteItem(target.id);
+              }}
+            >
+              Удалить безвозвратно
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

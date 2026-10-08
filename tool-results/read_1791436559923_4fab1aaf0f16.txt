@@ -1,0 +1,1290 @@
+     1→'use client';
+     2→
+     3→import { useCallback, useEffect, useRef, useState } from 'react';
+     4→import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
+     5→import {
+     6→  ArrowDownToLine,
+     7→  ArrowLeftRight,
+     8→  ArrowUpFromLine,
+     9→  Bot,
+    10→  Check,
+    11→  ChevronDown,
+    12→  ChevronLeft,
+    13→  Copy,
+    14→  Database,
+    15→  Eye,
+    16→  EyeOff,
+    17→  Globe,
+    18→  Info,
+    19→  KeyRound,
+    20→  Loader2,
+    21→  MessageCircle,
+    22→  MessageSquare,
+    23→  Plug,
+    24→  Plus,
+    25→  Send,
+    26→  Trash2,
+    27→  Truck,
+    28→  Zap,
+    29→} from 'lucide-react';
+    30→import { api } from '@/lib/client-api';
+    31→import type { ChannelItem } from '@/lib/studio-types';
+    32→import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+    33→import { Badge } from '@/components/ui/badge';
+    34→import { Button } from '@/components/ui/button';
+    35→import {
+    36→  Card,
+    37→  CardContent,
+    38→  CardDescription,
+    39→  CardHeader,
+    40→  CardTitle,
+    41→} from '@/components/ui/card';
+    42→import {
+    43→  Dialog,
+    44→  DialogContent,
+    45→  DialogDescription,
+    46→  DialogFooter,
+    47→  DialogHeader,
+    48→  DialogTitle,
+    49→} from '@/components/ui/dialog';
+    50→import {
+    51→  Select,
+    52→  SelectContent,
+    53→  SelectItem,
+    54→  SelectTrigger,
+    55→  SelectValue,
+    56→} from '@/components/ui/select';
+    57→import { Switch } from '@/components/ui/switch';
+    58→import { Checkbox } from '@/components/ui/checkbox';
+    59→import { Input } from '@/components/ui/input';
+    60→import { Label } from '@/components/ui/label';
+    61→import { Skeleton } from '@/components/ui/skeleton';
+    62→import { useToast } from '@/hooks/use-toast';
+    63→import { cn } from '@/lib/utils';
+    64→
+    65→const CHANNEL_META: Record<
+    66→  ChannelItem['type'],
+    67→  { label: string; icon: typeof Send; color: string; hint: string; tokenLabel: string }
+    68→> = {
+    69→  telegram: {
+    70→    label: 'Telegram',
+    71→    icon: Send,
+    72→    color: 'bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300',
+    73→    hint: '1. Откройте @BotFather → /newbot\n2. Скопируйте токен и вставьте здесь\n3. Скопируйте URL вебхука ниже — BotFather сам предложит его установить (или отправьте setWebhook вручную)',
+    74→    tokenLabel: 'Bot token (123456:ABC-DEF…)',
+    75→  },
+    76→  whatsapp: {
+    77→    label: 'WhatsApp',
+    78→    icon: MessageCircle,
+    79→    color: 'bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300',
+    80→    hint: 'Подключение через WhatsApp Cloud API (Meta for Developers):\n1. Создайте приложение и добавьте продукт WhatsApp\n2. Вставьте Permanent Token в поле токена\n3. Укажите Phone Number ID в поле ниже\n4. Скопируйте URL вебхука в настройки WhatsApp → Callback URL',
+    81→    tokenLabel: 'Access Token (Meta)',
+    82→  },
+    83→  max: {
+    84→    label: 'MAX',
+    85→    icon: MessageSquare,
+    86→    color: 'bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300',
+    87→    hint: 'Как получить токен:\n1. Откройте мессенджер MAX и найдите бота «MAX для бизнеса» (или откройте max.ru → Чат-боты)\n2. Создайте бота и скопируйте токен: раздел Чат-боты → выберите бота → ⋮ → Настройки → значок копирования\n3. Вставьте токен здесь и нажмите «Подключить»\n\nВебхук настраивать не нужно — студия сама принимает и отправляет сообщения в MAX.',
+    88→    tokenLabel: 'Bot token MAX',
+    89→  },
+    90→  web: {
+    91→    label: 'Чат для сайта',
+    92→    icon: Globe,
+    93→    color: 'bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300',
+    94→    hint: 'Демо-чат не требует токенов. Скопируйте URL и обращайтесь к нему с сайта — или протестируйте бота прямо здесь, как это увидят посетители.',
+    95→    tokenLabel: 'Токен не требуется',
+    96→  },
+    97→};
+    98→
+    99→export default function ChannelsView({
+   100→  bot,
+   101→  onBack,
+   102→  onOpenEditor,
+   103→}: {
+   104→  bot: { id: string; name: string; status: string };
+   105→  onBack: () => void;
+   106→  onOpenEditor: () => void;
+   107→}) {
+   108→  const { toast } = useToast();
+   109→  const [channels, setChannels] = useState<ChannelItem[]>([]);
+   110→  const [loading, setLoading] = useState(true);
+   111→  const [addOpen, setAddOpen] = useState(false);
+   112→  const [type, setType] = useState<ChannelItem['type']>('telegram');
+   113→  const [title, setTitle] = useState('');
+   114→  const [token, setToken] = useState('');
+   115→  const [phone, setPhone] = useState('');
+   116→  const [busy, setBusy] = useState(false);
+   117→  const [demoChannel, setDemoChannel] = useState<ChannelItem | null>(null);
+   118→  const [origin, setOrigin] = useState('');
+   119→
+   120→  const load = useCallback(async () => {
+   121→    try {
+   122→      const d = await api<{ channels: ChannelItem[] }>(`/api/bots/${bot.id}/channels`);
+   123→      setChannels(d.channels);
+   124→    } catch {
+   125→      toast({ title: 'Не удалось загрузить каналы', variant: 'destructive' });
+   126→    } finally {
+   127→      setLoading(false);
+   128→    }
+   129→  }, [bot.id, toast]);
+   130→
+   131→  useEffect(() => {
+   132→    setOrigin(window.location.origin);
+   133→    load();
+   134→  }, [load]);
+   135→
+   136→  const createChannel = async () => {
+   137→    setBusy(true);
+   138→    try {
+   139→      await api(`/api/bots/${bot.id}/channels`, {
+   140→        method: 'POST',
+   141→        body: JSON.stringify({ type, title, token, phone }),
+   142→      });
+   143→      setAddOpen(false);
+   144→      setTitle('');
+   145→      setToken('');
+   146→      setPhone('');
+   147→      toast({ title: 'Канал добавлен' });
+   148→      load();
+   149→    } catch (e) {
+   150→      toast({ title: 'Ошибка', description: e instanceof Error ? e.message : '', variant: 'destructive' });
+   151→    } finally {
+   152→      setBusy(false);
+   153→    }
+   154→  };
+   155→
+   156→  const toggleActive = async (ch: ChannelItem, active: boolean) => {
+   157→    setChannels((cs) => cs.map((c) => (c.id === ch.id ? { ...c, active } : c)));
+   158→    try {
+   159→      await api(`/api/channels/${ch.id}`, { method: 'PUT', body: JSON.stringify({ active }) });
+   160→    } catch {
+   161→      load();
+   162→    }
+   163→  };
+   164→
+   165→  const testChannel = async (ch: ChannelItem) => {
+   166→    toast({ title: 'Проверяем подключение…' });
+   167→    try {
+   168→      const d = await api<{ ok: boolean; message: string }>(`/api/channels/${ch.id}/test`, {
+   169→        method: 'POST',
+   170→      });
+   171→      toast({ title: d.message, variant: d.ok ? 'default' : 'destructive' });
+   172→      load();
+   173→    } catch {
+   174→      toast({ title: 'Ошибка проверки', variant: 'destructive' });
+   175→    }
+   176→  };
+   177→
+   178→  const deleteChannel = async (ch: ChannelItem) => {
+   179→    try {
+   180→      await api(`/api/channels/${ch.id}`, { method: 'DELETE' });
+   181→      toast({ title: 'Канал удалён' });
+   182→      load();
+   183→    } catch {
+   184→      toast({ title: 'Не удалось удалить', variant: 'destructive' });
+   185→    }
+   186→  };
+   187→
+   188→  const copy = async (text: string) => {
+   189→    try {
+   190→      await navigator.clipboard.writeText(text);
+   191→      toast({ title: 'Скопировано в буфер' });
+   192→    } catch {
+   193→      toast({ title: 'Не удалось скопировать', variant: 'destructive' });
+   194→    }
+   195→  };
+   196→
+   197→  const webhookUrl = (ch: ChannelItem) => `${origin}/api/webhook/${ch.type}/${ch.secret}`;
+   198→
+   199→  return (
+   200→    <div className="flex-1 min-h-0 overflow-y-auto space-y-6 p-4 sm:p-6 lg:p-8">
+   201→      <div className="flex flex-wrap items-center justify-between gap-4">
+   202→        <div className="flex items-center gap-3">
+   203→          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">
+   204→            <ChevronLeft className="h-4 w-4" />
+   205→          </Button>
+   206→          <div>
+   207→            <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+   208→              <Plug className="h-6 w-6 text-primary" /> Каналы
+   209→            </h1>
+   210→            <p className="text-sm text-muted-foreground">Подключение бота «{bot.name}» к мессенджерам</p>
+   211→          </div>
+   212→        </div>
+   213→        <Button onClick={() => { setType('telegram'); setAddOpen(true); }}>
+   214→          <Plus className="h-4 w-4" /> Подключить канал
+   215→        </Button>
+   216→      </div>
+   217→
+   218→      {bot.status !== 'published' && (
+   219→        <Alert className="border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10">
+   220→          <Info className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+   221→          <AlertTitle className="text-amber-800 dark:text-amber-300">Бот ещё не опубликован</AlertTitle>
+   222→          <AlertDescription className="text-amber-700 dark:text-amber-300/80">
+   223→            Каналы сохранят настройки, но отвечать они начнут после публикации бота в{' '}
+   224→            <button className="font-medium underline underline-offset-2" onClick={onOpenEditor}>
+   225→              конструкторе
+   226→            </button>
+   227→            .
+   228→          </AlertDescription>
+   229→        </Alert>
+   230→      )}
+   231→
+   232→      {loading ? (
+   233→        <div className="space-y-4" role="status" aria-live="polite">
+   234→          <p className="sr-only">Загрузка каналов…</p>
+   235→          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+   236→            {[0, 1, 2].map((i) => (
+   237→              <div key={i} className="rounded-xl border bg-card p-4">
+   238→                <div className="flex items-center gap-3">
+   239→                  <Skeleton className="h-10 w-10 rounded-xl" />
+   240→                  <div className="min-w-0 flex-1 space-y-2">
+   241→                    <Skeleton className="h-4 w-2/3" />
+   242→                    <Skeleton className="h-3 w-1/3" />
+   243→                  </div>
+   244→                </div>
+   245→                <Skeleton className="mt-4 h-9 w-full" />
+   246→                <div className="mt-3 flex gap-2">
+   247→                  <Skeleton className="h-8 flex-1" />
+   248→                  <Skeleton className="h-8 w-9" />
+   249→                </div>
+   250→              </div>
+   251→            ))}
+   252→          </div>
+   253→        </div>
+   254→      ) : channels.length === 0 ? (
+   255→        <Card className="border-dashed">
+   256→          <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+   257→            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+   258→              <Plug className="h-7 w-7" />
+   259→            </div>
+   260→            <div className="font-semibold">Ни один канал не подключён</div>
+   261→            <p className="max-w-md text-sm text-muted-foreground">
+   262→              Подключите Telegram, WhatsApp, MAX — или создайте демо-чат, чтобы общаться с ботом
+   263→              прямо на сайте.
+   264→            </p>
+   265→            <Button onClick={() => setAddOpen(true)}>
+   266→              <Plus className="h-4 w-4" /> Подключить канал
+   267→            </Button>
+   268→          </CardContent>
+   269→        </Card>
+   270→      ) : (
+   271→        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+   272→          {channels.map((ch) => {
+   273→            const meta = CHANNEL_META[ch.type];
+   274→            const Icon = meta.icon;
+   275→            return (
+   276→              <Card key={ch.id}>
+   277→                <CardHeader className="pb-3">
+   278→                  <div className="flex min-w-0 items-start justify-between gap-2">
+   279→                    <div className="flex items-center gap-3 min-w-0">
+   280→                      <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-xl', meta.color)}>
+   281→                        <Icon className="h-5 w-5" />
+   282→                      </div>
+   283→                      <div className="min-w-0">
+   284→                        <CardTitle className="truncate text-base">{ch.title}</CardTitle>
+   285→                        <CardDescription>{meta.label}</CardDescription>
+   286→                      </div>
+   287→                    </div>
+   288→                    <div className="flex items-center gap-2">
+   289→                      <Switch
+   290→                        checked={ch.active}
+   291→                        onCheckedChange={(v) => toggleActive(ch, v)}
+   292→                        aria-label={ch.active ? `Выключить канал «${ch.title}»` : `Включить канал «${ch.title}»`}
+   293→                      />
+   294→                    </div>
+   295→                  </div>
+   296→                </CardHeader>
+   297→                <CardContent className="space-y-3">
+   298→                  {ch.type === 'max' ? (
+   299→                    <div className="rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
+   300→                      <span className="font-medium text-foreground">Вебхук не нужен.</span> Сообщения из MAX
+   301→                      принимаются автоматически (long polling). Нажмите «Проверить» — студия свяжется с MAX и
+   302→                      покажет имя бота.
+   303→                    </div>
+   304→                  ) : (
+   305→                    <div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-2">
+   306→                      <code className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+   307→                        {webhookUrl(ch)}
+   308→                      </code>
+   309→                      <Button
+   310→                        variant="ghost"
+   311→                        size="icon"
+   312→                        className="h-7 w-7 shrink-0"
+   313→                        onClick={() => copy(webhookUrl(ch))}
+   314→                        aria-label="Скопировать URL вебхука"
+   315→                      >
+   316→                        <Copy className="h-3.5 w-3.5" />
+   317→                      </Button>
+   318→                    </div>
+   319→                  )}
+   320→                  {ch.type === 'web' && (
+   321→                    <Button variant="outline" className="w-full" onClick={() => setDemoChannel(ch)}>
+   322→                      <Bot className="h-4 w-4" /> Открыть демо-чат
+   323→                    </Button>
+   324→                  )}
+   325→                  {ch.lastStatus && (
+   326→                    <div role="status" aria-live="polite" className="min-w-0">
+   327→                      <span
+   328→                        className={cn(
+   329→                          'inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium',
+   330→                          ch.lastStatus.startsWith('OK')
+   331→                            ? 'border-emerald-200 bg-emerald-100 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300'
+   332→                            : ch.lastStatus.startsWith('Ошибка')
+   333→                              ? 'border-rose-200 bg-rose-100 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-300'
+   334→                              : 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/15 dark:text-slate-300'
+   335→                        )}
+   336→                      >
+   337→                        <span
+   338→                          className={cn(
+   339→                            'h-1.5 w-1.5 shrink-0 rounded-full',
+   340→                            ch.lastStatus.startsWith('OK')
+   341→                              ? 'bg-emerald-500'
+   342→                              : ch.lastStatus.startsWith('Ошибка')
+   343→                                ? 'bg-rose-500'
+   344→                                : 'bg-slate-400 dark:bg-slate-500'
+   345→                          )}
+   346→                          aria-hidden
+   347→                        />
+   348→                        <span className="sr-only">Статус: </span>
+   349→                        <span className="truncate" title={ch.lastStatus}>
+   350→                          {ch.lastStatus}
+   351→                        </span>
+   352→                      </span>
+   353→                    </div>
+   354→                  )}
+   355→                  <div className="flex gap-2">
+   356→                    <Button size="sm" variant="outline" className="flex-1" onClick={() => testChannel(ch)}>
+   357→                      <Zap className="h-3.5 w-3.5" /> Проверить
+   358→                    </Button>
+   359→                    <Button
+   360→                      size="sm"
+   361→                      variant="outline"
+   362→                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+   363→                      onClick={() => deleteChannel(ch)}
+   364→                      aria-label="Удалить канал"
+   365→                    >
+   366→                      <Trash2 className="h-3.5 w-3.5" />
+   367→                    </Button>
+   368→                  </div>
+   369→                  <details className="group">
+   370→                    <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-primary [&::-webkit-details-marker]:hidden">
+   371→                      Как подключить
+   372→                      <ChevronDown
+   373→                        className="h-3.5 w-3.5 transition-transform group-open:rotate-180"
+   374→                        aria-hidden
+   375→                      />
+   376→                    </summary>
+   377→                    <p className="mt-2 whitespace-pre-line rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
+   378→                      {meta.hint}
+   379→                    </p>
+   380→                  </details>
+   381→                </CardContent>
+   382→              </Card>
+   383→            );
+   384→          })}
+   385→        </div>
+   386→      )}
+   387→
+   388→      {/* Интеграция MyTKO (mytko.ru — «Чистая логистика») */}
+   389→      <MytkoCard botId={bot.id} />
+   390→
+   391→      {/* Диалог добавления канала */}
+   392→      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+   393→        <DialogContent>
+   394→          <DialogHeader>
+   395→            <DialogTitle>Подключить канал</DialogTitle>
+   396→            <DialogDescription>
+   397→              Выберите мессенджер и вставьте данные доступа.
+   398→            </DialogDescription>
+   399→          </DialogHeader>
+   400→          <div className="space-y-4">
+   401→            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+   402→              {(Object.keys(CHANNEL_META) as ChannelItem['type'][]).map((t) => {
+   403→                const meta = CHANNEL_META[t];
+   404→                const Icon = meta.icon;
+   405→                return (
+   406→                  <button
+   407→                    key={t}
+   408→                    onClick={() => setType(t)}
+   409→                    aria-pressed={type === t}
+   410→                    className={cn(
+   411→                      'flex flex-col items-center gap-1.5 rounded-xl border p-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40',
+   412→                      type === t
+   413→                        ? 'border-primary bg-primary/5 shadow-sm ring-1 ring-primary/30'
+   414→                        : 'hover:border-primary/40 hover:bg-muted/50'
+   415→                    )}
+   416→                  >
+   417→                    <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', meta.color)}>
+   418→                      <Icon className="h-4 w-4" />
+   419→                    </div>
+   420→                    {meta.label}
+   421→                  </button>
+   422→                );
+   423→              })}
+   424→            </div>
+   425→            <div className="space-y-2">
+   426→              <Label htmlFor="ch-title" className="text-xs font-medium">Название канала</Label>
+   427→              <Input
+   428→                id="ch-title"
+   429→                placeholder={`${CHANNEL_META[type].label} — основной`}
+   430→                value={title}
+   431→                onChange={(e) => setTitle(e.target.value)}
+   432→              />
+   433→            </div>
+   434→            {type !== 'web' && (
+   435→              <div className="space-y-2">
+   436→                <Label htmlFor="ch-token" className="text-xs font-medium">{CHANNEL_META[type].tokenLabel}</Label>
+   437→                <Input
+   438→                  id="ch-token"
+   439→                  type="password"
+   440→                  placeholder="вставьте токен"
+   441→                  value={token}
+   442→                  onChange={(e) => setToken(e.target.value)}
+   443→                />
+   444→              </div>
+   445→            )}
+   446→            {type === 'whatsapp' && (
+   447→              <div className="space-y-2">
+   448→                <Label htmlFor="ch-phone" className="text-xs font-medium">Phone Number ID</Label>
+   449→                <Input
+   450→                  id="ch-phone"
+   451→                  placeholder="например 123456789012345"
+   452→                  value={phone}
+   453→                  onChange={(e) => setPhone(e.target.value)}
+   454→                />
+   455→              </div>
+   456→            )}
+   457→            <p className="whitespace-pre-line rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
+   458→              {CHANNEL_META[type].hint}
+   459→            </p>
+   460→          </div>
+   461→          <DialogFooter>
+   462→            <Button variant="outline" onClick={() => setAddOpen(false)}>
+   463→              Отмена
+   464→            </Button>
+   465→            <Button onClick={createChannel} disabled={busy || (type !== 'web' && !token.trim())}>
+   466→              {busy && <Loader2 className="h-4 w-4 animate-spin" />} Подключить
+   467→            </Button>
+   468→          </DialogFooter>
+   469→        </DialogContent>
+   470→      </Dialog>
+   471→
+   472→      {/* Демо-чат */}
+   473→      <Dialog open={!!demoChannel} onOpenChange={(o) => !o && setDemoChannel(null)}>
+   474→        <DialogContent className="gap-0 p-0 sm:max-w-md">
+   475→          <VisuallyHidden>
+   476→            <DialogTitle>Демо-чат</DialogTitle>
+   477→            <DialogDescription>
+   478→              Проверьте, как бот общается с посетителями сайта
+   479→            </DialogDescription>
+   480→          </VisuallyHidden>
+   481→          {demoChannel && <DemoChat secret={demoChannel.secret} />}
+   482→        </DialogContent>
+   483→      </Dialog>
+   484→    </div>
+   485→  );
+   486→}
+   487→
+   488→// ─── Демо-виджет чата ────────────────────────────────────────────────────────
+   489→
+   490→function DemoChat({ secret }: { secret: string }) {
+   491→  const [messages, setMessages] = useState<
+   492→    { id: string; role: string; text: string; buttons?: { id: string; text: string }[] }[]
+   493→  >([]);
+   494→  const [input, setInput] = useState('');
+   495→  const [sending, setSending] = useState(false);
+   496→  const convRef = useRef<string | null>(null);
+   497→  const visitorRef = useRef<string>('');
+   498→  const scrollRef = useRef<HTMLDivElement>(null);
+   499→  const storageKey = `botstudio_demo_conv_${secret}`;
+   500→  const visitorKey = 'botstudio_visitor';
+   501→
+   502→  // Стабильный id посетителя: один гость = одно обращение,
+   503→  // даже если conversationId был потерян
+   504→  useEffect(() => {
+   505→    try {
+   506→      let v = window.localStorage.getItem(visitorKey);
+   507→      if (!v) {
+   508→        v =
+   509→          typeof crypto !== 'undefined' && 'randomUUID' in crypto
+   510→            ? crypto.randomUUID().replace(/-/g, '')
+   511→            : Math.random().toString(36).slice(2) + Date.now().toString(36);
+   512→        window.localStorage.setItem(visitorKey, v);
+   513→      }
+   514→      visitorRef.current = v;
+   515→    } catch {
+   516→      visitorRef.current = Math.random().toString(36).slice(2) + Date.now().toString(36);
+   517→    }
+   518→  }, [visitorKey]);
+   519→
+   520→  // Восстановить диалог посетителя (как реальный виджет сайта)
+   521→  useEffect(() => {
+   522→    try {
+   523→      const saved = window.localStorage.getItem(storageKey);
+   524→      if (saved) {
+   525→        convRef.current = saved;
+   526→        fetch(`/api/webhook/demo/${secret}?conversationId=${saved}`)
+   527→          .then((r) => r.json())
+   528→          .then((d) => {
+   529→            if (d.messages?.length) setMessages(d.messages);
+   530→          })
+   531→          .catch(() => {});
+   532→      }
+   533→    } catch {
+   534→      /* ignore */
+   535→    }
+   536→  }, [secret, storageKey]);
+   537→
+   538→  const scrollToBottom = () => {
+   539→    requestAnimationFrame(() => {
+   540→      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+   541→    });
+   542→  };
+   543→
+   544→  useEffect(() => {
+   545→    scrollToBottom();
+   546→  }, [messages]);
+   547→
+   548→  const poll = useCallback(async () => {
+   549→    if (!convRef.current) return;
+   550→    try {
+   551→      const d = await api<{
+   552→        messages: { id: string; role: string; text: string; buttons?: { id: string; text: string }[] }[];
+   553→      }>(`/api/webhook/demo/${secret}?conversationId=${convRef.current}`);
+   554→      setMessages((prev) => (d.messages.length > prev.length ? d.messages : prev));
+   555→    } catch {
+   556→      /* ignore */
+   557→    }
+   558→  }, [secret]);
+   559→
+   560→  useEffect(() => {
+   561→    const t = setInterval(poll, 4000);
+   562→    return () => clearInterval(t);
+   563→  }, [poll]);
+   564→
+   565→  const send = async (text: string) => {
+   566→    const t = text.trim();
+   567→    if (!t || sending) return;
+   568→    setSending(true);
+   569→    setInput('');
+   570→    setMessages((prev) => [...prev, { id: `local-${Date.now()}`, role: 'user', text: t }]);
+   571→    scrollToBottom();
+   572→    try {
+   573→      const d = await api<{
+   574→        conversationId: string;
+   575→        messages: { id: string; role: string; text: string; buttons?: { id: string; text: string }[] }[];
+   576→      }>(`/api/webhook/demo/${secret}`, {
+   577→        method: 'POST',
+   578→        body: JSON.stringify({ text: t, conversationId: convRef.current, visitorId: visitorRef.current || undefined }),
+   579→      });
+   580→      convRef.current = d.conversationId;
+   581→      try {
+   582→        window.localStorage.setItem(storageKey, d.conversationId);
+   583→      } catch {
+   584→        /* ignore */
+   585→      }
+   586→      setMessages(d.messages);
+   587→      scrollToBottom();
+   588→    } catch (e) {
+   589→      setMessages((prev) => [
+   590→        ...prev,
+   591→        { id: `err-${Date.now()}`, role: 'bot', text: e instanceof Error ? e.message : 'Ошибка' },
+   592→      ]);
+   593→    } finally {
+   594→      setSending(false);
+   595→    }
+   596→  };
+   597→
+   598→  return (
+   599→    <div className="flex flex-col">
+   600→      <div className="flex items-center gap-3 rounded-t-xl bg-gradient-to-r from-emerald-600 to-teal-600 p-4 text-white">
+   601→        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/20">
+   602→          <Bot className="h-5 w-5" />
+   603→        </div>
+   604→        <div className="flex-1">
+   605→          <div className="text-sm font-semibold leading-tight">Чат поддержки</div>
+   606→          <div className="flex items-center gap-1 text-xs text-white/80">
+   607→            <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" /> онлайн
+   608→          </div>
+   609→        </div>
+   610→        <Badge variant="secondary" className="text-[10px]">
+   611→          демо сайта
+   612→        </Badge>
+   613→      </div>
+   614→      <div ref={scrollRef} className="h-80 space-y-2.5 overflow-y-auto bg-muted/40 p-3">
+   615→        {messages.length === 0 && (
+   616→          <div className="flex h-full items-center justify-center text-center text-sm text-muted-foreground">
+   617→            Напишите сообщение — бот ответит
+   618→            <br />
+   619→            как в настоящем виджете на сайте
+   620→          </div>
+   621→        )}
+   622→        {messages.map((m) => (
+   623→          <div key={m.id} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
+   624→            <div
+   625→              className={cn(
+   626→                'max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm leading-snug',
+   627→                m.role === 'user'
+   628→                  ? 'rounded-br-md bg-primary text-primary-foreground'
+   629→                  : 'rounded-bl-md border bg-card'
+   630→              )}
+   631→            >
+   632→              {m.text}
+   633→            </div>
+   634→          </div>
+   635→        ))}
+   636→        {(() => {
+   637→          const lastButtons = [...messages].reverse().find((m) => m.role === 'bot' && m.buttons?.length)?.buttons;
+   638→          if (!lastButtons?.length) return null;
+   639→          return (
+   640→            <div className="flex flex-wrap gap-2 pt-1">
+   641→              {lastButtons.map((b) => (
+   642→                <button
+   643→                  key={b.id}
+   644→                  onClick={() => send(b.text)}
+   645→                  disabled={sending}
+   646→                  className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground disabled:opacity-50"
+   647→                >
+   648→                  {b.text}
+   649→                </button>
+   650→              ))}
+   651→            </div>
+   652→          );
+   653→        })()}
+   654→      </div>
+   655→      <form
+   656→        className="flex items-center gap-2 border-t p-3"
+   657→        onSubmit={(e) => {
+   658→          e.preventDefault();
+   659→          send(input);
+   660→        }}
+   661→      >
+   662→        <Input placeholder="Сообщение…" value={input} onChange={(e) => setInput(e.target.value)} />
+   663→        <Button type="submit" size="icon" className="h-10 w-10 shrink-0" disabled={sending || !input.trim()}>
+   664→          {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+   665→        </Button>
+   666→      </form>
+   667→    </div>
+   668→  );
+   669→}
+   670→
+   671→// ─── Интеграция MyTKO (mytko.ru «Чистая логистика») ──────────────────────────
+   672→
+   673→interface MytkoReportItem {
+   674→  id: string;
+   675→  removalTs: string | null;
+   676→  vehicleNumber: string | null;
+   677→  lkCode: string | null;
+   678→  factContainersAmount: number | null;
+   679→  pickedUpVolume: number | null;
+   680→  notRemoved: number;
+   681→}
+   682→
+   683→interface MytkoDirectionsUi {
+   684→  areas: boolean;
+   685→  driverReports: boolean;
+   686→  requests: boolean;
+   687→  sendRequests: boolean;
+   688→}
+   689→
+   690→const MYTKO_DIRECTION_ITEMS: Array<{
+   691→  key: keyof MytkoDirectionsUi;
+   692→  dir: 'in' | 'out';
+   693→  label: string;
+   694→  hint: string;
+   695→}> = [
+   696→  {
+   697→    key: 'areas',
+   698→    dir: 'in',
+   699→    label: 'Реестр КП',
+   700→    hint: 'Все контейнерные площадки проекта: коды, адреса, координаты',
+   701→  },
+   702→  {
+   703→    key: 'driverReports',
+   704→    dir: 'in',
+   705→    label: 'Отчёты водителей',
+   706→    hint: 'Факты вывоза по КП: машина, дата, объём',
+   707→  },
+   708→  {
+   709→    key: 'requests',
+   710→    dir: 'in',
+   711→    label: 'Заявки на вывоз',
+   712→    hint: 'Чтение заявок из MyTKO',
+   713→  },
+   714→  {
+   715→    key: 'sendRequests',
+   716→    dir: 'out',
+   717→    label: 'Заявки на вывоз',
+   718→    hint: 'Передача заявок из чат-бота в MyTKO (через Kafka, доступ выдаёт ТП MyTKO)',
+   719→  },
+   720→];
+   721→
+   722→function MytkoCard({ botId }: { botId: string }) {
+   723→  const { toast } = useToast();
+   724→  const [cfg, setCfg] = useState({
+   725→    enabled: false,
+   726→    apiUrl: '',
+   727→    username: '',
+   728→    lkCodes: '',
+   729→    useAllAreas: false,
+   730→    directions: {
+   731→      areas: true,
+   732→      driverReports: true,
+   733→      requests: false,
+   734→      sendRequests: false,
+   735→    } as MytkoDirectionsUi,
+   736→    hasPassword: false,
+   737→    tokenMasked: null as string | null,
+   738→    tokenIssuedAt: null as string | null,
+   739→    areasSyncedAt: null as string | null,
+   740→    areasCount: 0,
+   741→  });
+   742→  const [password, setPassword] = useState('');
+   743→  const [showPassword, setShowPassword] = useState(false);
+   744→  const [loaded, setLoaded] = useState(false);
+   745→  const [busy, setBusy] = useState<'login' | 'test' | 'reports' | 'save' | 'areas' | null>(null);
+   746→  const [reports, setReports] = useState<MytkoReportItem[] | null>(null);
+   747→  const [connectionName, setConnectionName] = useState<string | null>(null);
+   748→
+   749→  useEffect(() => {
+   750→    api<{ config: typeof cfg }>(`/api/bots/${botId}/mytko`)
+   751→      .then((d) => setCfg(d.config))
+   752→      .catch(() => {})
+   753→      .finally(() => setLoaded(true));
+   754→  }, [botId]);
+   755→
+   756→  const save = async (patch?: Record<string, unknown>) => {
+   757→    try {
+   758→      await api(`/api/bots/${botId}/mytko`, {
+   759→        method: 'POST',
+   760→        body: JSON.stringify({ action: 'save', ...patch }),
+   761→      });
+   762→      return true;
+   763→    } catch {
+   764→      toast({ title: 'Не удалось сохранить настройки', variant: 'destructive' });
+   765→      return false;
+   766→    }
+   767→  };
+   768→
+   769→  /** Вход по логину/паролю: получаем Bearer-токен у MyTKO и сохраняем в настройках */
+   770→  const login = async () => {
+   771→    setBusy('login');
+   772→    try {
+   773→      const d = await api<{ ok: boolean; tokenMasked?: string; tokenIssuedAt?: string; error?: string }>(
+   774→        `/api/bots/${botId}/mytko`,
+   775→        {
+   776→          method: 'POST',
+   777→          body: JSON.stringify({
+   778→            action: 'login',
+   779→            apiUrl: cfg.apiUrl,
+   780→            username: cfg.username,
+   781→            // Введённый пароль уходит прямо в запрос — ничего не теряется
+   782→            ...(password.trim() ? { password: password.trim() } : {}),
+   783→          }),
+   784→        }
+   785→      );
+   786→      if (d.ok) {
+   787→        setCfg((c) => ({
+   788→          ...c,
+   789→          tokenMasked: d.tokenMasked ?? null,
+   790→          tokenIssuedAt: d.tokenIssuedAt ?? null,
+   791→          hasPassword: true,
+   792→        }));
+   793→        setPassword('');
+   794→        toast({ title: 'Токен MyTKO получен ✅', description: 'Сохранён в настройках интеграции' });
+   795→      } else {
+   796→        toast({ title: 'Не удалось получить токен', description: d.error ?? 'unknown', variant: 'destructive' });
+   797→      }
+   798→    } catch (e) {
+   799→      toast({ title: 'Ошибка входа', description: e instanceof Error ? e.message : '', variant: 'destructive' });
+   800→    } finally {
+   801→      setBusy(null);
+   802→    }
+   803→  };
+   804→
+   805→  const test = async () => {
+   806→    setBusy('test');
+   807→    try {
+   808→      const d = await api<{ ok: boolean; name?: string; regions?: string[]; error?: string }>(
+   809→        `/api/bots/${botId}/mytko`,
+   810→        { method: 'POST', body: JSON.stringify({ action: 'test' }) }
+   811→      );
+   812→      if (d.ok) {
+   813→        setConnectionName(d.name ?? null);
+   814→        toast({
+   815→          title: 'Подключение к MyTKO установлено ✅',
+   816→          description: d.name ? `${d.name}${d.regions?.length ? ` · ${d.regions.length} рег.` : ''}` : undefined,
+   817→        });
+   818→      } else {
+   819→        setConnectionName(null);
+   820→        toast({ title: `Ошибка: ${d.error ?? 'unknown'}`, variant: 'destructive' });
+   821→      }
+   822→    } catch (e) {
+   823→      toast({ title: 'Ошибка проверки', description: e instanceof Error ? e.message : '', variant: 'destructive' });
+   824→    } finally {
+   825→      setBusy(null);
+   826→    }
+   827→  };
+   828→
+   829→  /** Загрузить реестр всех КП проекта («все возможные КОДЫ КП») */
+   830→  const syncAreas = async () => {
+   831→    setBusy('areas');
+   832→    try {
+   833→      const d = await api<{ ok: boolean; count?: number; error?: string }>(`/api/bots/${botId}/mytko`, {
+   834→        method: 'POST',
+   835→        body: JSON.stringify({ action: 'sync-areas' }),
+   836→      });
+   837→      if (d.ok) {
+   838→        setCfg((c) => ({
+   839→          ...c,
+   840→          areasCount: d.count ?? c.areasCount,
+   841→          useAllAreas: true,
+   842→          areasSyncedAt: new Date().toISOString(),
+   843→        }));
+   844→        toast({
+   845→          title: `Реестр КП загружен: ${d.count ?? 0} площадок`,
+   846→          description: 'В сверке используются все возможные КОДЫ КП',
+   847→        });
+   848→      } else {
+   849→        toast({ title: `Ошибка: ${d.error ?? 'unknown'}`, variant: 'destructive' });
+   850→      }
+   851→    } catch {
+   852→      toast({ title: 'Не удалось загрузить реестр КП', variant: 'destructive' });
+   853→    } finally {
+   854→      setBusy(null);
+   855→    }
+   856→  };
+   857→
+   858→  const loadReports = async () => {
+   859→    setBusy('reports');
+   860→    try {
+   861→      const d = await api<{ ok: boolean; reports?: MytkoReportItem[]; areaCodes?: number; error?: string }>(
+   862→        `/api/bots/${botId}/mytko`,
+   863→        { method: 'POST', body: JSON.stringify({ action: 'reports' }) }
+   864→      );
+   865→      if (d.ok && d.reports) {
+   866→        setReports(d.reports);
+   867→        toast({
+   868→          title: `Загружено отчётов: ${d.reports.length}`,
+   869→          description: d.areaCodes ? `Проверено КП: ${d.areaCodes}` : undefined,
+   870→        });
+   871→      } else {
+   872→        toast({ title: `Ошибка: ${d.error ?? 'unknown'}`, variant: 'destructive' });
+   873→      }
+   874→    } catch {
+   875→      toast({ title: 'Не удалось загрузить отчёты', variant: 'destructive' });
+   876→    } finally {
+   877→      setBusy(null);
+   878→    }
+   879→  };
+   880→
+   881→  if (!loaded) return null;
+   882→
+   883→  const toggleDirection = (key: keyof MytkoDirectionsUi) => {
+   884→    const next = { ...cfg.directions, [key]: !cfg.directions[key] };
+   885→    setCfg((c) => ({ ...c, directions: next }));
+   886→    save({ directions: next });
+   887→  };
+   888→
+   889→  return (
+   890→    <Card>
+   891→      <CardHeader className="pb-3">
+   892→        <div className="flex min-w-0 items-start justify-between gap-2">
+   893→          <div className="flex min-w-0 items-center gap-3">
+   894→            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+   895→              <Truck className="h-5 w-5" />
+   896→            </div>
+   897→            <div className="min-w-0">
+   898→              <CardTitle className="flex items-center gap-2 text-base">
+   899→                Интеграция MyTKO
+   900→                {cfg.tokenMasked ? (
+   901→                  <span
+   902→                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"
+   903→                    title={`Токен получен: ${cfg.tokenMasked}`}
+   904→                  >
+   905→                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" /> синхронизировано
+   906→                  </span>
+   907→                ) : (
+   908→                  <span
+   909→                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
+   910→                    title="Токен ещё не получен — введите логин и пароль и нажмите «Войти и получить токен»"
+   911→                  >
+   912→                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" /> нет токена
+   913→                  </span>
+   914→                )}
+   915→              </CardTitle>
+   916→              <CardDescription className="truncate">
+   917→                «Чистая логистика»: токен по логину/паролю, реестр КП и факты вывоза
+   918→              </CardDescription>
+   919→            </div>
+   920→          </div>
+   921→          <Switch
+   922→            checked={cfg.enabled}
+   923→            onCheckedChange={(v) => {
+   924→              setCfg((c) => ({ ...c, enabled: v }));
+   925→              save({ enabled: v });
+   926→            }}
+   927→            aria-label="Включить интеграцию MyTKO"
+   928→          />
+   929→        </div>
+   930→      </CardHeader>
+   931→      {cfg.enabled && (
+   932→        <CardContent className="space-y-4">
+   933→          {/* ── Секция «Подключение»: адрес API, логин, пароль, токен ── */}
+   934→          <section className="space-y-4">
+   935→            <div className="flex items-center gap-2.5">
+   936→              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+   937→                <KeyRound className="h-4 w-4" aria-hidden />
+   938→              </div>
+   939→              <div className="min-w-0">
+   940→                <p className="text-sm font-semibold leading-tight">Подключение</p>
+   941→                <p className="truncate text-xs text-muted-foreground">
+   942→                  Адрес API вашего проекта, логин и пароль от приложения MyTKO
+   943→                </p>
+   944→              </div>
+   945→            </div>
+   946→            <div className="grid gap-4 sm:grid-cols-2">
+   947→              <div className="space-y-2">
+   948→                <Label htmlFor="mytko-api" className="text-xs font-medium">
+   949→                  Адрес API вашего проекта
+   950→                </Label>
+   951→                <Input
+   952→                  id="mytko-api"
+   953→                  value={cfg.apiUrl}
+   954→                  placeholder="ecovn.mytko.ru"
+   955→                  onChange={(e) => setCfg((c) => ({ ...c, apiUrl: e.target.value }))}
+   956→                  onBlur={() => save({ apiUrl: cfg.apiUrl })}
+   957→                />
+   958→                <p className="text-[11px] leading-snug text-muted-foreground">
+   959→                  У каждого города/проекта свой адрес (у вас — <b>ecovn.mytko.ru</b>), пути API одинаковые.
+   960→                  Можно с https:// или без — студия нормализует.
+   961→                </p>
+   962→              </div>
+   963→              <div className="space-y-2">
+   964→                <Label htmlFor="mytko-user" className="text-xs font-medium">
+   965→                  Логин
+   966→                </Label>
+   967→                <Input
+   968→                  id="mytko-user"
+   969→                  value={cfg.username}
+   970→                  placeholder="логин от приложения MyTKO"
+   971→                  onChange={(e) => setCfg((c) => ({ ...c, username: e.target.value }))}
+   972→                  onBlur={() => save({ username: cfg.username })}
+   973→                />
+   974→              </div>
+   975→              <div className="space-y-2">
+   976→                <Label htmlFor="mytko-pass" className="text-xs font-medium">
+   977→                  Пароль{' '}
+   978→                  {cfg.hasPassword ? (
+   979→                    <span className="font-normal text-emerald-600 dark:text-emerald-400">••• сохранён</span>
+   980→                  ) : (
+   981→                    <span className="font-normal text-amber-600 dark:text-amber-400">не задан</span>
+   982→                  )}
+   983→                </Label>
+   984→                <div className="relative">
+   985→                  <Input
+   986→                    id="mytko-pass"
+   987→                    type={showPassword ? 'text' : 'password'}
+   988→                    value={password}
+   989→                    placeholder={cfg.hasPassword ? 'введён — введите новый, чтобы заменить' : 'пароль MyTKO'}
+   990→                    onChange={(e) => setPassword(e.target.value)}
+   991→                    onBlur={() => {
+   992→                      // Сохраняем сразу при уходе с поля, но НЕ стираем введённое:
+   993→                      // кнопка «Войти» также отправит пароль напрямую
+   994→                      if (password.trim()) {
+   995→                        save({ password: password.trim() });
+   996→                        setCfg((c) => ({ ...c, hasPassword: true }));
+   997→                      }
+   998→                    }}
+   999→                    className="pr-9"
+  1000→                  />
+  1001→                  <button
+  1002→                    type="button"
+  1003→                    tabIndex={-1}
+  1004→                    aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+  1005→                    onClick={() => setShowPassword((v) => !v)}
+  1006→                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+  1007→                  >
+  1008→                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+  1009→                  </button>
+  1010→                </div>
+  1011→                <p className="text-[11px] leading-snug text-muted-foreground">
+  1012→                  Пароль хранится только в настройках бота и нужен, чтобы получать токен MyTKO автоматически.
+  1013→                </p>
+  1014→              </div>
+  1015→              <div className="space-y-2">
+  1016→                <Label htmlFor="mytko-codes" className="text-xs font-medium">
+  1017→                  Коды КП вручную (через запятую)
+  1018→                </Label>
+  1019→                <Input
+  1020→                  id="mytko-codes"
+  1021→                  value={cfg.lkCodes}
+  1022→                  placeholder="38012345, 38105858"
+  1023→                  disabled={cfg.useAllAreas}
+  1024→                  onChange={(e) => setCfg((c) => ({ ...c, lkCodes: e.target.value }))}
+  1025→                  onBlur={() => save({ lkCodes: cfg.lkCodes })}
+  1026→                />
+  1027→                {cfg.useAllAreas && (
+  1028→                  <p className="text-[11px] leading-snug text-emerald-700 dark:text-emerald-400">
+  1029→                    Используются все возможные КП из реестра MyTKO ({cfg.areasCount} шт.) — ручной список не нужен.
+  1030→                  </p>
+  1031→                )}
+  1032→              </div>
+  1033→            </div>
+  1034→
+  1035→            {/* Bearer-токен: получение по логину/паролю и статус */}
+  1036→            <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+  1037→              <Label htmlFor="mytko-token" className="text-xs font-medium">
+  1038→                Bearer-токен
+  1039→                {cfg.tokenIssuedAt && (
+  1040→                  <span className="font-normal text-muted-foreground">
+  1041→                    {' '}· получен{' '}
+  1042→                    {new Date(cfg.tokenIssuedAt).toLocaleString('ru-RU', {
+  1043→                      day: '2-digit',
+  1044→                      month: '2-digit',
+  1045→                      hour: '2-digit',
+  1046→                      minute: '2-digit',
+  1047→                    })}
+  1048→                  </span>
+  1049→                )}
+  1050→              </Label>
+  1051→              <div className="flex flex-wrap items-center gap-2">
+  1052→                <Input
+  1053→                  id="mytko-token"
+  1054→                  readOnly
+  1055→                  value={cfg.tokenMasked ?? ''}
+  1056→                  placeholder="ещё не получен — войдите по логину и паролю"
+  1057→                  className="min-w-0 flex-1 font-mono text-xs"
+  1058→                />
+  1059→                <Button
+  1060→                  size="sm"
+  1061→                  onClick={login}
+  1062→                  disabled={busy !== null || !cfg.username.trim() || (!cfg.hasPassword && !password.trim())}
+  1063→                  className="shrink-0"
+  1064→                >
+  1065→                  {busy === 'login' ? (
+  1066→                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+  1067→                  ) : (
+  1068→                    <KeyRound className="h-3.5 w-3.5" />
+  1069→                  )}
+  1070→                  Войти и получить токен
+  1071→                </Button>
+  1072→              </div>
+  1073→            </div>
+  1074→          </section>
+  1075→
+  1076→          {/* ── Секция «Обмен данными»: чекбоксы направлений ── */}
+  1077→          <section className="space-y-3 border-t pt-4">
+  1078→            <div className="flex items-center gap-2.5">
+  1079→              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+  1080→                <ArrowLeftRight className="h-4 w-4" aria-hidden />
+  1081→              </div>
+  1082→              <div className="min-w-0">
+  1083→                <p className="text-sm font-semibold leading-tight">Обмен данными с MyTKO</p>
+  1084→                <p className="truncate text-xs text-muted-foreground">
+  1085→                  Отметьте, какие данные получаем из MyTKO и какие отправляем туда
+  1086→                </p>
+  1087→              </div>
+  1088→            </div>
+  1089→            <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+  1090→              <div>
+  1091→                <p className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+  1092→                  <ArrowDownToLine className="h-3 w-3" aria-hidden /> Получаем из MyTKO
+  1093→                </p>
+  1094→                <div className="space-y-1.5">
+  1095→                  {MYTKO_DIRECTION_ITEMS.filter((d) => d.dir === 'in').map((d) => (
+  1096→                    <label
+  1097→                      key={d.key}
+  1098→                      className="flex cursor-pointer items-start gap-2 rounded-md p-1 transition-colors hover:bg-muted/50"
+  1099→                    >
+  1100→                      <Checkbox
+  1101→                        checked={cfg.directions[d.key]}
+  1102→                        onCheckedChange={() => toggleDirection(d.key)}
+  1103→                        className="mt-0.5"
+  1104→                        aria-label={`Получать: ${d.label}`}
+  1105→                      />
+  1106→                      <span className="min-w-0">
+  1107→                        <span className="block text-xs font-medium leading-tight">{d.label}</span>
+  1108→                        <span className="block text-[11px] leading-snug text-muted-foreground">{d.hint}</span>
+  1109→                      </span>
+  1110→                    </label>
+  1111→                  ))}
+  1112→                </div>
+  1113→              </div>
+  1114→              <div>
+  1115→                <p className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+  1116→                  <ArrowUpFromLine className="h-3 w-3" aria-hidden /> Отправляем в MyTKO
+  1117→                </p>
+  1118→                <div className="space-y-1.5">
+  1119→                  {MYTKO_DIRECTION_ITEMS.filter((d) => d.dir === 'out').map((d) => (
+  1120→                    <label
+  1121→                      key={d.key}
+  1122→                      className="flex cursor-pointer items-start gap-2 rounded-md p-1 transition-colors hover:bg-muted/50"
+  1123→                    >
+  1124→                      <Checkbox
+  1125→                        checked={cfg.directions[d.key]}
+  1126→                        onCheckedChange={() => toggleDirection(d.key)}
+  1127→                        className="mt-0.5"
+  1128→                        aria-label={`Отправлять: ${d.label}`}
+  1129→                      />
+  1130→                      <span className="min-w-0">
+  1131→                        <span className="block text-xs font-medium leading-tight">{d.label}</span>
+  1132→                        <span className="block text-[11px] leading-snug text-muted-foreground">{d.hint}</span>
+  1133→                      </span>
+  1134→                    </label>
+  1135→                  ))}
+  1136→                </div>
+  1137→              </div>
+  1138→            </div>
+  1139→          </section>
+  1140→
+  1141→          {/* ── Секция «Коды КП»: реестр всех возможных площадок ── */}
+  1142→          <section className="space-y-3 border-t pt-4">
+  1143→            <div className="flex items-center gap-2.5">
+  1144→              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+  1145→                <Database className="h-4 w-4" aria-hidden />
+  1146→              </div>
+  1147→              <div className="min-w-0 flex-1">
+  1148→                <p className="text-sm font-semibold leading-tight">Все возможные КОДЫ КП</p>
+  1149→                <p className="truncate text-xs text-muted-foreground">
+  1150→                  {cfg.areasCount > 0 ? (
+  1151→                    <>
+  1152→                      В реестре: <b className="tabular-nums">{cfg.areasCount.toLocaleString('ru-RU')} КП</b>
+  1153→                      {cfg.areasSyncedAt &&
+  1154→                        ` · обновлено ${new Date(cfg.areasSyncedAt).toLocaleString('ru-RU', {
+  1155→                          day: '2-digit',
+  1156→                          month: '2-digit',
+  1157→                          hour: '2-digit',
+  1158→                          minute: '2-digit',
+  1159→                        })}`}
+  1160→                    </>
+  1161→                  ) : (
+  1162→                    'Реестр ещё не загружен — нажмите «Загрузить все КП»'
+  1163→                  )}
+  1164→                </p>
+  1165→              </div>
+  1166→              <Switch
+  1167→                checked={cfg.useAllAreas}
+  1168→                onCheckedChange={(v) => {
+  1169→                  setCfg((c) => ({ ...c, useAllAreas: v }));
+  1170→                  save({ useAllAreas: v });
+  1171→                }}
+  1172→                disabled={cfg.areasCount === 0}
+  1173→                aria-label="Использовать все возможные КП"
+  1174→              />
+  1175→            </div>
+  1176→            <div className="flex flex-wrap items-center gap-2">
+  1177→              <Button size="sm" variant="outline" onClick={syncAreas} disabled={busy !== null}>
+  1178→                {busy === 'areas' ? (
+  1179→                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+  1180→                ) : (
+  1181→                  <Database className="h-3.5 w-3.5" />
+  1182→                )}
+  1183→                {cfg.areasCount > 0 ? 'Обновить реестр КП' : 'Загрузить все КП из MyTKO'}
+  1184→              </Button>
+  1185→              <span className="text-[11px] leading-snug text-muted-foreground">
+  1186→                Загружает весь справочник контейнерных площадок проекта (может занять ~минуту)
+  1187→              </span>
+  1188→            </div>
+  1189→          </section>
+  1190→
+  1191→          {/* ── Секция «Проверка»: подключение и отчёты ── */}
+  1192→          <section className="space-y-3 border-t pt-4">
+  1193→            <div className="flex items-center gap-2.5">
+  1194→              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+  1195→                <Zap className="h-4 w-4" aria-hidden />
+  1196→              </div>
+  1197→              <div className="min-w-0">
+  1198→                <p className="text-sm font-semibold leading-tight">Проверка</p>
+  1199→                <p className="truncate text-xs text-muted-foreground">
+  1200→                  Убедитесь, что подключение работает, и посмотрите факты вывоза
+  1201→                </p>
+  1202→              </div>
+  1203→            </div>
+  1204→            <div className="flex flex-wrap items-center gap-2">
+  1205→              <Button size="sm" variant="outline" onClick={test} disabled={busy !== null}>
+  1206→                {busy === 'test' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+  1207→                Проверить подключение
+  1208→              </Button>
+  1209→              <Button size="sm" variant="outline" onClick={loadReports} disabled={busy !== null}>
+  1210→                {busy === 'reports' ? (
+  1211→                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+  1212→                ) : (
+  1213→                  <Truck className="h-3.5 w-3.5" />
+  1214→                )}
+  1215→                Отчёты водителей
+  1216→              </Button>
+  1217→              <div role="status" aria-live="polite" className="min-w-0">
+  1218→                {connectionName && (
+  1219→                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300">
+  1220→                    <Check className="h-3 w-3" aria-hidden /> {connectionName}
+  1221→                  </span>
+  1222→                )}
+  1223→              </div>
+  1224→            </div>
+  1225→            {reports && (
+  1226→              <div className="max-h-64 overflow-y-auto rounded-lg border">
+  1227→                {reports.length === 0 ? (
+  1228→                  <div className="p-3 text-xs text-muted-foreground">
+  1229→                    Отчётов за последние 7 дней по указанным КП нет.
+  1230→                  </div>
+  1231→                ) : (
+  1232→                  <table className="w-full text-xs tabular-nums">
+  1233→                    <thead className="sticky top-0 bg-muted/70 text-left text-muted-foreground">
+  1234→                      <tr>
+  1235→                        <th className="px-2 py-1.5 font-medium">Дата вывоза</th>
+  1236→                        <th className="px-2 py-1.5 font-medium">КП</th>
+  1237→                        <th className="px-2 py-1.5 font-medium">Машина</th>
+  1238→                        <th className="px-2 py-1.5 font-medium">Факт</th>
+  1239→                      </tr>
+  1240→                    </thead>
+  1241→                    <tbody>
+  1242→                      {reports.map((r) => (
+  1243→                        <tr key={r.id} className="border-t">
+  1244→                          <td className="whitespace-nowrap px-2 py-1.5">
+  1245→                            {r.removalTs
+  1246→                              ? new Date(r.removalTs).toLocaleString('ru-RU', {
+  1247→                                  day: '2-digit',
+  1248→                                  month: '2-digit',
+  1249→                                  hour: '2-digit',
+  1250→                                  minute: '2-digit',
+  1251→                                })
+  1252→                              : '—'}
+  1253→                          </td>
+  1254→                          <td className="px-2 py-1.5">{r.lkCode ?? '—'}</td>
+  1255→                          <td className="whitespace-nowrap px-2 py-1.5 font-medium">{r.vehicleNumber ?? '—'}</td>
+  1256→                          <td className="whitespace-nowrap px-2 py-1.5">
+  1257→                            {r.factContainersAmount ?? '—'}
+  1258→                            {r.notRemoved > 0 && (
+  1259→                              <span className="ml-1 text-destructive">(-{r.notRemoved})</span>
+  1260→                            )}
+  1261→                          </td>
+  1262→                        </tr>
+  1263→                      ))}
+  1264→                    </tbody>
+  1265→                  </table>
+  1266→                )}
+  1267→              </div>
+  1268→            )}
+  1269→            <details className="group">
+  1270→              <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-primary [&::-webkit-details-marker]:hidden">
+  1271→                Как работает интеграция
+  1272→                <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" aria-hidden />
+  1273→              </summary>
+  1274→              <p className="mt-2 rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
+  1275→                Введите адрес API (у вас — <b>ecovn.mytko.ru</b>), логин и пароль от приложения MyTKO — студия
+  1276→                получит Bearer-токен (POST /app/api/v1/authenticate) и сохранит его; при протухании токен
+  1277→                обновится автоматически. Данные читаются через GraphQL (/app/graphql): реестр КП
+  1278→                (containerAreas — все возможные КОДЫ КП), отчёты водителей
+  1279→                (reportsFromDriverByAreaCodesAndPeriod), заявки. Синхронизация заявок — кнопкой
+  1280→                «Синхронизировать с MyTKO» в карточке заявки; полная передача REMOVAL_REQUEST идёт через
+  1281→                Kafka (доступ выдаёт техподдержка mytko@groupstp.ru).
+  1282→              </p>
+  1283→            </details>
+  1284→          </section>
+  1285→        </CardContent>
+  1286→      )}
+  1287→    </Card>
+  1288→  );
+  1289→}
+  1290→

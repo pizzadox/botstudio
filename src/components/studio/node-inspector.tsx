@@ -56,7 +56,15 @@ export default function NodeInspector({
           <div className="truncate text-sm font-semibold">{d.label || meta.title}</div>
           <div className="text-xs text-muted-foreground">Настройки блока</div>
         </div>
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose} aria-label="Закрыть">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={onClose}
+          aria-label="Закрыть"
+          aria-keyshortcuts="Escape"
+          title="Закрыть (Esc)"
+        >
           <X className="h-4 w-4" />
         </Button>
       </div>

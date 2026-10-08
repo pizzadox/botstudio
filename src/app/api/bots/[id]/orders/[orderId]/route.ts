@@ -37,18 +37,31 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
   const { order } = loaded;
 
+  // История заказов клиента: лёгкий select только полей, которые рендерит
+  // карточка (id/number/type/status/address/mytkoStatus), не больше 20
   const [clientOrders, messages] = await Promise.all([
     order.externalUserId
       ? db.order.findMany({
           where: { botId: id, externalUserId: order.externalUserId },
+          select: {
+            id: true,
+            number: true,
+            type: true,
+            status: true,
+            address: true,
+            city: true,
+            mytkoStatus: true,
+            createdAt: true,
+          },
           orderBy: { createdAt: 'desc' },
+          take: 20,
         })
       : Promise.resolve([]),
     db.message.findMany({
       where: { orderId },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: 'desc' },
       take: 300,
-    }),
+    }).then((rows) => rows.reverse()),
   ]);
 
   return NextResponse.json({

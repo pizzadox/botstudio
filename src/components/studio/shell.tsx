@@ -7,10 +7,14 @@ import {
   LayoutDashboard,
   LogOut,
   MapPin,
+  Moon,
+  Search,
+  Sun,
   Workflow,
   Plug,
   Sparkles,
 } from 'lucide-react';
+import { useTheme } from 'next-themes';
 import type { SessionUser, ViewKey } from '@/lib/studio-types';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -34,6 +38,32 @@ function Badge({ count }: { count: number }) {
   );
 }
 
+/**
+ * Тумблер тёмной/светлой темы (next-themes).
+ * Обе иконки лежат в DOM, а видимость решает CSS-класс темы на <html>
+ * (dark:hidden / hidden dark:block) — hydration-safe без mounted-гварда:
+ * next-themes ставит класс блокирующим скриптом ещё до первой отрисовки.
+ */
+function ThemeToggle({ className }: { className?: string }) {
+  const { resolvedTheme, setTheme } = useTheme();
+
+  return (
+    <button
+      type="button"
+      aria-label="Переключить тёмную тему"
+      title="Переключить тёмную тему"
+      onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
+      className={cn(
+        'flex shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        className
+      )}
+    >
+      <Moon className="h-4 w-4 dark:hidden" aria-hidden="true" />
+      <Sun className="hidden h-4 w-4 dark:block" aria-hidden="true" />
+    </button>
+  );
+}
+
 export default function Shell({
   user,
   view,
@@ -41,6 +71,7 @@ export default function Shell({
   currentBot,
   onLogout,
   badges,
+  onOpenPalette,
   children,
 }: {
   user: SessionUser;
@@ -49,6 +80,8 @@ export default function Shell({
   currentBot: { id: string; name: string } | null;
   onLogout: () => void;
   badges?: { inbox?: number; orders?: number };
+  /** Открыть палитру команд (Ctrl+K) — триггер в сайдбаре возле навигации */
+  onOpenPalette?: () => void;
   children: ReactNode;
 }) {
   const badgeFor = (key: ViewKey): number =>
@@ -148,6 +181,27 @@ export default function Shell({
               ))}
             </nav>
 
+            {/* Палитра команд (Ctrl+K) — сразу под навигацией (десктоп) */}
+            {onOpenPalette && (
+              <div className="px-3 pb-1">
+                <button
+                  type="button"
+                  onClick={onOpenPalette}
+                  aria-label="Палитра команд (Ctrl+K)"
+                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Search className="h-4 w-4" aria-hidden="true" />
+                  <span className="flex-1 text-left">Палитра команд</span>
+                  <kbd
+                    aria-hidden="true"
+                    className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium leading-none text-muted-foreground"
+                  >
+                    Ctrl K
+                  </kbd>
+                </button>
+              </div>
+            )}
+
             {currentBot && (
               <div className="mx-3 mb-3 min-w-0 rounded-xl border bg-muted/50 p-3">
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -171,6 +225,10 @@ export default function Shell({
                   <div className="truncate text-sm font-medium">{user.name ?? user.username}</div>
                   <div className="truncate text-xs text-muted-foreground">@{user.username}</div>
                 </div>
+                {/* Тумблер темы — размер соседа (h-8 w-8). В мобильный хедер НЕ
+                    добавляем: на 390px занято 7 кнопок (проверено в Task 19-d),
+                    свободно только 23px — тема доступна из палитры команд. */}
+                <ThemeToggle className="h-8 w-8" />
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button

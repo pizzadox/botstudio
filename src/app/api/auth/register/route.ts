@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     }
 
     const user = await db.user.create({
-      data: { username, password: hashPassword(password), name },
+      data: { username, password: await hashPassword(password), name },
     });
 
     const session = await createSession(user.id);

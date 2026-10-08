@@ -205,9 +205,16 @@ async function answerOperatorNote(
 
 // Одноразовая записка на «тихий период» — без спама при каждом сообщении
 const noteGlobals = globalThis as unknown as { __maxOperatorNotes?: Map<string, number> };
+const OPERATOR_NOTES_CAP = 500;
 function shouldSendOperatorNote(conversationId: string): boolean {
   if (!noteGlobals.__maxOperatorNotes) noteGlobals.__maxOperatorNotes = new Map();
   const map = noteGlobals.__maxOperatorNotes;
+  // Защита от неограниченного роста: срезаем самые старые ключи
+  while (map.size >= OPERATOR_NOTES_CAP) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
   const now = Date.now();
   const last = map.get(conversationId) ?? 0;
   if (now - last < OPERATOR_NOTE_INTERVAL_MS) return false;

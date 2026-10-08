@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "skills": {
+    "persistent-memory-engine-free": {
+      "version": "1.0.0",
+      "installedAt": 1791436452801,
+      "ownerHandle": "thcjp"
+    },
+    "fec-ui-design": {
+      "version": "2.9.0",
+      "installedAt": 1791436473965,
+      "ownerHandle": "bovinphang"
+    },
+    "code-optimizer": {
+      "version": "1.0.0",
+      "installedAt": 1791436481714,
+      "ownerHandle": "clementgu"
+    },
+    "@afonsoft/code-review-and-quality": {
+      "version": "1.0.8",
+      "installedAt": 1791436498035,
+      "ownerHandle": "afonsoft"
+    }
+  }
+}

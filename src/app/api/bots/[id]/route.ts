@@ -18,11 +18,13 @@ export async function GET(req: NextRequest, { params }: Params) {
   if (error === 'auth') return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });
   if (!bot) return NextResponse.json({ error: 'Бот не найден' }, { status: 404 });
 
-  const channels = await db.channel.findMany({
-    where: { botId: bot.id },
-    orderBy: { createdAt: 'asc' },
-  });
-  const conversationsCount = await db.conversation.count({ where: { botId: bot.id } });
+  const [channels, conversationsCount] = await Promise.all([
+    db.channel.findMany({
+      where: { botId: bot.id },
+      orderBy: { createdAt: 'asc' },
+    }),
+    db.conversation.count({ where: { botId: bot.id } }),
+  ]);
 
   return NextResponse.json({ bot, channels, conversationsCount });
 }

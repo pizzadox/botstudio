@@ -17,17 +17,49 @@ export async function GET(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Бот не найден' }, { status: 404 });
   }
 
-  const [orders, cfg] = await Promise.all([
+  // Список заявок: select всех скаляров (нужны для карты/карточек/поиска) +
+  // только нужные поля диалога; take 500 — растущий список не «тянем» целиком.
+  // Порядок прежний: createdAt desc (новые сверху).
+  const [ordersRaw, cfg] = await Promise.all([
     db.order.findMany({
       where: { botId: id },
-      include: {
+      select: {
+        id: true,
+        botId: true,
+        conversationId: true,
+        externalUserId: true,
+        number: true,
+        type: true,
+        clientName: true,
+        phone: true,
+        city: true,
+        address: true,
+        size: true,
+        wishDate: true,
+        comment: true,
+        status: true,
+        assignee: true,
+        lat: true,
+        lng: true,
+        geoSource: true,
+        mytkoStatus: true,
+        mytkoSyncAt: true,
+        mytkoInfo: true,
+        mytkoError: true,
+        createdAt: true,
+        updatedAt: true,
+        completedAt: true,
         conversation: { select: { contact: true, source: true, externalUserId: true } },
         _count: { select: { messages: true } },
       },
       orderBy: { createdAt: 'desc' },
+      take: 500,
     }),
     Promise.resolve(parseMytkoConfig(bot.mytkoConfig)),
   ]);
+
+  // messagesCount — аддитивное поле для чипа «N сообщ.» в списке (форма _count сохранена)
+  const orders = ordersRaw.map((o) => ({ ...o, messagesCount: o._count.messages }));
 
   return NextResponse.json({ orders, mytkoEnabled: cfg.enabled });
 }

@@ -10,11 +10,18 @@ import {
   normalizeApiUrl,
   parseMytkoConfig,
   getFreshToken,
+  getAreaCodesCached,
+  invalidateAreaCodesCache,
   type MytkoDirections,
   type MytkoConfig,
 } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string }> };
+
+/** Per-bot лок на sync-areas (globalThis — переживает HMR в dev) */
+const syncLockGlobals = globalThis as unknown as {
+  __mytkoAreaSync?: Map<string, boolean>;
+};
 
 /**
  * Авто-реавторизация в mytkoGraphQL могла обновить токен (старый истёк).
@@ -39,13 +46,10 @@ async function loadOwnedBot(req: NextRequest, botId: string) {
   return { user, bot };
 }
 
-/** Коды КП, по которым сверяем отчёты: реестр (все возможные) или ручной список */
+/** Коды КП, по которым сверяем отчёты: реестр (все возможные) или ручной список.
+ *  Реестр (~11k кодов) читается через кэш TTL 5 мин — не findMany на каждый запрос. */
 async function resolveAreaCodes(botId: string, cfg: ReturnType<typeof parseMytkoConfig>) {
-  const areas = await db.mytkoArea.findMany({
-    where: { botId },
-    select: { lkCode: true },
-  });
-  const registry = areas.map((a) => a.lkCode);
+  const registry = await getAreaCodesCached(botId);
   if (cfg.useAllAreas && registry.length > 0) return registry;
   const manual = (cfg.lkCodes ?? '')
     .split(',')
@@ -182,28 +186,44 @@ export async function POST(req: NextRequest, { params }: Params) {
     /** Загрузить реестр всех КП проекта («все возможные КОДЫ КП») в локальный кэш */
     if (body.action === 'sync-areas') {
       if (!cfg.enabled) return NextResponse.json({ ok: false, error: 'Интеграция выключена' }, { status: 400 });
-      const res = await mytkoFetchAllAreas(cfg);
-      if (!res.ok) return NextResponse.json({ ok: false, error: res.error }, { status: 400 });
-      await persistFreshToken(bot.id, cfg);
-
-      //Upsert порциями — SQLite не любит огромные пакеты
-      const areas = res.areas;
-      for (let i = 0; i < areas.length; i += 500) {
-        const chunk = areas.slice(i, i + 500);
-        await db.$transaction(
-          chunk.map((a) =>
-            db.mytkoArea.upsert({
-              where: { botId_lkCode: { botId: bot.id, lkCode: a.lkCode } },
-              create: { botId: bot.id, lkCode: a.lkCode, address: a.address, lat: a.lat, lng: a.lng },
-              update: { address: a.address, lat: a.lat, lng: a.lng },
-            })
-          )
+      // Защита от параллельного запуска: синхронизация ~45 с, повторный клик
+      // по кнопке не должен запускать вторую копию
+      const syncLocks = (syncLockGlobals.__mytkoAreaSync ??= new Map<string, boolean>());
+      if (syncLocks.get(bot.id)) {
+        return NextResponse.json(
+          { ok: false, error: 'Синхронизация уже выполняется' },
+          { status: 409 }
         );
       }
-      cfg.areasSyncedAt = new Date().toISOString();
-      cfg.useAllAreas = true;
-      await persist();
-      return NextResponse.json({ ok: true, count: areas.length });
+      syncLocks.set(bot.id, true);
+      try {
+        const res = await mytkoFetchAllAreas(cfg);
+        if (!res.ok) return NextResponse.json({ ok: false, error: res.error }, { status: 400 });
+        await persistFreshToken(bot.id, cfg);
+
+        //Upsert порциями — SQLite не любит огромные пакеты
+        const areas = res.areas;
+        for (let i = 0; i < areas.length; i += 500) {
+          const chunk = areas.slice(i, i + 500);
+          await db.$transaction(
+            chunk.map((a) =>
+              db.mytkoArea.upsert({
+                where: { botId_lkCode: { botId: bot.id, lkCode: a.lkCode } },
+                create: { botId: bot.id, lkCode: a.lkCode, address: a.address, lat: a.lat, lng: a.lng },
+                update: { address: a.address, lat: a.lat, lng: a.lng },
+              })
+            )
+          );
+        }
+        cfg.areasSyncedAt = new Date().toISOString();
+        cfg.useAllAreas = true;
+        await persist();
+        // Реестр обновлён — сбрасываем кэш кодов КП этого бота
+        invalidateAreaCodesCache(bot.id);
+        return NextResponse.json({ ok: true, count: areas.length });
+      } finally {
+        syncLocks.delete(bot.id);
+      }
     }
 
     return NextResponse.json({ ok: false, error: 'Неизвестное действие' }, { status: 400 });

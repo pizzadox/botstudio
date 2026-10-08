@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { mytkoSyncOrder, parseMytkoConfig, getFreshToken } from '@/lib/mytko';
+import { mytkoSyncOrder, parseMytkoConfig, getFreshToken, getAreaCodesCached } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
 
@@ -31,11 +31,11 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Интеграция MyTKO выключена в разделе «Каналы»' }, { status: 400 });
   }
 
-  // Коды КП: реестр («все возможные») + ручной список
-  const areas = await db.mytkoArea.findMany({ where: { botId: bot.id }, select: { lkCode: true } });
+  // Коды КП: реестр («все возможные», через кэш TTL 5 мин) + ручной список
+  const registryCodes = await getAreaCodesCached(bot.id);
   const areaCodes = [
     ...new Set([
-      ...areas.map((a) => a.lkCode),
+      ...registryCodes,
       ...(cfg.lkCodes ?? '').split(',').map((s) => s.trim()).filter(Boolean),
     ]),
   ];

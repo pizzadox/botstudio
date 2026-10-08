@@ -25,6 +25,8 @@
  *     EXTERNAL_SYNC_DSP_EXPORT_{server_name} (доступ выдаёт mytko@groupstp.ru).
  */
 
+import { db } from '@/lib/db';
+
 // ─── Конфигурация ─────────────────────────────────────────────────────────────
 
 /** Направления обмена данными с MyTKO (чекбоксы в настройках интеграции) */
@@ -97,7 +99,7 @@ export function parseMytkoConfig(raw: string | null | undefined): MytkoConfig {
  * Нормализация адреса API: «ecovn.mytko.ru», «https://ecovn.mytko.ru/»,
  * «https://ecovn.mytko.ru/app» → «https://ecovn.mytko.ru».
  */
-export function normalizeApiUrl(input: string): string {
+export function normalizeApiUrl(input?: string): string {
   let v = (input ?? '').trim();
   if (!v) return '';
   if (!/^https?:\/\//i.test(v)) v = `https://${v}`;
@@ -243,7 +245,7 @@ async function mytkoGraphQL<T>(
  * Роуты используют его, чтобы перезаписать протухший токен в bot.mytkoConfig —
  * иначе после перезапуска сервера каждый первый запрос снова идёт с протухшим токеном.
  */
-export function getFreshToken(apiUrl: string, username?: string): string | null {
+export function getFreshToken(apiUrl: string | undefined, username?: string): string | null {
   const key = `${normalizeApiUrl(apiUrl)}|${username ?? ''}`;
   const cached = tokenCache.get(key);
   return cached && cached.expiresAt > Date.now() ? cached.token : null;
@@ -263,6 +265,33 @@ export async function mytkoWhoAmI(
     name: emp.person?.fullName ?? cfg.username ?? '',
     regions: (emp.regions ?? []).map((r) => r?.name ?? '').filter(Boolean),
   };
+}
+
+// ─── Кэш кодов КП (реестр ~11k строк — не читаем из БД на каждую сверку) ──────
+
+const areaCodeGlobals = globalThis as unknown as {
+  __mytkoAreaCodeCache?: Map<string, { codes: string[]; expiresAt: number }>;
+};
+const AREA_CODES_TTL = 5 * 60 * 1000; // 5 минут
+
+/** Коды КП бота из реестра (MytkoArea), кэшируются на 5 минут.
+ *  Инвалидация — после успешной синхронизации реестра (sync-areas). */
+export async function getAreaCodesCached(botId: string): Promise<string[]> {
+  const cache = (areaCodeGlobals.__mytkoAreaCodeCache ??= new Map());
+  const hit = cache.get(botId);
+  if (hit && hit.expiresAt > Date.now()) return hit.codes;
+  const areas = await db.mytkoArea.findMany({
+    where: { botId },
+    select: { lkCode: true },
+  });
+  const codes = areas.map((a) => a.lkCode);
+  cache.set(botId, { codes, expiresAt: Date.now() + AREA_CODES_TTL });
+  return codes;
+}
+
+/** Сбросить кэш кодов КП бота (после sync-areas / изменения реестра) */
+export function invalidateAreaCodesCache(botId: string): void {
+  (areaCodeGlobals.__mytkoAreaCodeCache ??= new Map()).delete(botId);
 }
 
 // ─── Реестр КП: все возможные коды контейнерных площадок ─────────────────────

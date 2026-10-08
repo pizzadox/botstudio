@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
     const password = String(body.password ?? '');
 
     const user = await db.user.findUnique({ where: { username } });
-    if (!user || !verifyPassword(password, user.password)) {
+    if (!user || !(await verifyPassword(password, user.password))) {
       return NextResponse.json({ error: 'Неверный логин или пароль' }, { status: 401 });
     }
 

@@ -1,12 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Map as MlMap, Marker as MlMarker } from 'maplibre-gl';
 import {
   Archive,
   ChevronDown,
   ChevronLeft,
+  Clock,
+  Copy,
   Crosshair,
   Globe,
   Headset,
@@ -22,6 +24,7 @@ import {
   Trash2,
   Truck,
   User,
+  WifiOff,
 } from 'lucide-react';
 import { api } from '@/lib/client-api';
 import { cityButtons, composeAddress, SERVICE_CITIES } from '@/lib/cities';
@@ -57,6 +60,7 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
@@ -75,6 +79,56 @@ function markerColor(order: OrderDto): string {
       return 'bg-amber-500';
     default:
       return 'bg-violet-500';
+  }
+}
+
+/** Классы DOM-элемента маркера: цвет по типу/статусу + выделение выбранной заявки.
+ *  Вынесено, чтобы эффект выделения мог переключать класс БЕЗ пересоздания маркера. */
+function markerElClassName(o: OrderDto, selected: boolean): string {
+  return cn(
+    'flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-2 text-[11px] font-bold text-white shadow-md transition-[box-shadow,filter,border-color] hover:shadow-xl hover:brightness-110',
+    markerColor(o),
+    selected ? 'border-primary ring-2 ring-primary/50' : 'border-white'
+  );
+}
+
+/** «Обновлено N с назад» для чипа свежести данных */
+function fmtAgo(ts: number, now: number): string {
+  const s = Math.max(0, Math.round((now - ts) / 1000));
+  if (s < 8) return 'только что';
+  if (s < 60) return `${s} с назад`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} мин назад`;
+  return `${Math.floor(m / 60)} ч назад`;
+}
+
+/** Дедуп-слияние сообщений по id (append-only) + сортировка по createdAt.
+ *  Если нового ничего нет — возвращает прежний массив (без ре-рендера).
+ *  Работает в обоих режимах бэкенда: и с ?take=N, и без него. */
+function mergeMessages(prev: OrderMessageDto[], incoming: OrderMessageDto[]): OrderMessageDto[] {
+  if (incoming.length === 0) return prev;
+  const known = new Set(prev.map((m) => m.id));
+  const fresh = incoming.filter((m) => !known.has(m.id));
+  if (fresh.length === 0) return prev;
+  return [...prev, ...fresh].sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
+}
+
+/** localStorage с защитой от недоступности (SSR / приватный режим) */
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -120,6 +174,10 @@ function OrdersMap({
   const markersRef = useRef<Map<string, MlMarker>>(new Map());
   /** исходные координаты заявки (без сдвига) — для пересчёта раскладки на каждом move */
   const baseCoordsRef = useRef<Map<string, { lat: number; lng: number }>>(new Map());
+  /** id → заявка: эффекту выделения, чтобы перекрашивать маркеры без пересоздания */
+  const ordersByIdRef = useRef<Map<string, OrderDto>>(new Map());
+  /** зеркальная копия selectedId — доступ из эффектов маркеров без их пересоздания */
+  const selectedIdRef = useRef<string | null>(selectedId);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [listOpen, setListOpen] = useState(false);
@@ -213,43 +271,80 @@ function OrdersMap({
     }
   }, []);
 
+  // ДИФФ-обновление маркеров (IMP-F10): удаляем исчезнувшие, обновляем координаты
+  // и цвет существующих, добавляем только новые — поллинг больше не пересоздаёт
+  // все маркеры и карта не «мигает». Выделение (selectedId) — отдельным эффектом ниже.
   useEffect(() => {
     const map = mapRef.current;
     const ml = mlRef.current;
     if (!map || !ml || !ready) return;
-    for (const m of markersRef.current.values()) m.remove();
-    markersRef.current = new Map();
-    baseCoordsRef.current = new Map();
-    for (const o of visible) {
-      const el = document.createElement('button');
-      el.type = 'button';
-      el.title = `Заявка №${o.number} — ${ORDER_TYPE_LABELS[o.type] ?? ''}`;
-      // Без hover:scale — масштабирование сдвигает маркер и «прыгает»;
-      // подсвечиваем тенью и рамкой, размер элемента не меняется
-      el.className = cn(
-        'flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-2 text-[11px] font-bold text-white shadow-md transition-[box-shadow,filter,border-color] hover:shadow-xl hover:brightness-110',
-        markerColor(o),
-        o.id === selectedId ? 'border-primary ring-2 ring-primary/50' : 'border-white'
-      );
-      el.textContent = String(o.number);
-      el.addEventListener('click', (e) => {
-        e.stopPropagation();
-        onSelect(o.id);
-      });
-      const marker = new ml.Marker({ element: el })
-        .setLngLat([o.lng as number, o.lat as number])
-        .addTo(map);
-      markersRef.current.set(o.id, marker);
-      baseCoordsRef.current.set(o.id, { lat: o.lat as number, lng: o.lng as number });
+
+    // (a) входящий набор видимых заявок
+    const incoming = new Map<string, OrderDto>();
+    for (const o of visible) incoming.set(o.id, o);
+    ordersByIdRef.current = incoming;
+
+    // (b) удаляем маркеры, которых больше нет
+    for (const [id, m] of markersRef.current) {
+      if (!incoming.has(id)) {
+        m.remove();
+        markersRef.current.delete(id);
+        baseCoordsRef.current.delete(id);
+      }
     }
-    // раскладываем совпадающие точки и обновляем раскладку при движении/зуме
+
+    // (c)+(d) обновляем существующие / добавляем только новые
+    for (const o of visible) {
+      const lat = o.lat as number;
+      const lng = o.lng as number;
+      baseCoordsRef.current.set(o.id, { lat, lng });
+      const sig = `${o.status}|${o.type}`;
+      const existing = markersRef.current.get(o.id);
+      if (existing) {
+        const el = existing.getElement();
+        if (el.dataset.sig !== sig) {
+          // статус/тип изменились — перекрашиваем без пересоздания
+          el.dataset.sig = sig;
+          el.className = markerElClassName(o, o.id === selectedIdRef.current);
+        }
+      } else {
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.dataset.sig = sig;
+        el.title = `Заявка №${o.number} — ${ORDER_TYPE_LABELS[o.type] ?? ''}`;
+        // Без hover:scale — масштабирование сдвигает маркер и «прыгает»;
+        // подсвечиваем тенью и рамкой, размер элемента не меняется
+        el.className = markerElClassName(o, o.id === selectedIdRef.current);
+        el.textContent = String(o.number);
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          onSelect(o.id);
+        });
+        const marker = new ml.Marker({ element: el })
+          .setLngLat([lng, lat])
+          .addTo(map);
+        markersRef.current.set(o.id, marker);
+      }
+    }
+
+    // (e) раскладываем совпадающие точки (spiderfy, 44px) и пересчитываем на каждом move
     spreadMarkers();
     map.on('move', spreadMarkers);
     return () => {
       map.off('move', spreadMarkers);
     };
-    // зависимость — сериализованный список видимых маркеров
-  }, [ready, visible.map((o) => `${o.id}:${o.lat}:${o.lng}:${o.status}`).join('|'), selectedId, spreadMarkers]);
+    // зависимость — сериализованный список видимых маркеров (БЕЗ selectedId)
+  }, [ready, visible.map((o) => `${o.id}:${o.lat}:${o.lng}:${o.status}`).join('|'), onSelect, spreadMarkers]);
+
+  // Выделение выбранной заявки — ОТДЕЛЬНЫЙ эффект: только переключаем класс
+  // DOM-элемента существующих маркеров (getElement), ничего не пересоздаём
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+    for (const [id, m] of markersRef.current) {
+      const o = ordersByIdRef.current.get(id);
+      if (o) m.getElement().className = markerElClassName(o, id === selectedId);
+    }
+  }, [selectedId]);
 
   // Наведение на заявку из списка/карточки: перелетаем к точке (focusTick —
   // чтобы повторный клик по той же заявке тоже срабатывал)
@@ -424,6 +519,9 @@ function OrdersMap({
 
 // ─── Чат по заявке ───────────────────────────────────────────────────────────
 
+/** Optimistic-пузырь: пока sending — «отправляется…», при ошибке — «Повторить» (текст не теряется) */
+type PendingMessage = { tmpId: string; text: string; status: 'sending' | 'error' };
+
 function OrderChat({
   botId,
   orderId,
@@ -435,53 +533,112 @@ function OrderChat({
 }) {
   const { toast } = useToast();
   const [messages, setMessages] = useState<OrderMessageDto[]>([]);
+  const [pending, setPending] = useState<PendingMessage[]>([]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** Пользователь у дна переписки? Скролл при новых сообщениях — только тогда */
+  const isNearBottomRef = useRef(true);
+  /** Ключ активной заявки — защита от гонки: ответ старого запроса не должен
+   *  попасть в чат новой заявки при быстром переключении карточек */
+  const activeKeyRef = useRef('');
 
-  const load = useCallback(async () => {
-    try {
-      const d = await api<{ messages: OrderMessageDto[] }>(
-        `/api/bots/${botId}/orders/${orderId}/messages`
-      );
-      setMessages(d.messages);
-    } catch {
-      /* polling errors ignored */
-    }
-  }, [botId, orderId]);
+  // Поллинг с дедуп-слиянием по id (IMP-F11): первая загрузка — полная история,
+  // далее ?take=50. Слияние защитает и бэкенд без поддержки ?take, и гонки ответов.
+  const fetchMessages = useCallback(
+    async (take: number | null) => {
+      const key = `${botId}/${orderId}`;
+      try {
+        const d = await api<{ messages: OrderMessageDto[] }>(
+          `/api/bots/${botId}/orders/${orderId}/messages${take ? `?take=${take}` : ''}`
+        );
+        if (activeKeyRef.current !== key) return; // ответ устарел — заявка уже другая
+        setMessages((prev) => mergeMessages(prev, d.messages));
+      } catch {
+        /* polling errors ignored */
+      }
+    },
+    [botId, orderId]
+  );
 
   useEffect(() => {
+    activeKeyRef.current = `${botId}/${orderId}`;
     setMessages([]);
-    load();
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
-  }, [load]);
+    setPending([]);
+    isNearBottomRef.current = true;
+    fetchMessages(null); // полная первая загрузка
+    let timer: ReturnType<typeof setInterval> | null = setInterval(() => fetchMessages(50), 3000);
+    // пауза поллинга на скрытой вкладке + немедленный тик при возврате
+    const onVisibility = () => {
+      if (document.hidden) {
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+      } else if (!timer) {
+        fetchMessages(50);
+        timer = setInterval(() => fetchMessages(50), 3000);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      if (timer) clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [botId, orderId, fetchMessages]);
 
+  // Умный автоскролл (IMP-F11): тянем к дну только если пользователь и так у дна (< 120px)
   useEffect(() => {
     requestAnimationFrame(() => {
-      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+      const el = scrollRef.current;
+      if (!el || !isNearBottomRef.current) return;
+      el.scrollTo({ top: el.scrollHeight });
     });
-  }, [messages.length]);
+  }, [messages.length, pending]);
 
-  const send = async () => {
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
+
+  const sendMessage = useCallback(
+    async (body: string, tmpId: string) => {
+      try {
+        const d = await api<{ message: OrderMessageDto; delivered: boolean; deliveryError?: string }>(
+          `/api/bots/${botId}/orders/${orderId}/messages`,
+          { method: 'POST', body: JSON.stringify({ text: body }) }
+        );
+        setMessages((prev) => mergeMessages(prev, [d.message]));
+        setPending((p) => p.filter((x) => x.tmpId !== tmpId));
+        if (!d.delivered && d.deliveryError) {
+          toast({ title: 'Не доставлено в мессенджер', description: d.deliveryError, variant: 'destructive' });
+        }
+      } catch {
+        // текст не теряем: пузырь становится ошибочным, доступна кнопка «Повторить»
+        setPending((p) => p.map((x) => (x.tmpId === tmpId ? { ...x, status: 'error' } : x)));
+        toast({ title: 'Не удалось отправить', variant: 'destructive' });
+      } finally {
+        setSending(false);
+      }
+    },
+    [botId, orderId, toast]
+  );
+
+  const send = () => {
     const t = text.trim();
     if (!t) return;
+    const tmpId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     setSending(true);
     setText('');
-    try {
-      const d = await api<{ message: OrderMessageDto; delivered: boolean; deliveryError?: string }>(
-        `/api/bots/${botId}/orders/${orderId}/messages`,
-        { method: 'POST', body: JSON.stringify({ text: t }) }
-      );
-      setMessages((prev) => [...prev, d.message]);
-      if (!d.delivered && d.deliveryError) {
-        toast({ title: 'Не доставлено в мессенджер', description: d.deliveryError, variant: 'destructive' });
-      }
-    } catch {
-      toast({ title: 'Не удалось отправить', variant: 'destructive' });
-    } finally {
-      setSending(false);
-    }
+    setPending((p) => [...p, { tmpId, text: t, status: 'sending' }]);
+    void sendMessage(t, tmpId);
+  };
+
+  const retry = (m: PendingMessage) => {
+    setPending((p) => p.map((x) => (x.tmpId === m.tmpId ? { ...x, status: 'sending' } : x)));
+    setSending(true);
+    void sendMessage(m.text, m.tmpId);
   };
 
   return (
@@ -491,8 +648,13 @@ function OrderChat({
         Чат с клиентом по заявке — сообщения доставляются в его мессенджер
       </div>
       {/* Чат с клиентом по заявке */}
-      <div ref={scrollRef} aria-live="polite" className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/30 p-3">
-        {messages.length === 0 && (
+      <div
+        ref={scrollRef}
+        aria-live="polite"
+        onScroll={handleScroll}
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/30 p-3"
+      >
+        {messages.length === 0 && pending.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-muted-foreground">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary" aria-hidden>
               <MessageSquare className="h-5 w-5" />
@@ -532,6 +694,38 @@ function OrderChat({
             </div>
           );
         })}
+        {/* Optimistic-пузыри (IMP-F11): полупрозрачный с часами — отправляется;
+            при ошибке — error-пузырь с кнопкой «Повторить», введённый текст сохранён */}
+        {pending.map((p) => (
+          <div key={p.tmpId} className="flex justify-end">
+            <div
+              className={cn(
+                'max-w-[85%] space-y-0.5 rounded-2xl rounded-br-md px-3 py-1.5 text-sm leading-snug',
+                p.status === 'error'
+                  ? 'border border-destructive/40 bg-destructive/10 text-destructive'
+                  : 'bg-primary text-primary-foreground opacity-70'
+              )}
+            >
+              <div className="whitespace-pre-wrap">{p.text}</div>
+              <div className="flex items-center justify-end gap-1 text-[10px] opacity-80">
+                {p.status === 'sending' ? (
+                  <>
+                    <Clock className="h-3 w-3" aria-hidden /> отправляется…
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => retry(p)}
+                    aria-label="Повторить отправку сообщения"
+                    className="rounded font-semibold underline underline-offset-2 transition-colors hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Повторить
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
       <form
         className="flex items-center gap-2 border-t p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))]"
@@ -561,6 +755,97 @@ function OrderChat({
           {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </Button>
       </form>
+    </div>
+  );
+}
+
+// ─── Кнопка копирования (IMP-F13) ──────────────────────────────────────────
+
+function CopyButton({
+  value,
+  label,
+  className,
+}: {
+  value: string;
+  label: string;
+  className?: string;
+}) {
+  const { toast } = useToast();
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    []
+  );
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+      toast({ title: `Скопировано: ${label}` });
+    } catch {
+      toast({ title: 'Не удалось скопировать', variant: 'destructive' });
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      aria-label={`Копировать: ${label}`}
+      title={`Копировать: ${label}`}
+      className={cn(
+        'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        className
+      )}
+    >
+      <Copy
+        className={cn('h-3.5 w-3.5', copied && 'text-emerald-600 dark:text-emerald-400')}
+        aria-hidden
+      />
+    </button>
+  );
+}
+
+// ─── Скелетон карточки заявки (IMP-F16) ─────────────────────────────────────
+
+function OrderDetailSkeleton() {
+  return (
+    <div
+      className="min-h-0 overflow-y-auto pb-[max(1rem,env(safe-area-inset-bottom))] md:grid md:grid-cols-2 md:overflow-hidden md:pb-0"
+      role="status"
+      aria-label="Загрузка заявки"
+    >
+      <span className="sr-only">Загрузка заявки…</span>
+      {/* Левая колонка: клиент + данные заявки (сетка как у реальной карточки) */}
+      <div className="min-h-0 space-y-4 border-b p-4 md:border-b-0 md:border-r md:overflow-hidden">
+        <div className="space-y-2 rounded-xl border bg-muted/30 p-3">
+          <Skeleton className="h-4 w-36" />
+          <Skeleton className="h-5 w-3/4" />
+          <Skeleton className="h-4 w-1/2" />
+          <Skeleton className="h-4 w-2/5" />
+        </div>
+        <div className="space-y-3 rounded-xl border p-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Skeleton className="h-14 w-full" />
+            <Skeleton className="h-14 w-full" />
+          </div>
+          <Skeleton className="h-14 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
+      </div>
+      {/* Правая колонка: блок чата */}
+      <div className="flex h-[46dvh] min-h-[300px] flex-col gap-2 p-4 md:h-auto md:min-h-0 md:overflow-hidden">
+        <Skeleton className="h-8 w-full shrink-0" />
+        <Skeleton className="h-16 w-3/4" />
+        <Skeleton className="h-16 w-2/3" />
+        <Skeleton className="h-10 w-full shrink-0" />
+      </div>
     </div>
   );
 }
@@ -748,6 +1033,7 @@ function OrderDetailDialog({
               </Badge>
             )}
             {mytkoEnabled && order && <MytkoBadge status={order.mytkoStatus} className="text-[10px] h-5" />}
+            {order && <CopyButton value={String(order.number)} label="номер заявки" className="-ml-1" />}
           </DialogTitle>
           <DialogDescription className="sr-only">
             Карточка заявки: данные клиента, статус и встроенный чат
@@ -755,9 +1041,7 @@ function OrderDetailDialog({
         </DialogHeader>
 
         {!order && loading ? (
-          <div className="flex items-center justify-center gap-2 text-muted-foreground" role="status">
-            <Loader2 className="h-5 w-5 animate-spin" aria-hidden /> Загрузка…
-          </div>
+          <OrderDetailSkeleton />
         ) : !order ? (
           <div className="flex items-center justify-center text-sm text-muted-foreground">
             Заявка не найдена
@@ -788,16 +1072,20 @@ function OrderDetailDialog({
                     {order.clientName || order.conversation?.contact || 'Клиент без имени'}
                   </div>
                   {order.phone && (
-                    <a
-                      href={`tel:${order.phone.replace(/[^\d+]/g, '')}`}
-                      className="flex w-fit items-center gap-1.5 text-primary hover:underline"
-                    >
-                      <Phone className="h-3.5 w-3.5" /> {order.phone}
-                    </a>
+                    <div className="flex items-center gap-1">
+                      <a
+                        href={`tel:${order.phone.replace(/[^\d+]/g, '')}`}
+                        className="flex w-fit items-center gap-1.5 text-primary hover:underline"
+                      >
+                        <Phone className="h-3.5 w-3.5" /> {order.phone}
+                      </a>
+                      <CopyButton value={order.phone} label="телефон клиента" />
+                    </div>
                   )}
                   {order.conversation?.externalUserId && (
-                    <div className="break-all text-xs text-muted-foreground">
-                      ID клиента: {order.conversation.externalUserId}
+                    <div className="flex items-center gap-1 break-all text-xs text-muted-foreground">
+                      <span>ID клиента: {order.conversation.externalUserId}</span>
+                      <CopyButton value={order.conversation.externalUserId} label="ID клиента" />
                     </div>
                   )}
                 </div>
@@ -994,10 +1282,16 @@ function OrderDetailDialog({
                     </div>
                   )}
                   {order.lat != null ? (
-                    <div className="pt-1 text-[11px] tabular-nums text-muted-foreground">
-                      Координаты: {order.lat.toFixed(5)}, {order.lng?.toFixed(5)}
-                      {order.geoSource === 'manual' && ' · указано вручную'}
-                      {order.geoSource === 'geocode' && ' · по адресу'}
+                    <div className="flex items-center gap-1 pt-1 text-[11px] tabular-nums text-muted-foreground">
+                      <span>
+                        Координаты: {order.lat.toFixed(5)}, {order.lng?.toFixed(5)}
+                        {order.geoSource === 'manual' && ' · указано вручную'}
+                        {order.geoSource === 'geocode' && ' · по адресу'}
+                      </span>
+                      <CopyButton
+                        value={`${order.lat.toFixed(5)}, ${order.lng?.toFixed(5)}`}
+                        label="координаты"
+                      />
                     </div>
                   ) : (
                     <div className="pt-1 text-[11px] text-amber-600 dark:text-amber-400">
@@ -1320,68 +1614,90 @@ function NewOrderDialog({
 
 // ─── Строка списка заявок ────────────────────────────────────────────────────
 
-function OrderRow({
-  order,
-  onOpen,
-  mytkoEnabled,
-}: {
-  order: OrderDto;
-  onOpen: (id: string) => void;
-  mytkoEnabled: boolean;
-}) {
-  return (
-    <button
-      onClick={() => onOpen(order.id)}
-      aria-label={`Открыть заявку №${order.number} — ${order.address || order.clientName || 'без адреса'}`}
-      className={cn(
-        'flex w-full flex-col gap-1.5 rounded-xl border bg-card p-3 text-left shadow-sm transition-[box-shadow,background-color] hover:bg-muted/60 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-        order.status === 'new' && 'border-amber-300/70 dark:border-amber-500/40'
-      )}
-    >
-      <div className="flex w-full items-center gap-2">
-        <span
-          className={cn(
-            'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white',
-            markerColor(order)
+/** memo-строка списка (IMP-F12): сравниваем только поля, реально влияющие на отрисовку,
+ *  чтобы поллинг (новые объекты заявок каждые 6 с) не перерисовывал весь список.
+ *  onOpen — стабильный useCallback, mytkoEnabled — примитив. */
+const OrderRow = memo(
+  function OrderRow({
+    order,
+    onOpen,
+    mytkoEnabled,
+  }: {
+    order: OrderDto;
+    onOpen: (id: string) => void;
+    mytkoEnabled: boolean;
+  }) {
+    return (
+      <button
+        onClick={() => onOpen(order.id)}
+        aria-label={`Открыть заявку №${order.number} — ${order.address || order.clientName || 'без адреса'}`}
+        className={cn(
+          'flex w-full flex-col gap-1.5 rounded-xl border bg-card p-3 text-left shadow-sm transition-[box-shadow,background-color] hover:bg-muted/60 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+          order.status === 'new' && 'border-amber-300/70 dark:border-amber-500/40'
+        )}
+      >
+        <div className="flex w-full items-center gap-2">
+          <span
+            className={cn(
+              'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white',
+              markerColor(order)
+            )}
+          >
+            {order.number}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+            {ORDER_TYPE_ICONS[order.type]} {order.address || order.clientName || 'Без адреса'}
+          </span>
+          <Badge
+            variant="outline"
+            className={cn('shrink-0 px-1.5 text-[10px]', ORDER_STATUS_BADGES[order.status])}
+          >
+            {ORDER_STATUS_LABELS[order.status] ?? order.status}
+          </Badge>
+          {mytkoEnabled && <MytkoBadge status={order.mytkoStatus} />}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-10 text-[11px] text-muted-foreground">
+          {order.clientName && <span className="font-medium">{order.clientName}</span>}
+          {order.phone && <span>{order.phone}</span>}
+          {order.size && <span>{order.size}</span>}
+          {order.wishDate && <span>🗓 {order.wishDate}</span>}
+          {order.lat != null ? (
+            <span className="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400">
+              <MapPin className="h-3 w-3" aria-hidden /> на карте
+            </span>
+          ) : (
+            <span className="flex items-center gap-0.5 text-amber-600 dark:text-amber-400">
+              <MapPin className="h-3 w-3" aria-hidden /> точка не указана
+            </span>
           )}
-        >
-          {order.number}
-        </span>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-          {ORDER_TYPE_ICONS[order.type]} {order.address || order.clientName || 'Без адреса'}
-        </span>
-        <Badge
-          variant="outline"
-          className={cn('shrink-0 px-1.5 text-[10px]', ORDER_STATUS_BADGES[order.status])}
-        >
-          {ORDER_STATUS_LABELS[order.status] ?? order.status}
-        </Badge>
-        {mytkoEnabled && <MytkoBadge status={order.mytkoStatus} />}
-      </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-10 text-[11px] text-muted-foreground">
-        {order.clientName && <span className="font-medium">{order.clientName}</span>}
-        {order.phone && <span>{order.phone}</span>}
-        {order.size && <span>{order.size}</span>}
-        {order.wishDate && <span>🗓 {order.wishDate}</span>}
-        {order.lat != null ? (
-          <span className="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400">
-            <MapPin className="h-3 w-3" aria-hidden /> на карте
-          </span>
-        ) : (
-          <span className="flex items-center gap-0.5 text-amber-600 dark:text-amber-400">
-            <MapPin className="h-3 w-3" aria-hidden /> точка не указана
-          </span>
-        )}
-        {typeof order.messagesCount === 'number' && order.messagesCount > 0 && (
-          <span className="flex items-center gap-0.5">
-            <MessageSquare className="h-3 w-3" /> {order.messagesCount}
-          </span>
-        )}
-        <span className="ml-auto tabular-nums">{fmtDate(order.createdAt)}</span>
-      </div>
-    </button>
-  );
-}
+          {typeof order.messagesCount === 'number' && order.messagesCount > 0 && (
+            <span className="flex items-center gap-0.5">
+              <MessageSquare className="h-3 w-3" /> {order.messagesCount}
+            </span>
+          )}
+          <span className="ml-auto tabular-nums">{fmtDate(order.createdAt)}</span>
+        </div>
+      </button>
+    );
+  },
+  (a, b) =>
+    a.onOpen === b.onOpen &&
+    a.mytkoEnabled === b.mytkoEnabled &&
+    a.order.id === b.order.id &&
+    a.order.number === b.order.number &&
+    a.order.type === b.order.type &&
+    a.order.status === b.order.status &&
+    a.order.address === b.order.address &&
+    a.order.city === b.order.city &&
+    a.order.clientName === b.order.clientName &&
+    a.order.phone === b.order.phone &&
+    a.order.size === b.order.size &&
+    a.order.wishDate === b.order.wishDate &&
+    a.order.lat === b.order.lat &&
+    a.order.createdAt === b.order.createdAt &&
+    a.order.messagesCount === b.order.messagesCount &&
+    a.order.mytkoStatus === b.order.mytkoStatus
+);
 
 // ─── Главный вид раздела «Заявки» ────────────────────────────────────────────
 
@@ -1400,34 +1716,92 @@ export default function OrdersView({
   const { toast } = useToast();
   const [orders, setOrders] = useState<OrderDto[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<Tab>('map');
+  // IMP-F14: вкладка/фильтры/поиск сохраняются в localStorage (bstudio.orders.*)
+  const [tab, setTab] = useState<Tab>(() => {
+    const v = typeof window === 'undefined' ? null : readStored('bstudio.orders.tab');
+    return v === 'map' || v === 'active' || v === 'archive' ? v : 'map';
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [placementId, setPlacementId] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ id: string; tick: number } | null>(null);
-  const [showCompleted, setShowCompleted] = useState(true);
-  const [typeFilter, setTypeFilter] = useState<'all' | 'waste' | 'kgm'>('all');
-  const [search, setSearch] = useState('');
+  const [showCompleted, setShowCompleted] = useState<boolean>(() => {
+    const v = typeof window === 'undefined' ? null : readStored('bstudio.orders.showCompleted');
+    return v == null ? true : v === '1';
+  });
+  const [typeFilter, setTypeFilter] = useState<'all' | 'waste' | 'kgm'>(() => {
+    const v = typeof window === 'undefined' ? null : readStored('bstudio.orders.typeFilter');
+    return v === 'waste' || v === 'kgm' ? v : 'all';
+  });
+  const [search, setSearch] = useState<string>(() =>
+    typeof window === 'undefined' ? '' : (readStored('bstudio.orders.search') ?? '')
+  );
   const [newOpen, setNewOpen] = useState(false);
   const [mytkoEnabled, setMytkoEnabled] = useState(false);
+  // IMP-F15: свежесть данных и индикация потери связи
+  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
+  const [connLost, setConnLost] = useState(false);
+  const failStreakRef = useRef(0);
+  const [nowTs, setNowTs] = useState(() => Date.now());
 
   const load = useCallback(async () => {
     try {
       const d = await api<{ orders: OrderDto[]; mytkoEnabled?: boolean }>(`/api/bots/${bot.id}/orders`);
       setOrders(d.orders);
       setMytkoEnabled(!!d.mytkoEnabled);
+      setLastSyncAt(Date.now());
+      failStreakRef.current = 0;
+      setConnLost(false);
     } catch {
       /* ignore polling errors */
+      failStreakRef.current += 1;
+      if (failStreakRef.current >= 3) setConnLost(true);
     } finally {
       setLoading(false);
     }
   }, [bot.id]);
 
+  // Поллинг (IMP-F15): пауза на document.hidden, при возврате на вкладку — немедленный тик
   useEffect(() => {
     load();
-    const t = setInterval(load, 6000);
-    return () => clearInterval(t);
+    let timer: ReturnType<typeof setInterval> | null = setInterval(load, 6000);
+    const onVisibility = () => {
+      if (document.hidden) {
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+      } else if (!timer) {
+        load();
+        timer = setInterval(load, 6000);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      if (timer) clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [load]);
+
+  // Тикер для чипа «обновлено N с назад» (лёгкий, раз в 5 с)
+  useEffect(() => {
+    const t = setInterval(() => setNowTs(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  // IMP-F14: запись UI-состояния в localStorage
+  useEffect(() => {
+    writeStored('bstudio.orders.tab', tab);
+  }, [tab]);
+  useEffect(() => {
+    writeStored('bstudio.orders.typeFilter', typeFilter);
+  }, [typeFilter]);
+  useEffect(() => {
+    writeStored('bstudio.orders.showCompleted', showCompleted ? '1' : '0');
+  }, [showCompleted]);
+  useEffect(() => {
+    writeStored('bstudio.orders.search', search);
+  }, [search]);
 
   const openOrder = useCallback((id: string) => {
     setSelectedId(id);
@@ -1494,29 +1868,34 @@ export default function OrdersView({
     [placementId, bot.id, load, toast]
   );
 
-  const active = orders.filter((o) => ACTIVE_STATUSES.includes(o.status));
-  const archive = orders.filter((o) => ARCHIVE_STATUSES.includes(o.status));
-  const newCount = orders.filter((o) => o.status === 'new').length;
-
-  const filtered = (list: OrderDto[]) => {
-    let r = list;
-    if (typeFilter !== 'all') r = r.filter((o) => o.type === typeFilter);
+  // IMP-F12: все производные списки — один useMemo (раньше filtered() вызывался дважды за рендер)
+  const { active, archive, newCount, withoutGeo, mapOrders, listOrders } = useMemo(() => {
+    const active = orders.filter((o) => ACTIVE_STATUSES.includes(o.status));
+    const archive = orders.filter((o) => ARCHIVE_STATUSES.includes(o.status));
     const q = search.trim().toLowerCase();
-    if (q) {
-      r = r.filter(
-        (o) =>
-          String(o.number).includes(q) ||
-          (o.address ?? '').toLowerCase().includes(q) ||
-          (o.clientName ?? '').toLowerCase().includes(q) ||
-          (o.phone ?? '').toLowerCase().includes(q)
-      );
-    }
-    return r;
-  };
-
-  const withoutGeo = orders.filter(
-    (o) => o.lat == null && ACTIVE_STATUSES.includes(o.status)
-  );
+    const applyFilters = (list: OrderDto[]) => {
+      let r = list;
+      if (typeFilter !== 'all') r = r.filter((o) => o.type === typeFilter);
+      if (q) {
+        r = r.filter(
+          (o) =>
+            String(o.number).includes(q) ||
+            (o.address ?? '').toLowerCase().includes(q) ||
+            (o.clientName ?? '').toLowerCase().includes(q) ||
+            (o.phone ?? '').toLowerCase().includes(q)
+        );
+      }
+      return r;
+    };
+    return {
+      active,
+      archive,
+      newCount: orders.filter((o) => o.status === 'new').length,
+      withoutGeo: orders.filter((o) => o.lat == null && ACTIVE_STATUSES.includes(o.status)),
+      mapOrders: applyFilters(orders),
+      listOrders: tab === 'active' ? applyFilters(active) : applyFilters(archive),
+    };
+  }, [orders, typeFilter, search, tab]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1536,6 +1915,15 @@ export default function OrdersView({
           </Badge>
         )}
         <div className="ml-auto flex items-center gap-2">
+          {lastSyncAt != null && !connLost && (
+            <span
+              role="status"
+              aria-label={`Данные обновлены: ${fmtAgo(lastSyncAt, nowTs)}`}
+              className="hidden text-[11px] text-muted-foreground sm:inline"
+            >
+              обновлено {fmtAgo(lastSyncAt, nowTs)}
+            </span>
+          )}
           <Button variant="outline" size="sm" className="h-8" onClick={load} aria-label="Обновить список заявок">
             <RefreshCw className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Обновить</span>
@@ -1545,6 +1933,18 @@ export default function OrdersView({
           </Button>
         </div>
       </div>
+
+      {/* Потеря связи (IMP-F15): поллинг продолжается, баннер после 3 сбоев подряд */}
+      {connLost && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="flex items-center gap-2 border-b border-amber-300/70 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 sm:px-4"
+        >
+          <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          Нет связи с сервером — повторяем попытку обновления…
+        </div>
+      )}
 
       {/* Фильтры */}
       <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2 sm:px-4">
@@ -1573,15 +1973,18 @@ export default function OrdersView({
           </SelectContent>
         </Select>
         {tab === 'map' && (
-          <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
+          <Label
+            htmlFor="orders-show-completed"
+            className="flex cursor-pointer select-none items-center gap-1.5 text-xs font-normal text-muted-foreground"
+          >
+            <Checkbox
+              id="orders-show-completed"
               checked={showCompleted}
-              onChange={(e) => setShowCompleted(e.target.checked)}
-              className="accent-emerald-600"
+              onCheckedChange={(v) => setShowCompleted(v === true)}
+              aria-label="Показывать выполненные заявки на карте"
             />
             выполненные на карте
-          </label>
+          </Label>
         )}
         <div className="relative ml-auto w-full sm:w-56">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -1602,7 +2005,7 @@ export default function OrdersView({
           <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto md:overflow-hidden">
             <div className="min-h-[340px] flex-1 sm:min-h-[380px]">
               <OrdersMap
-                orders={filtered(orders)}
+                orders={mapOrders}
                 showCompleted={showCompleted}
                 mytkoEnabled={mytkoEnabled}
                 placementOrderId={placementId}
@@ -1645,7 +2048,7 @@ export default function OrdersView({
                   <Skeleton key={i} className="h-[68px] rounded-xl" />
                 ))}
               </div>
-            ) : filtered(tab === 'active' ? active : archive).length === 0 ? (
+            ) : listOrders.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-muted-foreground">
                 <div
                   className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary"
@@ -1666,7 +2069,7 @@ export default function OrdersView({
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
-                {filtered(tab === 'active' ? active : archive).map((o) => (
+                {listOrders.map((o) => (
                   <OrderRow key={o.id} order={o} onOpen={openOrder} mytkoEnabled={mytkoEnabled} />
                 ))}
               </div>

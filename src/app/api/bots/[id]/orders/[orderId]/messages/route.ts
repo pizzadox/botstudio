@@ -5,6 +5,9 @@ import { deliverTextToConversation } from '@/lib/deliver';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
 
+/** Cap для ?take — защита от «выкачаем всю таблицу» */
+const MAX_TAKE = 500;
+
 /**
  * Чат по заявке: сообщения, привязанные к заявке (Message.orderId).
  * Пользователь пишет их в боте в режиме «чат по заявке»,
@@ -23,11 +26,19 @@ export async function GET(req: NextRequest, { params }: Params) {
   const order = await db.order.findFirst({ where: { id: orderId, botId: id } });
   if (!order) return NextResponse.json({ error: 'Заявка не найдена' }, { status: 404 });
 
-  const messages = await db.message.findMany({
-    where: { orderId },
-    orderBy: { createdAt: 'asc' },
-    take: 300,
-  });
+  // ?take=N (по умолчанию 300, максимум 500): последние N сообщений
+  // (orderBy desc + reverse), в ответе — хронологический порядок
+  const takeParam = Number(req.nextUrl.searchParams.get('take') ?? '');
+  const take =
+    Number.isFinite(takeParam) && takeParam > 0 ? Math.min(Math.floor(takeParam), MAX_TAKE) : 300;
+
+  const messages = (
+    await db.message.findMany({
+      where: { orderId },
+      orderBy: { createdAt: 'desc' },
+      take,
+    })
+  ).reverse();
 
   return NextResponse.json({ messages });
 }
@@ -59,14 +70,15 @@ export async function POST(req: NextRequest, { params }: Params) {
       );
     }
 
-    const message = await db.message.create({
-      data: { conversationId: order.conversationId, role: 'bot', text, nodeId: '__operator', orderId },
-    });
-    if (order.conversationId) {
-      await db.conversation
+    const [message] = await Promise.all([
+      db.message.create({
+        data: { conversationId: order.conversationId, role: 'bot', text, nodeId: '__operator', orderId },
+      }),
+      // Обновление времени активности диалога не зависит от вставки сообщения
+      db.conversation
         .update({ where: { id: order.conversationId }, data: { updatedAt: new Date() } })
-        .catch(() => {});
-    }
+        .catch(() => null),
+    ]);
 
     // Доставка клиенту в мессенджер (MAX/Telegram); для веба клиент заберёт
     // ответ polling'ом

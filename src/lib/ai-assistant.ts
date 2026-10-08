@@ -20,6 +20,23 @@ export function parseAiConfig(raw: string | null | undefined): AiAssistantConfig
   }
 }
 
+// ─── Кэш конфигурации ассистента (горячий путь вебхуков) ─────────────────────
+// loadAssistantConfig на каждое входящее сообщение делала запрос базы знаний.
+// Кэшируем собранный конфиг на 60 секунд; инвалидация — при сохранении
+// настроек ИИ (PUT /api/bots/[id]/ai) и правках базы знаний.
+
+const cacheGlobals = globalThis as unknown as {
+  __assistantConfigCache?: Map<string, { data: AiAssistantConfig; expiresAt: number }>;
+};
+
+const ASSISTANT_CACHE_TTL = 60 * 1000;
+
+/** Сбросить кэш конфига ассистента бота (вызывать после изменений настроек/БЗ) */
+export function invalidateAssistantConfig(botId: string): void {
+  const cache = (cacheGlobals.__assistantConfigCache ??= new Map());
+  cache.delete(botId);
+}
+
 /**
  * Загружает конфигурацию ИИ-ассистента бота: настройки + база знаний.
  * Записи базы знаний склеиваются в единый текст и передаются движку.
@@ -32,6 +49,10 @@ export async function loadAssistantConfig(
 ): Promise<AiAssistantConfig> {
   const cfg = parseAiConfig(aiConfigRaw);
   if (!cfg.enabled) return { enabled: false };
+
+  const cache = (cacheGlobals.__assistantConfigCache ??= new Map());
+  const hit = cache.get(botId);
+  if (hit && hit.expiresAt > Date.now()) return hit.data;
 
   const items = await db.knowledgeItem.findMany({
     where: { botId },
@@ -46,5 +67,7 @@ export async function loadAssistantConfig(
 
   const knowledge = [cfg.knowledge, kbText].filter((s): s is string => Boolean(s && s.trim())).join('\n\n');
 
-  return { ...cfg, knowledge: knowledge || undefined };
+  const result: AiAssistantConfig = { ...cfg, knowledge: knowledge || undefined };
+  cache.set(botId, { data: result, expiresAt: Date.now() + ASSISTANT_CACHE_TTL });
+  return result;
 }

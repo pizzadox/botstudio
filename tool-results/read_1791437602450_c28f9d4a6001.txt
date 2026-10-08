@@ -1,0 +1,783 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+     4→     4→import {
+     5→     5→  Archive,
+     6→     6→  Bot,
+     7→     7→  ChevronLeft,
+     8→     8→  ChevronDown,
+     9→     9→  ChevronRight,
+    10→    10→  Globe,
+    11→    11→  Headset,
+    12→    12→  Inbox,
+    13→    13→  Loader2,
+    14→    14→  MessageCircle,
+    15→    15→  MessagesSquare,
+    16→    16→  MessageSquare,
+    17→    17→  Search,
+    18→    18→  Send,
+    19→    19→  SearchCheck,
+    20→    20→  Truck,
+    21→    21→} from 'lucide-react';
+    22→    22→import type { LucideIcon } from 'lucide-react';
+    23→    23→import { api } from '@/lib/client-api';
+    24→    24→import type { ChatMessage, ConversationListItem } from '@/lib/studio-types';
+    25→    25→import {
+    26→    26→  ORDER_STATUS_BADGES,
+    27→    27→  ORDER_STATUS_LABELS,
+    28→    28→  ORDER_TYPE_LABELS,
+    29→    29→  SOURCE_COLORS,
+    30→    30→  SOURCE_LABELS,
+    31→    31→} from '@/lib/studio-types';
+    32→    32→import { Badge } from '@/components/ui/badge';
+    33→    33→import { Button } from '@/components/ui/button';
+    34→    34→import { Input } from '@/components/ui/input';
+    35→    35→import {
+    36→    36→  Select,
+    37→    37→  SelectContent,
+    38→    38→  SelectItem,
+    39→    39→  SelectTrigger,
+    40→    40→  SelectValue,
+    41→    41→} from '@/components/ui/select';
+    42→    42→import { ScrollArea } from '@/components/ui/scroll-area';
+    43→    43→import { Skeleton } from '@/components/ui/skeleton';
+    44→    44→import { MytkoBadge } from '@/components/studio/mytko-badge';
+    45→    45→import { useToast } from '@/hooks/use-toast';
+    46→    46→import { cn } from '@/lib/utils';
+    47→    47→
+    48→    48→/** Dark-пары для цветных чипов источников (светлые классы приходят из SOURCE_COLORS) */
+    49→    49→const SOURCE_DARK: Record<string, string> = {
+    50→    50→  telegram: 'dark:bg-sky-500/15 dark:text-sky-300',
+    51→    51→  whatsapp: 'dark:bg-emerald-500/15 dark:text-emerald-300',
+    52→    52→  max: 'dark:bg-violet-500/15 dark:text-violet-300',
+    53→    53→  web: 'dark:bg-amber-500/15 dark:text-amber-300',
+    54→    54→  simulator: 'dark:bg-slate-500/15 dark:text-slate-300',
+    55→    55→};
+    56→    56→
+    57→    57→function sourceChipClass(source: string): string {
+    58→    58→  return cn(
+    59→    59→    SOURCE_COLORS[source] ?? 'bg-muted text-muted-foreground',
+    60→    60→    SOURCE_DARK[source]
+    61→    61→  );
+    62→    62→}
+    63→    63→
+    64→    64→/** Осмысленные пустые состояния для каждого фильтра списка */
+    65→    65→const EMPTY_STATES: Record<'all' | 'operator' | 'unread' | 'closed', { title: string; hint: string }> = {
+    66→    66→  all: {
+    67→    67→    title: 'Диалогов пока нет',
+    68→    68→    hint: 'Опубликуйте бота и напишите ему в демо-чате или мессенджере — обращения появятся здесь.',
+    69→    69→  },
+    70→    70→  operator: {
+    71→    71→    title: 'Нет диалогов, требующих внимания',
+    72→    72→    hint: 'Когда клиент попросит оператора, обращение появится в этом списке.',
+    73→    73→  },
+    74→    74→  unread: {
+    75→    75→    title: 'Новых диалогов нет',
+    76→    76→    hint: 'Непрочитанные обращения от клиентов будут собираться здесь.',
+    77→    77→  },
+    78→    78→  closed: {
+    79→    79→    title: 'Закрытых обращений нет',
+    80→    80→    hint: 'Завершённые диалоги сохраняются в этой категории.',
+    81→    81→  },
+    82→    82→};
+    83→    83→
+    84→    84→const FILTER_ICONS: Record<'all' | 'operator' | 'unread' | 'closed', LucideIcon> = {
+    85→    85→  all: MessagesSquare,
+    86→    86→  operator: Headset,
+    87→    87→  unread: MessageSquare,
+    88→    88→  closed: Archive,
+    89→    89→};
+    90→    90→
+    91→    91→function SourceIcon({ source, className }: { source: string; className?: string }) {
+    92→    92→  const cls = cn('h-3.5 w-3.5', className);
+    93→    93→  switch (source) {
+    94→    94→    case 'telegram':
+    95→    95→      return <Send className={cls} />;
+    96→    96→    case 'whatsapp':
+    97→    97→      return <MessageCircle className={cls} />;
+    98→    98→    case 'max':
+    99→    99→      return <MessageSquare className={cls} />;
+   100→   100→    default:
+   101→   101→      return <Globe className={cls} />;
+   102→   102→  }
+   103→   103→}
+   104→   104→
+   105→   105→function timeAgo(iso: string): string {
+   106→   106→  const diff = Date.now() - new Date(iso).getTime();
+   107→   107→  const m = Math.floor(diff / 60000);
+   108→   108→  if (m < 1) return 'только что';
+   109→   109→  if (m < 60) return `${m} мин назад`;
+   110→   110→  const h = Math.floor(m / 60);
+   111→   111→  if (h < 24) return `${h} ч назад`;
+   112→   112→  return `${Math.floor(h / 24)} дн назад`;
+   113→   113→}
+   114→   114→
+   115→   115→/** Пустое состояние: иконка в квадрате + заголовок + пояснение */
+   116→   116→function EmptyState({ icon: Icon, title, hint }: { icon: LucideIcon; title: string; hint: string }) {
+   117→   117→  return (
+   118→   118→    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+   119→   119→      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+   120→   120→        <Icon className="h-6 w-6" aria-hidden />
+   121→   121→      </div>
+   122→   122→      <div className="max-w-[280px]">
+   123→   123→        <p className="text-sm font-medium text-foreground">{title}</p>
+   124→   124→        <p className="mt-1 text-sm text-muted-foreground">{hint}</p>
+   125→   125→      </div>
+   126→   126→    </div>
+   127→   127→  );
+   128→   128→}
+   129→   129→
+   130→   130→/** Скелетон строки списка диалогов */
+   131→   131→function ConversationRowSkeleton() {
+   132→   132→  return (
+   133→   133→    <div className="space-y-2 py-2.5" aria-hidden>
+   134→   134→      <div className="flex items-center gap-2">
+   135→   135→        <Skeleton className="h-3.5 w-14 rounded-full" />
+   136→   136→        <Skeleton className="h-4 min-w-0 flex-1" />
+   137→   137→        <Skeleton className="h-3 w-14" />
+   138→   138→      </div>
+   139→   139→      <Skeleton className="h-3 w-3/4" />
+   140→   140→    </div>
+   141→   141→  );
+   142→   142→}
+   143→   143→
+   144→   144→interface ConvOrder {
+   145→   145→  id: string;
+   146→   146→  number: number;
+   147→   147→  type: string;
+   148→   148→  status: string;
+   149→   149→  address: string | null;
+   150→   150→  city: string | null;
+   151→   151→  size: string | null;
+   152→   152→  wishDate: string | null;
+   153→   153→  clientName: string | null;
+   154→   154→  phone: string | null;
+   155→   155→  assignee: string | null;
+   156→   156→  mytkoStatus: string | null;
+   157→   157→  mytkoInfo: string | null;
+   158→   158→  mytkoSyncAt: string | null;
+   159→   159→  createdAt: string;
+   160→   160→}
+   161→   161→
+   162→   162→/** Панель заявок клиента: просмотр и быстрое изменение статуса/исполнителя */
+   163→   163→function ConversationOrdersPanel({
+   164→   164→  conversationId,
+   165→   165→  botId,
+   166→   166→  refreshTick,
+   167→   167→}: {
+   168→   168→  conversationId: string;
+   169→   169→  botId: string;
+   170→   170→  refreshTick: number;
+   171→   171→}) {
+   172→   172→  const { toast } = useToast();
+   173→   173→  const [open, setOpen] = useState(false);
+   174→   174→  const [orders, setOrders] = useState<ConvOrder[]>([]);
+   175→   175→  const [mytkoEnabled, setMytkoEnabled] = useState(false);
+   176→   176→  const [loaded, setLoaded] = useState(false);
+   177→   177→  const [savingId, setSavingId] = useState<string | null>(null);
+   178→   178→
+   179→   179→  const load = useCallback(async () => {
+   180→   180→    try {
+   181→   181→      const d = await api<{ orders: ConvOrder[]; mytkoEnabled?: boolean }>(
+   182→   182→        `/api/conversations/${conversationId}/orders`
+   183→   183→      );
+   184→   184→      setOrders(d.orders);
+   185→   185→      setMytkoEnabled(!!d.mytkoEnabled);
+   186→   186→    } catch {
+   187→   187→      /* ignore */
+   188→   188→    } finally {
+   189→   189→      setLoaded(true);
+   190→   190→    }
+   191→   191→  }, [conversationId]);
+   192→   192→
+   193→   193→  useEffect(() => {
+   194→   194→    load();
+   195→   195→  }, [load, refreshTick]);
+   196→   196→
+   197→   197→  const patch = async (orderId: string, data: Record<string, unknown>) => {
+   198→   198→    setSavingId(orderId);
+   199→   199→    try {
+   200→   200→      const d = await api<{ order: { status: string; assignee: string | null } }>(
+   201→   201→        `/api/bots/${botId}/orders/${orderId}`,
+   202→   202→        { method: 'PATCH', body: JSON.stringify(data) }
+   203→   203→      );
+   204→   204→      setOrders((prev) =>
+   205→   205→        prev.map((o) =>
+   206→   206→          o.id === orderId ? { ...o, status: d.order.status, assignee: d.order.assignee } : o
+   207→   207→        )
+   208→   208→      );
+   209→   209→      toast({ title: 'Заявка обновлена' });
+   210→   210→    } catch {
+   211→   211→      toast({ title: 'Не удалось обновить заявку', variant: 'destructive' });
+   212→   212→    } finally {
+   213→   213→      setSavingId(null);
+   214→   214→    }
+   215→   215→  };
+   216→   216→
+   217→   217→  return (
+   218→   218→    <div className="border-b bg-background px-4 py-2">
+   219→   219→      <button
+   220→   220→        className="flex w-full items-center gap-1.5 rounded text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+   221→   221→        onClick={() => setOpen((v) => !v)}
+   222→   222→        aria-expanded={open}
+   223→   223→        aria-controls="conversation-orders-list"
+   224→   224→      >
+   225→   225→        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+   226→   226→        <Truck className="h-3.5 w-3.5" />
+   227→   227→        Заявки клиента <span className="tabular-nums">({orders.length})</span>
+   228→   228→      </button>
+   229→   229→      <div id="conversation-orders-list">
+   230→   230→        {open && loaded && orders.length > 0 && (
+   231→   231→          <div className="mt-2 max-h-56 space-y-1.5 overflow-y-auto pr-1">
+   232→   232→            {orders.map((o) => (
+   233→   233→              <div key={o.id} className="rounded-lg border p-2">
+   234→   234→                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+   235→   235→                  <span className="text-xs font-semibold tabular-nums">№{o.number}</span>
+   236→   236→                  <Badge
+   237→   237→                    variant="outline"
+   238→   238→                    className={cn('h-4 px-1 text-[9px]', ORDER_STATUS_BADGES[o.status])}
+   239→   239→                  >
+   240→   240→                    {ORDER_STATUS_LABELS[o.status] ?? o.status}
+   241→   241→                  </Badge>
+   242→   242→                  {mytkoEnabled && <MytkoBadge status={o.mytkoStatus} />}
+   243→   243→                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+   244→   244→                    {ORDER_TYPE_LABELS[o.type] ?? o.type}
+   245→   245→                    {o.address ? ` · ${o.address}` : ''}
+   246→   246→                  </span>
+   247→   247→                </div>
+   248→   248→                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+   249→   249→                  <Select
+   250→   250→                    value={o.status}
+   251→   251→                    onValueChange={(v) => patch(o.id, { status: v })}
+   252→   252→                    disabled={savingId === o.id}
+   253→   253→                  >
+   254→   254→                    <SelectTrigger className="h-7 w-[130px] text-[11px]" aria-label="Статус заявки">
+   255→   255→                      <SelectValue />
+   256→   256→                    </SelectTrigger>
+   257→   257→                    <SelectContent>
+   258→   258→                      {Object.entries(ORDER_STATUS_LABELS).map(([k, v]) => (
+   259→   259→                        <SelectItem key={k} value={k} className="text-xs">
+   260→   260→                          {v}
+   261→   261→                        </SelectItem>
+   262→   262→                      ))}
+   263→   263→                    </SelectContent>
+   264→   264→                  </Select>
+   265→   265→                  <Input
+   266→   266→                    className="h-7 w-[120px] flex-1 text-[11px] sm:w-[140px]"
+   267→   267→                    defaultValue={o.assignee ?? ''}
+   268→   268→                    placeholder="Исполнитель…"
+   269→   269→                    aria-label="Исполнитель"
+   270→   270→                    onBlur={(e) => {
+   271→   271→                      if (e.target.value !== (o.assignee ?? '')) patch(o.id, { assignee: e.target.value });
+   272→   272→                    }}
+   273→   273→                  />
+   274→   274→                  {o.wishDate && (
+   275→   275→                    <span className="text-[11px] text-muted-foreground">🗓 {o.wishDate}</span>
+   276→   276→                  )}
+   277→   277→                </div>
+   278→   278→              </div>
+   279→   279→            ))}
+   280→   280→          </div>
+   281→   281→        )}
+   282→   282→        {open && loaded && orders.length === 0 && (
+   283→   283→          <p className="mt-1.5 text-[11px] text-muted-foreground">У клиента пока нет заявок.</p>
+   284→   284→        )}
+   285→   285→        {open && !loaded && (
+   286→   286→          <div className="mt-2 space-y-1.5" role="status" aria-label="Загрузка заявок клиента">
+   287→   287→            <Skeleton className="h-[52px] w-full rounded-lg" />
+   288→   288→            <Skeleton className="h-[52px] w-full rounded-lg" />
+   289→   289→          </div>
+   290→   290→        )}
+   291→   291→      </div>
+   292→   292→    </div>
+   293→   293→  );
+   294→   294→}
+   295→   295→
+   296→   296→export default function InboxView({
+   297→   297→  bot,
+   298→   298→  onBack,
+   299→   299→  focusConversationId,
+   300→   300→  onFocusConsumed,
+   301→   301→}: {
+   302→   302→  bot: { id: string; name: string };
+   303→   303→  onBack: () => void;
+   304→   304→  /** id диалога из уведомления — сразу открыть его */
+   305→   305→  focusConversationId?: string | null;
+   306→   306→  onFocusConsumed?: () => void;
+   307→   307→}) {
+   308→   308→  const { toast } = useToast();
+   309→   309→  const [conversations, setConversations] = useState<ConversationListItem[]>([]);
+   310→   310→  const [selectedId, setSelectedId] = useState<string | null>(null);
+   311→   311→  const [messages, setMessages] = useState<ChatMessage[]>([]);
+   312→   312→  const [contact, setContact] = useState<string | null>(null);
+   313→   313→  const [selectedSource, setSelectedSource] = useState('web');
+   314→   314→  const [needsOperator, setNeedsOperator] = useState(false);
+   315→   315→  const [status, setStatus] = useState('open');
+   316→   316→  const [reply, setReply] = useState('');
+   317→   317→  const [loading, setLoading] = useState(true);
+   318→   318→  const [sending, setSending] = useState(false);
+   319→   319→  const [ordersTick, setOrdersTick] = useState(0);
+   320→   320→  /** Фильтр списка: все / нужен оператор / новые / закрытые */
+   321→   321→  const [filter, setFilter] = useState<'all' | 'operator' | 'unread' | 'closed'>('all');
+   322→   322→  const [query, setQuery] = useState('');
+   323→   323→  const scrollRef = useRef<HTMLDivElement>(null);
+   324→   324→
+   325→   325→  const loadList = useCallback(async () => {
+   326→   326→    try {
+   327→   327→      const d = await api<{ conversations: ConversationListItem[] }>(
+   328→   328→        `/api/bots/${bot.id}/conversations`
+   329→   329→      );
+   330→   330→      setConversations(d.conversations);
+   331→   331→    } catch {
+   332→   332→      /* ignore polling errors */
+   333→   333→    } finally {
+   334→   334→      setLoading(false);
+   335→   335→    }
+   336→   336→  }, [bot.id]);
+   337→   337→
+   338→   338→  const loadConversation = useCallback(async (id: string) => {
+   339→   339→    try {
+   340→   340→      const d = await api<{
+   341→   341→        conversation: { contact: string | null; source: string; needsOperator: boolean; status: string };
+   342→   342→        messages: ChatMessage[];
+   343→   343→      }>(`/api/conversations/${id}`);
+   344→   344→      setMessages(d.messages);
+   345→   345→      setContact(d.conversation.contact);
+   346→   346→      setSelectedSource(d.conversation.source);
+   347→   347→      setNeedsOperator(d.conversation.needsOperator);
+   348→   348→      setStatus(d.conversation.status);
+   349→   349→    } catch {
+   350→   350→      /* ignore */
+   351→   351→    }
+   352→   352→  }, []);
+   353→   353→
+   354→   354→  /** Открыть диалог: выделяем и сразу помечаем прочитанным (сервер запоминает operatorReadAt) */
+   355→   355→  const openConversation = useCallback((id: string) => {
+   356→   356→    setSelectedId(id);
+   357→   357→    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, unread: false } : c)));
+   358→   358→  }, []);
+   359→   359→
+   360→   360→  useEffect(() => {
+   361→   361→    loadList();
+   362→   362→  }, [loadList]);
+   363→   363→
+   364→   364→  // Переход из уведомления: сразу открываем нужный диалог
+   365→   365→  useEffect(() => {
+   366→   366→    if (!focusConversationId) return;
+   367→   367→    openConversation(focusConversationId);
+   368→   368→    onFocusConsumed?.();
+   369→   369→  }, [focusConversationId, openConversation, onFocusConsumed]);
+   370→   370→
+   371→   371→  useEffect(() => {
+   372→   372→    const t = setInterval(loadList, 6000);
+   373→   373→    return () => clearInterval(t);
+   374→   374→  }, [loadList]);
+   375→   375→
+   376→   376→  useEffect(() => {
+   377→   377→    if (!selectedId) return;
+   378→   378→    loadConversation(selectedId);
+   379→   379→    const t = setInterval(() => loadConversation(selectedId), 4000);
+   380→   380→    return () => clearInterval(t);
+   381→   381→  }, [selectedId, loadConversation]);
+   382→   382→
+   383→   383→  useEffect(() => {
+   384→   384→    requestAnimationFrame(() => {
+   385→   385→      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+   386→   386→    });
+   387→   387→  }, [messages]);
+   388→   388→
+   389→   389→  const sendReply = async () => {
+   390→   390→    const t = reply.trim();
+   391→   391→    if (!t || !selectedId) return;
+   392→   392→    setSending(true);
+   393→   393→    setReply('');
+   394→   394→    try {
+   395→   395→      const d = await api<{ message: ChatMessage }>(`/api/conversations/${selectedId}/operator`, {
+   396→   396→        method: 'POST',
+   397→   397→        body: JSON.stringify({ text: t }),
+   398→   398→      });
+   399→   399→      setMessages((prev) => [...prev, d.message]);
+   400→   400→    } catch {
+   401→   401→      toast({ title: 'Не удалось отправить', variant: 'destructive' });
+   402→   402→    } finally {
+   403→   403→      setSending(false);
+   404→   404→    }
+   405→   405→  };
+   406→   406→
+   407→   407→  const closeConversation = async () => {
+   408→   408→    if (!selectedId) return;
+   409→   409→    try {
+   410→   410→      await api(`/api/conversations/${selectedId}/close`, { method: 'POST' });
+   411→   411→      setNeedsOperator(false);
+   412→   412→      setStatus('closed');
+   413→   413→      toast({ title: 'Обращение закрыто' });
+   414→   414→      loadList();
+   415→   415→    } catch {
+   416→   416→      toast({ title: 'Ошибка', variant: 'destructive' });
+   417→   417→    }
+   418→   418→  };
+   419→   419→
+   420→   420→  const selected = conversations.find((c) => c.id === selectedId) ?? null;
+   421→   421→
+   422→   422→  const operatorCount = useMemo(
+   423→   423→    () => conversations.filter((c) => c.needsOperator && c.status === 'open').length,
+   424→   424→    [conversations]
+   425→   425→  );
+   426→   426→  const unreadCount = useMemo(
+   427→   427→    () => conversations.filter((c) => c.unread && c.status === 'open').length,
+   428→   428→    [conversations]
+   429→   429→  );
+   430→   430→  const closedCount = useMemo(
+   431→   431→    () => conversations.filter((c) => c.status === 'closed').length,
+   432→   432→    [conversations]
+   433→   433→  );
+   434→   434→
+   435→   435→  /** Сортировка: нуждаются в операторе → непрочитанные → по времени; плюс поиск и фильтр */
+   436→   436→  const visibleList = useMemo(() => {
+   437→   437→    const q = query.trim().toLowerCase();
+   438→   438→    let list = conversations.filter((c) => {
+   439→   439→      if (filter === 'operator') return c.needsOperator && c.status === 'open';
+   440→   440→      if (filter === 'unread') return c.unread && c.status === 'open';
+   441→   441→      if (filter === 'closed') return c.status === 'closed';
+   442→   442→      return true;
+   443→   443→    });
+   444→   444→    if (q) {
+   445→   445→      list = list.filter(
+   446→   446→        (c) =>
+   447→   447→          (c.contact ?? '').toLowerCase().includes(q) ||
+   448→   448→          (c.lastMessage?.text ?? '').toLowerCase().includes(q)
+   449→   449→      );
+   450→   450→    }
+   451→   451→    const weight = (c: ConversationListItem) =>
+   452→   452→      c.needsOperator && c.status === 'open' ? 0 : c.unread && c.status === 'open' ? 1 : 2;
+   453→   453→    return [...list].sort((a, b) => {
+   454→   454→      const w = weight(a) - weight(b);
+   455→   455→      if (w !== 0) return w;
+   456→   456→      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+   457→   457→    });
+   458→   458→  }, [conversations, filter, query]);
+   459→   459→
+   460→   460→  return (
+   461→   461→    <div className="flex min-h-0 flex-1 flex-col">
+   462→   462→      <div className="flex items-center gap-2 border-b bg-background px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+   463→   463→        <Button
+   464→   464→          variant="ghost"
+   465→   465→          size="icon"
+   466→   466→          className="h-8 w-8 shrink-0 sm:h-9 sm:w-9"
+   467→   467→          onClick={onBack}
+   468→   468→          aria-label="Назад"
+   469→   469→        >
+   470→   470→          <ChevronLeft className="h-4 w-4" />
+   471→   471→        </Button>
+   472→   472→        <div className="flex min-w-0 flex-1 items-center gap-2">
+   473→   473→          <Inbox className="h-5 w-5 shrink-0 text-primary" aria-hidden />
+   474→   474→          <h1 className="shrink-0 text-lg font-bold tracking-tight sm:text-2xl">Входящие</h1>
+   475→   475→          <Badge variant="secondary" className="min-w-0 max-w-[110px] truncate sm:max-w-[180px]">
+   476→   476→            {bot.name}
+   477→   477→          </Badge>
+   478→   478→          {operatorCount > 0 && (
+   479→   479→            <Badge variant="destructive" className="shrink-0 animate-pulse tabular-nums">
+   480→   480→              <Headset className="mr-1 h-3 w-3" />
+   481→   481→              <span className="hidden sm:inline">оператор: </span>
+   482→   482→              {operatorCount}
+   483→   483→            </Badge>
+   484→   484→          )}
+   485→   485→          {unreadCount > 0 && (
+   486→   486→            <Badge className="shrink-0 bg-primary/15 text-primary tabular-nums hover:bg-primary/15">
+   487→   487→              <span className="hidden sm:inline">новые: </span>
+   488→   488→              {unreadCount}
+   489→   489→            </Badge>
+   490→   490→          )}
+   491→   491→        </div>
+   492→   492→      </div>
+   493→   493→
+   494→   494→      <div className="grid min-h-0 flex-1 md:grid-cols-[340px_1fr]">
+   495→   495→        {/* Список диалогов */}
+   496→   496→        <div className={cn('flex min-h-0 flex-col border-r', selected && 'hidden md:flex')}>
+   497→   497→          {/* Фильтры: все / нужен оператор / новые / закрытые + поиск */}
+   498→   498→          <div className="flex flex-wrap items-center gap-1.5 border-b bg-background px-2.5 py-2 sm:px-3">
+   499→   499→            {(
+   500→   500→              [
+   501→   501→                { key: 'all', label: 'Все', count: conversations.length },
+   502→   502→                { key: 'operator', label: 'Требуют внимания', count: operatorCount },
+   503→   503→                { key: 'unread', label: 'Новые', count: unreadCount },
+   504→   504→                { key: 'closed', label: 'Закрытые', count: closedCount },
+   505→   505→              ] as const
+   506→   506→            ).map((f) => (
+   507→   507→              <button
+   508→   508→                key={f.key}
+   509→   509→                type="button"
+   510→   510→                onClick={() => setFilter(f.key)}
+   511→   511→                aria-pressed={filter === f.key}
+   512→   512→                className={cn(
+   513→   513→                  'h-8 rounded-full px-3 text-xs font-medium transition-colors',
+   514→   514→                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+   515→   515→                  filter === f.key
+   516→   516→                    ? 'border border-transparent bg-primary text-primary-foreground'
+   517→   517→                    : 'border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+   518→   518→                )}
+   519→   519→              >
+   520→   520→                {f.label}
+   521→   521→                {f.count > 0 && (
+   522→   522→                  <span className={cn('ml-1 tabular-nums', filter === f.key ? 'opacity-80' : 'opacity-60')}>
+   523→   523→                    {f.count}
+   524→   524→                  </span>
+   525→   525→                )}
+   526→   526→              </button>
+   527→   527→            ))}
+   528→   528→            <div className="relative ml-auto w-full sm:w-40">
+   529→   529→              <Search
+   530→   530→                className="absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground"
+   531→   531→                aria-hidden
+   532→   532→              />
+   533→   533→              <Input
+   534→   534→                className="h-8 pl-7 text-xs"
+   535→   535→                placeholder="Поиск по имени…"
+   536→   536→                aria-label="Поиск диалогов"
+   537→   537→                value={query}
+   538→   538→                onChange={(e) => setQuery(e.target.value)}
+   539→   539→              />
+   540→   540→            </div>
+   541→   541→          </div>
+   542→   542→          {loading ? (
+   543→   543→            <div className="space-y-1 p-3" role="status" aria-label="Загрузка диалогов">
+   544→   544→              {Array.from({ length: 7 }).map((_, i) => (
+   545→   545→                <ConversationRowSkeleton key={i} />
+   546→   546→              ))}
+   547→   547→            </div>
+   548→   548→          ) : conversations.length === 0 ? (
+   549→   549→            <EmptyState
+   550→   550→              icon={FILTER_ICONS.all}
+   551→   551→              title={EMPTY_STATES.all.title}
+   552→   552→              hint={EMPTY_STATES.all.hint}
+   553→   553→            />
+   554→   554→          ) : visibleList.length === 0 ? (
+   555→   555→            query.trim() ? (
+   556→   556→              <EmptyState
+   557→   557→                icon={SearchCheck}
+   558→   558→                title="Ничего не найдено"
+   559→   559→                hint="Попробуйте изменить запрос или выбрать другой фильтр."
+   560→   560→              />
+   561→   561→            ) : (
+   562→   562→              <EmptyState
+   563→   563→                icon={FILTER_ICONS[filter]}
+   564→   564→                title={EMPTY_STATES[filter].title}
+   565→   565→                hint={EMPTY_STATES[filter].hint}
+   566→   566→              />
+   567→   567→            )
+   568→   568→          ) : (
+   569→   569→            <ScrollArea className="min-h-0 flex-1">
+   570→   570→              <div className="divide-y">
+   571→   571→                {visibleList.map((c) => (
+   572→   572→                  <button
+   573→   573→                    key={c.id}
+   574→   574→                    type="button"
+   575→   575→                    onClick={() => openConversation(c.id)}
+   576→   576→                    aria-current={selectedId === c.id ? 'true' : undefined}
+   577→   577→                    className={cn(
+   578→   578→                      'flex w-full min-w-0 flex-col gap-1 p-3 text-left transition-colors hover:bg-muted/60',
+   579→   579→                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+   580→   580→                      selectedId === c.id && 'bg-primary/5',
+   581→   581→                      c.unread && c.status === 'open' && 'bg-primary/[0.04]'
+   582→   582→                    )}
+   583→   583→                  >
+   584→   584→                    <div className="flex min-w-0 w-full items-center gap-2">
+   585→   585→                      <span
+   586→   586→                        className={cn(
+   587→   587→                          'h-2 w-2 shrink-0 rounded-full transition-colors',
+   588→   588→                          c.needsOperator && c.status === 'open' // красная точка важнее
+   589→   589→                            ? 'bg-destructive'
+   590→   590→                            : c.unread && c.status === 'open'
+   591→   591→                              ? 'bg-primary'
+   592→   592→                              : 'bg-transparent'
+   593→   593→                        )}
+   594→   594→                        aria-hidden
+   595→   595→                      />
+   596→   596→                      <span
+   597→   597→                        className={cn(
+   598→   598→                          'inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+   599→   599→                          sourceChipClass(c.source)
+   600→   600→                        )}
+   601→   601→                      >
+   602→   602→                        <SourceIcon source={c.source} className="h-3 w-3" />
+   603→   603→                        {SOURCE_LABELS[c.source] ?? c.source}
+   604→   604→                      </span>
+   605→   605→                      <span
+   606→   606→                        className={cn(
+   607→   607→                          'min-w-0 flex-1 truncate text-sm',
+   608→   608→                          c.unread && c.status === 'open' ? 'font-semibold' : 'font-medium'
+   609→   609→                        )}
+   610→   610→                      >
+   611→   611→                        {c.contact || 'Без имени'}
+   612→   612→                      </span>
+   613→   613→                      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+   614→   614→                        {timeAgo(c.updatedAt)}
+   615→   615→                      </span>
+   616→   616→                    </div>
+   617→   617→                    <p className="min-w-0 w-full truncate text-xs text-muted-foreground">
+   618→   618→                      {c.lastMessage
+   619→   619→                        ? `${c.lastMessage.role === 'user' ? '' : 'Вы: '}${c.lastMessage.text}`
+   620→   620→                        : 'Нет сообщений'}
+   621→   621→                    </p>
+   622→   622→                    <div className="flex flex-wrap gap-1.5">
+   623→   623→                      {c.needsOperator && c.status === 'open' && (
+   624→   624→                        <Badge variant="destructive" className="h-4 animate-pulse px-1.5 text-[9px]">
+   625→   625→                          <Headset className="mr-0.5 h-2.5 w-2.5" /> требует внимания
+   626→   626→                        </Badge>
+   627→   627→                      )}
+   628→   628→                      {c.unread && c.status === 'open' && (
+   629→   629→                        <Badge className="h-4 bg-primary/15 px-1.5 text-[9px] text-primary hover:bg-primary/15">
+   630→   630→                          новое
+   631→   631→                        </Badge>
+   632→   632→                      )}
+   633→   633→                      {c.status === 'closed' && (
+   634→   634→                        <Badge variant="outline" className="h-4 px-1.5 text-[9px]">
+   635→   635→                          закрыт
+   636→   636→                        </Badge>
+   637→   637→                      )}
+   638→   638→                      <Badge variant="outline" className="h-4 px-1.5 text-[9px] tabular-nums">
+   639→   639→                        {c.messagesCount} сообщ.
+   640→   640→                      </Badge>
+   641→   641→                    </div>
+   642→   642→                  </button>
+   643→   643→                ))}
+   644→   644→              </div>
+   645→   645→            </ScrollArea>
+   646→   646→          )}
+   647→   647→        </div>
+   648→   648→
+   649→   649→        {/* Просмотр диалога */}
+   650→   650→        <div className={cn('flex min-h-0 flex-col', !selected && 'hidden md:flex')}>
+   651→   651→          {!selected ? (
+   652→   652→            <EmptyState
+   653→   653→              icon={MessagesSquare}
+   654→   654→              title="Выберите диалог"
+   655→   655→              hint="Список обращений слева: клик откроет переписку и заявки клиента."
+   656→   656→            />
+   657→   657→          ) : (
+   658→   658→            <>
+   659→   659→              <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-2.5">
+   660→   660→                <Button
+   661→   661→                  variant="ghost"
+   662→   662→                  size="icon"
+   663→   663→                  className="h-8 w-8 md:hidden"
+   664→   664→                  onClick={() => setSelectedId(null)}
+   665→   665→                  aria-label="К списку диалогов"
+   666→   666→                >
+   667→   667→                  <ChevronLeft className="h-4 w-4" />
+   668→   668→                </Button>
+   669→   669→                <span
+   670→   670→                  className={cn(
+   671→   671→                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+   672→   672→                    sourceChipClass(selectedSource)
+   673→   673→                  )}
+   674→   674→                >
+   675→   675→                  <SourceIcon source={selectedSource} className="h-3 w-3" />
+   676→   676→                  {SOURCE_LABELS[selectedSource] ?? selectedSource}
+   677→   677→                </span>
+   678→   678→                <span className="text-sm font-medium">{contact || 'Гость'}</span>
+   679→   679→                {needsOperator && status === 'open' && (
+   680→   680→                  <Badge variant="destructive" className="animate-pulse">
+   681→   681→                    <Headset className="mr-1 h-3 w-3" /> требует внимания
+   682→   682→                  </Badge>
+   683→   683→                )}
+   684→   684→                {status === 'closed' && <Badge variant="outline">закрыт</Badge>}
+   685→   685→                <div className="ml-auto flex gap-2">
+   686→   686→                  {needsOperator && status === 'open' && (
+   687→   687→                    <Button size="sm" variant="outline" onClick={closeConversation}>
+   688→   688→                      <Headset className="h-3.5 w-3.5" /> Закрыть обращение
+   689→   689→                    </Button>
+   690→   690→                  )}
+   691→   691→                </div>
+   692→   692→              </div>
+   693→   693→
+   694→   694→              <ConversationOrdersPanel conversationId={selected.id} botId={bot.id} refreshTick={ordersTick} />
+   695→   695→
+   696→   696→              <div
+   697→   697→                ref={scrollRef}
+   698→   698→                aria-live="polite"
+   699→   699→                aria-label="История сообщений"
+   700→   700→                className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/40 p-4"
+   701→   701→              >
+   702→   702→                {messages.map((m) => {
+   703→   703→                  const isOperator = m.nodeId === '__operator';
+   704→   704→                  return (
+   705→   705→                    <div
+   706→   706→                      key={m.id}
+   707→   707→                      className={cn('flex min-w-0', m.role === 'user' ? 'justify-start' : 'justify-end')}
+   708→   708→                    >
+   709→   709→                      <div
+   710→   710→                        className={cn(
+   711→   711→                          'max-w-[85%] space-y-0.5 rounded-2xl px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
+   712→   712→                          m.role === 'user'
+   713→   713→                            ? 'rounded-bl-md bg-muted'
+   714→   714→                            : isOperator
+   715→   715→                              ? 'rounded-br-md bg-primary text-primary-foreground'
+   716→   716→                              : 'rounded-br-md border bg-card'
+   717→   717→                        )}
+   718→   718→                      >
+   719→   719→                        {isOperator && (
+   720→   720→                          <div className="flex items-center gap-1 text-[10px] opacity-80">
+   721→   721→                            <Headset className="h-3 w-3" /> оператор
+   722→   722→                          </div>
+   723→   723→                        )}
+   724→   724→                        <div className="whitespace-pre-wrap">{m.text}</div>
+   725→   725→                        <div
+   726→   726→                          className={cn(
+   727→   727→                            'text-right text-[10px]',
+   728→   728→                            isOperator ? 'text-primary-foreground/70' : 'text-muted-foreground'
+   729→   729→                          )}
+   730→   730→                        >
+   731→   731→                          {new Date(m.createdAt).toLocaleTimeString('ru-RU', {
+   732→   732→                            hour: '2-digit',
+   733→   733→                            minute: '2-digit',
+   734→   734→                          })}
+   735→   735→                        </div>
+   736→   736→                      </div>
+   737→   737→                    </div>
+   738→   738→                  );
+   739→   739→                })}
+   740→   740→                {messages.length === 0 && (
+   741→   741→                  <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+   742→   742→                    <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+   743→   743→                      <Bot className="h-6 w-6" aria-hidden />
+   744→   744→                    </div>
+   745→   745→                    <p className="text-sm font-medium text-foreground">Сообщений пока нет</p>
+   746→   746→                    <p className="max-w-[260px] text-sm text-muted-foreground">
+   747→   747→                      Ответьте клиенту — сообщение появится в этой переписке.
+   748→   748→                    </p>
+   749→   749→                  </div>
+   750→   750→                )}
+   751→   751→              </div>
+   752→   752→
+   753→   753→              <form
+   754→   754→                className="flex items-center gap-2 border-t bg-background p-3"
+   755→   755→                onSubmit={(e) => {
+   756→   756→                  e.preventDefault();
+   757→   757→                  sendReply();
+   758→   758→                }}
+   759→   759→              >
+   760→   760→                <Input
+   761→   761→                  placeholder="Ответить как оператор…"
+   762→   762→                  aria-label="Ответить как оператор"
+   763→   763→                  value={reply}
+   764→   764→                  onChange={(e) => setReply(e.target.value)}
+   765→   765→                />
+   766→   766→                <Button
+   767→   767→                  type="submit"
+   768→   768→                  size="icon"
+   769→   769→                  className="h-10 w-10 shrink-0"
+   770→   770→                  disabled={sending || !reply.trim()}
+   771→   771→                  aria-label="Отправить"
+   772→   772→                >
+   773→   773→                  {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+   774→   774→                </Button>
+   775→   775→              </form>
+   776→   776→            </>
+   777→   777→          )}
+   778→   778→        </div>
+   779→   779→      </div>
+   780→   780→    </div>
+   781→   781→  );
+   782→   782→}
+   783→   783→
