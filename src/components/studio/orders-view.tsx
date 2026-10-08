@@ -1,11 +1,21 @@
 'use client';
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Map as MlMap, Marker as MlMarker } from 'maplibre-gl';
 import Supercluster from 'supercluster'; // IMP-23-MAP-02: кластеризация видимых точек
 import {
   Archive,
+  CalendarDays,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -18,6 +28,7 @@ import {
   List,
   Loader2,
   MapPin,
+  MapPinned,
   MessageCircle,
   MessageSquare,
   Phone,
@@ -29,11 +40,18 @@ import {
   Trash2,
   Truck,
   User,
+  Users,
   WifiOff,
 } from 'lucide-react';
 import { api, getAuthToken } from '@/lib/client-api';
 import { cityButtons, composeAddress, SERVICE_CITIES } from '@/lib/cities';
-import type { OrderDto, OrderMessageDto } from '@/lib/studio-types';
+import type {
+  AreaItem,
+  AreaMatchCandidate,
+  CrewDto,
+  OrderDto,
+  OrderMessageDto,
+} from '@/lib/studio-types';
 import {
   ORDER_STATUS_BADGES,
   ORDER_STATUS_LABELS,
@@ -56,6 +74,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import { MytkoBadge } from '@/components/studio/mytko-badge';
 import {
   Dialog,
@@ -127,6 +146,16 @@ const CLUSTER_EL_CLASS = cn(
   'transition-[box-shadow,filter] hover:shadow-xl hover:brightness-110'
 );
 
+/** IMP-24-FE1-05: DOM-элемент маркера КП — маленький ромб teal с белой рамкой.
+ *  Вращение на ВНУТРЕННЕМ span: transform самого элемента занят позиционированием
+ *  MapLibre. 'kp-marker' — стабильный семантический хук (стили/тесты). */
+const KP_EL_CLASS = cn(
+  'kp-marker group',
+  'flex h-5 w-5 cursor-pointer items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+);
+const KP_DIAMOND_CLASS =
+  'block h-3.5 w-3.5 rotate-45 rounded-[4px] border-2 border-white bg-teal-600 shadow-md transition-[filter] group-hover:brightness-110';
+
 /** «Обновлено N с назад» для чипа свежести данных */
 function fmtAgo(ts: number, now: number): string {
   const s = Math.max(0, Math.round((now - ts) / 1000));
@@ -187,6 +216,41 @@ function fmtRel(iso: string): string {
   return fmtDate(iso);
 }
 
+/** IMP-24-FE1-03: дата подачи в ru-формате «пт, 23.10.2026» */
+function formatDateRu(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    weekday: 'short',
+  }).format(d);
+}
+
+/** IMP-24-FE1-05: расстояние в человекочитаемом виде (<1 км — метры) */
+function fmtDistanceM(m: number): string {
+  if (m < 1000) return `${Math.round(m)} м`;
+  return `${(m / 1000).toFixed(1).replace('.', ',')} км`;
+}
+
+/** IMP-24-FE1-05: расстояние между точками по прямой (haversine, метры) */
+function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6_371_000;
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(lat2 - lat1);
+  const dLng = rad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/** IMP-24-FE1-05: ссылка на площадку в OpenStreetMap (паттерн areas-view) */
+function osmUrl(lat: number, lng: number): string {
+  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=17/${lat}/${lng}`;
+}
+
 // ─── Карта OpenFreeMap (MapLibre GL, бесплатные векторные тайлы без ключа) ───
 
 function OrdersMap({
@@ -201,6 +265,7 @@ function OrdersMap({
   onPlace,
   onHighlight,
   onFocusDone,
+  onKpSelect,
   botId,
 }: {
   orders: OrderDto[];
@@ -216,6 +281,8 @@ function OrdersMap({
   onHighlight: (id: string) => void;
   /** IMP-23-MAP-01: очистить stale focus-состояние родителя после перелёта к точке */
   onFocusDone?: () => void;
+  /** IMP-24-FE1-05: клик по маркеру КП реестра — открыть карточку КП */
+  onKpSelect: (area: AreaItem) => void;
   /** IMP-23-MAP-03: смена бота → первый автоподгон камеры выполняется заново (один раз) */
   botId?: string;
 }) {
@@ -242,6 +309,141 @@ function OrdersMap({
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [listOpen, setListOpen] = useState(false);
+
+  // IMP-24-FE1-05: слой КП реестра MyTKO — СВОЙ набор DOM-маркеров (kpMarkersRef,
+  // не пересекается с orders-refs: spiderfy/кластеры волны 23 КП не трогают).
+  // Загрузка точек текущего вьюпорта (?bbox=), дифф-обновление по lkCode.
+  const [kpEnabled, setKpEnabled] = useState(false); // по умолчанию ВЫКЛ
+  const [kpAreas, setKpAreas] = useState<AreaItem[]>([]);
+  const [kpTotal, setKpTotal] = useState(0);
+  const [kpLoading, setKpLoading] = useState(false);
+  const kpMarkersRef = useRef<Map<string, MlMarker>>(new Map());
+  const kpAbortRef = useRef<AbortController | null>(null);
+  const kpDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** колбэк клика по КП — через ref, чтобы эффект маркеров не пересоздавался */
+  const kpSelectRef = useRef(onKpSelect);
+  useEffect(() => {
+    kpSelectRef.current = onKpSelect;
+  }, [onKpSelect]);
+
+  /** Загрузка КП текущего вьюпорта: bbox = minLng,minLat,maxLng,maxLat (5 знаков) */
+  const loadKpAreas = useCallback(async () => {
+    const map = mapRef.current;
+    if (!map) return;
+    kpAbortRef.current?.abort();
+    const ac = new AbortController();
+    kpAbortRef.current = ac;
+    setKpLoading(true);
+    try {
+      const b = map.getBounds();
+      const bbox = [
+        b.getWest().toFixed(5),
+        b.getSouth().toFixed(5),
+        b.getEast().toFixed(5),
+        b.getNorth().toFixed(5),
+      ].join(',');
+      const d = await api<{ items: AreaItem[]; total: number }>(
+        `/api/bots/${botId}/mytko/areas?bbox=${bbox}`,
+        { signal: ac.signal }
+      );
+      if (ac.signal.aborted) return;
+      setKpAreas(d.items ?? []);
+      setKpTotal(d.total ?? d.items?.length ?? 0);
+    } catch {
+      /* отмена или сбой сети — слой КП не критичен */
+    } finally {
+      if (!ac.signal.aborted) setKpLoading(false);
+    }
+  }, [botId]);
+
+  // Включение слоя — загрузка по текущему bbox; выключение — снять все КП-маркеры
+  // и отменить pending-загрузку (AbortController + debounce-таймер)
+  useEffect(() => {
+    if (!ready) return;
+    if (kpEnabled) {
+      void loadKpAreas();
+    } else {
+      kpAbortRef.current?.abort();
+      if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
+      for (const m of kpMarkersRef.current.values()) m.remove();
+      kpMarkersRef.current.clear();
+      setKpAreas([]);
+      setKpTotal(0);
+      setKpLoading(false);
+    }
+  }, [ready, kpEnabled, loadKpAreas]);
+
+  // Повторная загрузка на moveend — debounce 600мс (не чаще)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || !kpEnabled) return;
+    const onKpMoveEnd = () => {
+      if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
+      kpDebounceRef.current = setTimeout(() => void loadKpAreas(), 600);
+    };
+    map.on('moveend', onKpMoveEnd);
+    return () => {
+      map.off('moveend', onKpMoveEnd);
+      if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
+    };
+  }, [ready, kpEnabled, loadKpAreas]);
+
+  // IMP-24-REV-5: смена бота — точки чужого реестра не должны переживать переход
+  useEffect(() => {
+    kpAbortRef.current?.abort();
+    setKpAreas([]);
+    setKpTotal(0);
+    for (const m of kpMarkersRef.current.values()) m.remove();
+    kpMarkersRef.current.clear();
+  }, [botId]);
+
+  // IMP-24-REV-5: размонтирование карты — отменяем pending-загрузку и снимаем маркеры
+  useEffect(() => {
+    return () => {
+      kpAbortRef.current?.abort();
+      if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
+      for (const m of kpMarkersRef.current.values()) m.remove();
+      kpMarkersRef.current.clear();
+    };
+  }, []);
+
+  // ДИФФ-рендер КП-маркеров по lkCode: существующие не пересоздаём (точки
+  // реестра неподвижны), добавляем новые, снимаем исчезнувшие из bbox
+  useEffect(() => {
+    const map = mapRef.current;
+    const ml = mlRef.current;
+    if (!map || !ml || !ready || !kpEnabled) return;
+    const incoming = new Map<string, { area: AreaItem; lat: number; lng: number }>();
+    for (const a of kpAreas) {
+      if (a.lat != null && a.lng != null) incoming.set(a.lkCode, { area: a, lat: a.lat, lng: a.lng });
+    }
+    for (const [code, m] of kpMarkersRef.current) {
+      if (!incoming.has(code)) {
+        m.remove();
+        kpMarkersRef.current.delete(code);
+      }
+    }
+    for (const [code, coords] of incoming) {
+      if (kpMarkersRef.current.has(code)) continue; // уже на карте — не трогаем
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = KP_EL_CLASS;
+      el.title = `КП ${code}`;
+      el.setAttribute('aria-label', `КП ${code}${coords.area.address ? ` — ${coords.area.address}` : ''}`);
+      const diamond = document.createElement('span');
+      diamond.setAttribute('aria-hidden', 'true');
+      diamond.className = KP_DIAMOND_CLASS;
+      el.appendChild(diamond);
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        kpSelectRef.current(coords.area);
+      });
+      const marker = new ml.Marker({ element: el })
+        .setLngLat([coords.lng, coords.lat])
+        .addTo(map);
+      kpMarkersRef.current.set(code, marker);
+    }
+  }, [ready, kpEnabled, kpAreas]);
 
   // Инициализация карты (динамический импорт — компонент клиентский)
   useEffect(() => {
@@ -654,29 +856,79 @@ function OrdersMap({
           <Loader2 className="h-4 w-4 animate-spin" /> Загружаю карту OpenFreeMap…
         </div>
       )}
-      {/* Легенда (компактная, не перекрывает атрибуцию и контролы) */}
-      <div className="absolute bottom-2.5 left-2.5 z-10 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-lg border bg-background/95 px-2.5 py-1.5 text-[10px] leading-tight shadow-sm backdrop-blur sm:bottom-3 sm:left-3 sm:text-[11px]">
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> отходы
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-amber-500" /> КГМ
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-slate-400" /> выполненные
-        </span>
-        <span
-          className="flex items-center gap-1.5"
-          title="Близкие заявки объединяются в кластер — клик по нему раскрывает точки"
-        >
-          <span
-            aria-hidden
-            className="inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full border border-white bg-primary px-1 text-[8px] font-bold leading-none text-primary-foreground shadow-sm"
-          >
-            N
+      {/* IMP-24-FE1-05: тумблер слоя КП + легенда (компактно, не перекрывает атрибуцию) */}
+      <div className="absolute bottom-2.5 left-2.5 z-10 flex max-w-[calc(100%-5rem)] flex-col items-start gap-1.5 sm:bottom-3 sm:left-3">
+        {mytkoEnabled && (
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setKpEnabled((v) => !v)}
+              aria-pressed={kpEnabled}
+              title="Контейнерные площадки реестра MyTKO в текущей области карты"
+              className={cn(
+                'flex h-11 shrink-0 items-center gap-1.5 rounded-lg border bg-background/95 px-3 text-xs font-medium shadow-sm backdrop-blur transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:px-2.5',
+                kpEnabled &&
+                  'border-teal-500/50 bg-teal-500/10 text-teal-700 hover:bg-teal-500/15 dark:text-teal-300'
+              )}
+            >
+              <MapPinned className="h-3.5 w-3.5" aria-hidden />
+              {kpEnabled ? 'Скрыть КП' : 'Показать КП'}
+            </button>
+            {kpEnabled &&
+              (kpLoading ? (
+                <div role="status" aria-label="Загрузка КП">
+                  <Skeleton className="h-11 w-[72px] rounded-lg sm:h-8" />
+                </div>
+              ) : (
+                <div
+                  role="status"
+                  aria-label={`КП в текущей области: ${kpTotal}`}
+                  title={
+                    kpTotal > kpAreas.length
+                      ? `Показаны ближайшие ${kpAreas.length} из ${kpTotal} — приблизьте карту`
+                      : 'КП в текущей области карты'
+                  }
+                  className="rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur"
+                >
+                  КП: <b className="tabular-nums">{kpTotal}</b>
+                </div>
+              ))}
+          </div>
+        )}
+        {/* Легенда */}
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-lg border bg-background/95 px-2.5 py-1.5 text-[10px] leading-tight shadow-sm backdrop-blur sm:text-[11px]">
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> отходы
           </span>
-          кластер
-        </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-500" /> КГМ
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-slate-400" /> выполненные
+          </span>
+          <span
+            className="flex items-center gap-1.5"
+            title="Близкие заявки объединяются в кластер — клик по нему раскрывает точки"
+          >
+            <span
+              aria-hidden
+              className="inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full border border-white bg-primary px-1 text-[8px] font-bold leading-none text-primary-foreground shadow-sm"
+            >
+              N
+            </span>
+            кластер
+          </span>
+          <span
+            className="flex items-center gap-1.5"
+            title="КП реестра MyTKO — включается тумблером «Показать КП»"
+          >
+            <span
+              aria-hidden
+              className="inline-block h-2.5 w-2.5 rotate-45 rounded-[2px] border border-white bg-teal-600 shadow-sm"
+            />
+            КП (реестр)
+          </span>
+        </div>
       </div>
       {/* Счётчик маркеров + кнопка разворачиваемого списка точек */}
       <div className="absolute left-2.5 top-2.5 z-10 flex items-start gap-2 sm:left-3 sm:top-3">
@@ -1136,6 +1388,8 @@ function OrderDetailDialog({
   onShowOnMap,
   onDataChanged,
   mytkoEnabled,
+  crews,
+  onOpenCrews,
 }: {
   botId: string;
   orderId: string | null;
@@ -1146,6 +1400,10 @@ function OrderDetailDialog({
   onShowOnMap: (orderId: string) => void;
   onDataChanged: () => void;
   mytkoEnabled: boolean;
+  /** IMP-24-FE1-02: справочник экипажей (состояние живёт в OrdersView) */
+  crews: CrewDto[];
+  /** IMP-24-FE1-02: открыть диалог управления экипажами */
+  onOpenCrews: () => void;
 }) {
   const { toast } = useToast();
   const [order, setOrder] = useState<OrderDto | null>(null);
@@ -1162,6 +1420,14 @@ function OrderDetailDialog({
   /** FE22-07: busy у кнопки-действия AlertDialog — двойной клик невозможен */
   const [deleting, setDeleting] = useState(false);
   const [mytkoBusy, setMytkoBusy] = useState(false);
+  // IMP-24-FE1-01: имя и телефон клиента — редактируемые (сохранение по blur)
+  const [clientName, setClientName] = useState('');
+  const [phone, setPhone] = useState('');
+  // IMP-24-FE1-04: кандидаты на совмещение с КП реестра + «Не сейчас» на сессию
+  const [areaCandidates, setAreaCandidates] = useState<AreaMatchCandidate[]>([]);
+  const [areaDismissedId, setAreaDismissedId] = useState<string | null>(null);
+  const areaKeyRef = useRef('');
+  const areaAbortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     if (!orderId) return;
@@ -1176,6 +1442,8 @@ function OrderDetailDialog({
       setAddress(d.order.address ?? '');
       setWishDate(d.order.wishDate ?? '');
       setComment(d.order.comment ?? '');
+      setClientName(d.order.clientName ?? ''); // IMP-24-FE1-01
+      setPhone(d.order.phone ?? ''); // IMP-24-FE1-01
     } catch {
       toast({ title: 'Не удалось загрузить заявку', variant: 'destructive' });
     } finally {
@@ -1191,8 +1459,42 @@ function OrderDetailDialog({
       setConfirmDelete(false);
       setDeleting(false);
       setConfirmGeo(false);
+      setClientName('');
+      setPhone('');
+      setAreaCandidates([]); // IMP-24-FE1-04: отмена/сброс саджеста при закрытии
+      setAreaDismissedId(null);
+      areaKeyRef.current = '';
+      areaAbortRef.current?.abort();
     }
   }, [open, orderId, load]);
+
+  // IMP-24-FE1-04: кандидаты на совмещение с КП реестра — запрашиваются при открытии
+  // карточки и после каждого изменения заявки (runGeocode/указание точки/патчи);
+  // кэш по order.id+updatedAt, отмена при закрытии/переключении.
+  useEffect(() => {
+    if (!open || !order) return;
+    if (order.areaLkCode) {
+      setAreaCandidates([]); // уже совмещена — подсказка не нужна
+      return;
+    }
+    const key = `${order.id}:${order.updatedAt}`;
+    if (areaKeyRef.current === key) return;
+    areaKeyRef.current = key;
+    areaAbortRef.current?.abort();
+    const ac = new AbortController();
+    areaAbortRef.current = ac;
+    api<{ candidates: AreaMatchCandidate[] }>(
+      `/api/bots/${botId}/orders/${order.id}/area-match`,
+      { signal: ac.signal }
+    )
+      .then((d) => {
+        if (!ac.signal.aborted) setAreaCandidates(d.candidates ?? []);
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) setAreaCandidates([]);
+      });
+    return () => ac.abort();
+  }, [open, order, botId]);
 
   const patch = async (data: Record<string, unknown>, successMsg?: string) => {
     if (!orderId) return;
@@ -1327,6 +1629,15 @@ function OrderDetailDialog({
 
   const hasManualPoint = order?.geoSource === 'manual';
 
+  // IMP-24-FE1-02: активные экипажи первыми, затем неактивные (алфавит внутри групп)
+  const { activeCrews, inactiveCrews } = useMemo(() => {
+    const byName = (a: CrewDto, b: CrewDto) => a.name.localeCompare(b.name, 'ru');
+    return {
+      activeCrews: crews.filter((c) => c.active).sort(byName),
+      inactiveCrews: crews.filter((c) => !c.active).sort(byName),
+    };
+  }, [crews]);
+
   /** FE22-01: чипы следующего шага по схеме статусов. Реальные статусы — из
    *  ORDER_STATUS_LABELS (new/assigned/in_progress/completed/cancelled):
    *  new/assigned → in_progress «Взять в работу», in_progress → completed «Выполнить».
@@ -1431,21 +1742,49 @@ function OrderDetailDialog({
                     </span>
                   )}
                 </div>
-                <div className="mt-2 space-y-1 text-sm">
-                  <div className="break-words font-medium">
-                    {order.clientName || order.conversation?.contact || 'Клиент без имени'}
-                  </div>
-                  {order.phone && (
-                    <div className="flex items-center gap-1">
+                <div className="mt-2 space-y-2 text-sm">
+                  {/* IMP-24-FE1-01: имя и телефон редактируемые — сохранение по blur,
+                      пустое значение → null. Тел-ссылка и копирование — рядом. */}
+                  <Input
+                    aria-label="Имя клиента"
+                    value={clientName}
+                    placeholder={order.conversation?.contact || 'Имя клиента'}
+                    onChange={(e) => setClientName(e.target.value)}
+                    onBlur={() => {
+                      const v = clientName.trim();
+                      if (v !== (order.clientName ?? ''))
+                        patch({ clientName: v || null }, 'Имя клиента сохранено');
+                    }}
+                    disabled={saving}
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      className="min-w-0 flex-1"
+                      type="tel"
+                      inputMode="tel"
+                      autoComplete="off"
+                      aria-label="Телефон клиента"
+                      value={phone}
+                      placeholder="+7 900 …"
+                      onChange={(e) => setPhone(e.target.value)}
+                      onBlur={() => {
+                        const v = phone.trim();
+                        if (v !== (order.phone ?? '')) patch({ phone: v || null }, 'Телефон сохранён');
+                      }}
+                      disabled={saving}
+                    />
+                    {order.phone && (
                       <a
                         href={`tel:${order.phone.replace(/[^\d+]/g, '')}`}
-                        className="flex w-fit items-center gap-1.5 text-primary hover:underline"
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-primary transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={`Позвонить клиенту ${order.phone}`}
+                        title="Позвонить клиенту"
                       >
-                        <Phone className="h-3.5 w-3.5" /> {order.phone}
+                        <Phone className="h-3.5 w-3.5" aria-hidden />
                       </a>
-                      <CopyButton value={order.phone} label="телефон клиента" />
-                    </div>
-                  )}
+                    )}
+                    {order.phone && <CopyButton value={order.phone} label="телефон клиента" />}
+                  </div>
                   {order.conversation?.externalUserId && (
                     <div className="flex items-center gap-1 break-all text-xs text-muted-foreground">
                       <span>ID клиента: {order.conversation.externalUserId}</span>
@@ -1568,7 +1907,7 @@ function OrderDetailDialog({
                     <Input
                       className="h-9"
                       value={wishDate}
-                      placeholder="напр. завтра до 12:00"
+                      placeholder="напр. завтра до 12:00 или 23.10"
                       onChange={(e) => setWishDate(e.target.value)}
                       onBlur={() => {
                         if (wishDate !== (order.wishDate ?? '')) {
@@ -1577,6 +1916,16 @@ function OrderDetailDialog({
                       }}
                       disabled={saving}
                     />
+                    {/* IMP-24-FE1-03: разобранная дата подачи машины (из wishDate) */}
+                    {order.pickupAt && (
+                      <div
+                        className="flex w-fit items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300"
+                        title="Дата подачи машины, разобранная из желаемой даты"
+                      >
+                        <CalendarDays className="h-3 w-3 shrink-0" aria-hidden />
+                        Забор: <span className="font-medium">{formatDateRu(order.pickupAt)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="space-y-1">
@@ -1598,6 +1947,60 @@ function OrderDetailDialog({
                     >
                       Назначить
                     </Button>
+                  </div>
+                </div>
+                {/* IMP-24-FE1-02: экипаж из справочника + кнопка справочника */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label className="text-xs font-medium text-muted-foreground">Экипаж</Label>
+                    <button
+                      type="button"
+                      onClick={onOpenCrews}
+                      aria-label="Открыть справочник экипажей"
+                      title="Справочник экипажей"
+                      className="flex min-h-11 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:py-1"
+                    >
+                      <Users className="h-3.5 w-3.5" aria-hidden /> Экипажи…
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={order.crewId ?? 'none'}
+                      onValueChange={(v) => patch({ crewId: v === 'none' ? null : v }, 'Экипаж обновлён')}
+                      disabled={saving}
+                    >
+                      <SelectTrigger className="h-9 min-w-0 flex-1">
+                        <SelectValue placeholder="Не назначен" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Без экипажа</SelectItem>
+                        {activeCrews.map((c) => (
+                          <SelectItem key={c.id} value={c.id}>
+                            {c.name}
+                          </SelectItem>
+                        ))}
+                        {inactiveCrews.map((c) => (
+                          <SelectItem
+                            key={c.id}
+                            value={c.id}
+                            disabled={c.id !== order.crewId}
+                            className="opacity-60"
+                          >
+                            {c.name} (неактивен)
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {order.crew?.phone && (
+                      <a
+                        href={`tel:${order.crew.phone.replace(/[^\d+]/g, '')}`}
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border text-primary transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={`Позвонить экипажу «${order.crew.name}»`}
+                        title={`Экипаж «${order.crew.name}» — ${order.crew.phone}`}
+                      >
+                        <Phone className="h-3.5 w-3.5" aria-hidden />
+                      </a>
+                    )}
                   </div>
                 </div>
                 <div className="space-y-1">
@@ -1717,6 +2120,70 @@ function OrderDetailDialog({
                       Точка на карте не указана
                     </div>
                   )}
+                  {/* IMP-24-FE1-04: совмещение с КП реестра MyTKO */}
+                  {order.areaLkCode ? (
+                    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-emerald-300/70 bg-emerald-50 px-2.5 py-2 text-xs text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+                      <MapPinned className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      <span
+                        className="min-w-0 flex-1 break-words font-medium"
+                        title="Заявка совмещена с КП реестра MyTKO"
+                      >
+                        КП {order.areaLkCode}
+                        {order.areaAddress ? ` — ${order.areaAddress}` : ''}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-11 shrink-0 border-emerald-300/70 hover:bg-emerald-100 sm:h-7 dark:border-emerald-500/30 dark:hover:bg-emerald-500/20"
+                        disabled={saving}
+                        onClick={() => patch({ areaLkCode: null }, 'Заявка отвязана от КП')}
+                      >
+                        Отвязать
+                      </Button>
+                    </div>
+                  ) : (
+                    areaDismissedId !== order.id &&
+                    areaCandidates.length > 0 && (
+                      <div className="rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                        <div className="font-medium">Похоже, это КП из реестра:</div>
+                        <ul className="mt-1.5 space-y-1.5">
+                          {areaCandidates.slice(0, 3).map((c) => (
+                            <li key={c.lkCode} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span
+                                className="min-w-0 flex-1 break-words"
+                                title={
+                                  c.byCoord
+                                    ? `совпадение по координатам (${Math.round(c.distanceM ?? 0)} м)`
+                                    : c.byAddress
+                                      ? 'совпадение по адресу'
+                                      : undefined
+                                }
+                              >
+                                <b>{c.lkCode}</b> — {c.address ?? 'без адреса'} ·{' '}
+                                {c.distanceM != null ? fmtDistanceM(c.distanceM) : '— м'}
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-11 shrink-0 border-amber-300/70 hover:bg-amber-100 sm:h-7 dark:border-amber-500/30 dark:hover:bg-amber-500/20"
+                                disabled={saving}
+                                onClick={() => patch({ areaLkCode: c.lkCode }, 'Заявка совмещена с КП')}
+                              >
+                                Совместить
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                        <button
+                          type="button"
+                          onClick={() => setAreaDismissedId(order.id)}
+                          className="mt-1.5 min-h-11 rounded px-1 font-medium underline underline-offset-2 transition-colors hover:text-amber-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
+                        >
+                          Не сейчас
+                        </button>
+                      </div>
+                    )
+                  )}
                 </div>
                 {/* MyTKO «Чистая логистика» */}
                 {mytkoEnabled && (
@@ -1834,6 +2301,414 @@ function OrderDetailDialog({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </Dialog>
+  );
+}
+
+// ─── Справочник экипажей (IMP-24-FE1-02) ───────────────────────────────────
+
+/** Строка справочника: инлайн-редактирование имени/телефона (сохранение по blur,
+ *  пустой телефон → null), Switch активности, кнопка удаления (подтверждение — у родителя) */
+function CrewRow({
+  botId,
+  crew,
+  onUpdate,
+  onRemoveRequest,
+}: {
+  botId: string;
+  crew: CrewDto;
+  onUpdate: (crew: CrewDto) => void;
+  onRemoveRequest: (crew: CrewDto) => void;
+}) {
+  const { toast } = useToast();
+  const [name, setName] = useState(crew.name);
+  const [phone, setPhone] = useState(crew.phone ?? '');
+  const [busy, setBusy] = useState(false);
+
+  // внешнее обновление (ответ PATCH, переключение active) — синхронизируем поля
+  useEffect(() => {
+    setName(crew.name);
+    setPhone(crew.phone ?? '');
+  }, [crew.id, crew.name, crew.phone]);
+
+  const patchCrew = useCallback(
+    async (data: Record<string, unknown>) => {
+      setBusy(true);
+      try {
+        const d = await api<{ crew: CrewDto }>(`/api/bots/${botId}/crews/${crew.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(data),
+        });
+        onUpdate(d.crew);
+        return true;
+      } catch {
+        toast({ title: 'Не удалось сохранить экипаж', variant: 'destructive' });
+        setName(crew.name); // откат локальных правок к сохранённым
+        setPhone(crew.phone ?? '');
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [botId, crew.id, crew.name, crew.phone, onUpdate, toast]
+  );
+
+  const saveName = () => {
+    const v = name.trim();
+    if (!v) {
+      setName(crew.name); // пустое имя запрещено — возвращаем прежнее
+      return;
+    }
+    if (v !== crew.name) void patchCrew({ name: v });
+  };
+
+  const savePhone = () => {
+    const v = phone.trim();
+    if (v !== (crew.phone ?? '')) void patchCrew({ phone: v || null });
+  };
+
+  return (
+    <li className="rounded-xl border bg-card p-2.5">
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <Input
+            className="h-9"
+            value={name}
+            placeholder="Название экипажа"
+            aria-label={`Название экипажа «${crew.name}»`}
+            disabled={busy}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={saveName}
+          />
+          <Input
+            className="h-9"
+            type="tel"
+            inputMode="tel"
+            value={phone}
+            placeholder="Телефон (необязательно)"
+            aria-label={`Телефон экипажа «${crew.name}»`}
+            disabled={busy}
+            onChange={(e) => setPhone(e.target.value)}
+            onBlur={savePhone}
+          />
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+            {typeof crew.ordersCount === 'number' && (
+              <span>
+                заявок: <b className="tabular-nums">{crew.ordersCount}</b>
+              </span>
+            )}
+            {!crew.active && (
+              <span className="font-medium text-amber-600 dark:text-amber-400">неактивен</span>
+            )}
+          </div>
+        </div>
+        <label className="flex min-h-11 shrink-0 cursor-pointer flex-col items-center justify-center gap-1 px-1 sm:min-h-0">
+          <Switch
+            checked={crew.active}
+            disabled={busy}
+            onCheckedChange={(v) => void patchCrew({ active: v })}
+            aria-label={`Экипаж «${crew.name}» ${crew.active ? 'активен' : 'неактивен'}`}
+          />
+          <span className="text-[10px] leading-none text-muted-foreground">активен</span>
+        </label>
+        <button
+          type="button"
+          onClick={() => onRemoveRequest(crew)}
+          disabled={busy}
+          aria-label={`Удалить экипаж «${crew.name}»`}
+          title="Удалить экипаж"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-9 sm:w-9"
+        >
+          <Trash2 className="h-4 w-4" aria-hidden />
+        </button>
+      </div>
+    </li>
+  );
+}
+
+/** Диалог управления справочником экипажей: список + создание + удаление.
+ *  crews/setCrews живут в OrdersView — изменения видны карточке заявки сразу. */
+function CrewsManagerDialog({
+  botId,
+  open,
+  onClose,
+  crews,
+  setCrews,
+}: {
+  botId: string;
+  open: boolean;
+  onClose: () => void;
+  crews: CrewDto[];
+  setCrews: Dispatch<SetStateAction<CrewDto[]>>;
+}) {
+  const { toast } = useToast();
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [creating, setCreating] = useState(false);
+  /** экипаж, ожидающий подтверждения удаления */
+  const [deletingCrew, setDeletingCrew] = useState<CrewDto | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // при закрытии — чистим локальные состояния
+  useEffect(() => {
+    if (!open) {
+      setName('');
+      setPhone('');
+      setDeletingCrew(null);
+      setDeleting(false);
+    }
+  }, [open]);
+
+  // активные первыми, внутри групп — по алфавиту
+  const sorted = useMemo(
+    () =>
+      [...crews].sort((a, b) =>
+        a.active === b.active ? a.name.localeCompare(b.name, 'ru') : a.active ? -1 : 1
+      ),
+    [crews]
+  );
+
+  const updateCrew = useCallback(
+    (c: CrewDto) => setCrews((prev) => prev.map((x) => (x.id === c.id ? c : x))),
+    [setCrews]
+  );
+
+  const create = async () => {
+    const n = name.trim();
+    if (!n || creating) return;
+    setCreating(true);
+    try {
+      const d = await api<{ crew: CrewDto }>(`/api/bots/${botId}/crews`, {
+        method: 'POST',
+        body: JSON.stringify({ name: n, phone: phone.trim() || undefined }),
+      });
+      setCrews((prev) => [...prev, d.crew]);
+      setName('');
+      setPhone('');
+      toast({ title: `Экипаж «${d.crew.name}» добавлен` });
+    } catch {
+      toast({ title: 'Не удалось создать экипаж', variant: 'destructive' });
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!deletingCrew || deleting) return;
+    const target = deletingCrew;
+    setDeleting(true);
+    try {
+      await api(`/api/bots/${botId}/crews/${target.id}`, { method: 'DELETE' });
+      setCrews((prev) => prev.filter((x) => x.id !== target.id));
+      toast({ title: `Экипаж «${target.name}» удалён` });
+      setDeletingCrew(null);
+    } catch {
+      toast({ title: 'Не удалось удалить экипаж', variant: 'destructive' });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-h-[92dvh] max-w-md overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Users className="h-4 w-4 text-primary" aria-hidden /> Экипажи
+          </DialogTitle>
+          <DialogDescription>
+            Справочник бригад: активные доступны в карточке заявки, телефон — для быстрого звонка.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="space-y-2 rounded-xl border bg-muted/30 p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void create();
+          }}
+        >
+          <div className="grid gap-2 sm:grid-cols-2">
+            <Input
+              value={name}
+              placeholder="Название (напр. Бригада 1)"
+              aria-label="Название нового экипажа"
+              disabled={creating}
+              onChange={(e) => setName(e.target.value)}
+            />
+            <Input
+              value={phone}
+              type="tel"
+              inputMode="tel"
+              placeholder="Телефон (необязательно)"
+              aria-label="Телефон нового экипажа"
+              disabled={creating}
+              onChange={(e) => setPhone(e.target.value)}
+            />
+          </div>
+          <Button
+            type="submit"
+            className="h-11 w-full sm:h-9 sm:w-auto"
+            disabled={creating || !name.trim()}
+          >
+            {creating ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <Plus className="h-4 w-4" aria-hidden />
+            )}
+            Добавить экипаж
+          </Button>
+        </form>
+        {sorted.length === 0 ? (
+          <div className="rounded-xl border border-dashed py-6 text-center text-xs text-muted-foreground">
+            Экипажей пока нет — добавьте первого.
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {sorted.map((c) => (
+              <CrewRow
+                key={c.id}
+                botId={botId}
+                crew={c}
+                onUpdate={updateCrew}
+                onRemoveRequest={setDeletingCrew}
+              />
+            ))}
+          </ul>
+        )}
+      </DialogContent>
+      {/* Подтверждение удаления экипажа (паттерн AlertDialog карточки заявки) */}
+      <AlertDialog
+        open={!!deletingCrew}
+        onOpenChange={(o) => {
+          if (!o && !deleting) setDeletingCrew(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить экипаж?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Экипаж «{deletingCrew?.name ?? ''}» будет удалён из справочника. Заявки, где он
+              назначен, останутся без экипажа.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60"
+              disabled={deleting}
+              onClick={(e) => {
+                e.preventDefault(); // диалог не закрываем — ждём ответ сервера
+                void remove();
+              }}
+            >
+              {deleting && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              Удалить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Dialog>
+  );
+}
+
+// ─── Карточка КП реестра (IMP-24-FE1-05) ─────────────────────────────────────
+
+/** Клик по КП-маркеру на карте: адрес, координаты, OSM, расстояние до выбранной
+ *  заявки (локальный haversine) и совмещение с заявкой одним PATCH. */
+function KpDialog({
+  area,
+  selectedOrder,
+  onClose,
+  onAttach,
+}: {
+  area: AreaItem | null;
+  /** заявка, выбранная на карте/в списке — кандидат на совмещение */
+  selectedOrder: OrderDto | null;
+  onClose: () => void;
+  onAttach: (area: AreaItem, orderId: string) => Promise<void>;
+}) {
+  const [attaching, setAttaching] = useState(false);
+
+  const handleAttach = async () => {
+    if (!area || !selectedOrder || attaching) return;
+    setAttaching(true);
+    try {
+      await onAttach(area, selectedOrder.id);
+    } finally {
+      setAttaching(false);
+    }
+  };
+
+  // расстояние до выбранной заявки — локальный haversine (если есть обе точки)
+  const dist =
+    area &&
+    selectedOrder &&
+    selectedOrder.lat != null &&
+    selectedOrder.lng != null &&
+    area.lat != null &&
+    area.lng != null
+      ? haversineM(selectedOrder.lat, selectedOrder.lng, area.lat, area.lng)
+      : null;
+
+  return (
+    <Dialog open={!!area} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <MapPinned className="h-4 w-4 text-teal-600 dark:text-teal-400" aria-hidden />
+            КП {area?.lkCode ?? ''}
+          </DialogTitle>
+          <DialogDescription>Контейнерная площадка из реестра MyTKO</DialogDescription>
+        </DialogHeader>
+        {area && (
+          <div className="space-y-3 text-sm">
+            <div className="break-words">{area.address ?? 'Адрес в реестре не указан'}</div>
+            {area.lat != null && area.lng != null && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span className="tabular-nums">
+                  {area.lat.toFixed(5)}, {area.lng.toFixed(5)}
+                </span>
+                <a
+                  href={osmUrl(area.lat, area.lng)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex min-h-11 items-center gap-1 rounded-md text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
+                  aria-label={`КП ${area.lkCode} на карте OpenStreetMap`}
+                >
+                  <Globe className="h-3.5 w-3.5" aria-hidden /> OpenStreetMap
+                </a>
+              </div>
+            )}
+            {dist != null && selectedOrder && (
+              <div className="rounded-lg border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+                До заявки №{selectedOrder.number}:{' '}
+                <b className="tabular-nums text-foreground">≈ {fmtDistanceM(dist)}</b>
+              </div>
+            )}
+            {selectedOrder ? (
+              <Button
+                className="h-11 w-full sm:h-9"
+                disabled={attaching}
+                onClick={() => void handleAttach()}
+              >
+                {attaching ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : (
+                  <Check className="h-4 w-4" aria-hidden />
+                )}
+                Совместить с заявкой №{selectedOrder.number}
+              </Button>
+            ) : (
+              <div
+                role="status"
+                className="rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
+              >
+                Выберите заявку, чтобы совместить с этой КП
+              </div>
+            )}
+          </div>
+        )}
+      </DialogContent>
     </Dialog>
   );
 }
@@ -2013,7 +2888,7 @@ function NewOrderDialog({
               <Label className="text-xs font-medium text-muted-foreground">Дата подачи</Label>
               <Input
                 value={form.wishDate}
-                placeholder="завтра до 12:00"
+                placeholder="напр. завтра до 12:00 или 23.10" // IMP-24-FE1-06
                 onChange={(e) => setForm({ ...form, wishDate: e.target.value })}
               />
             </div>
@@ -2097,6 +2972,24 @@ const OrderRow = memo(
           {order.phone && <span>{order.phone}</span>}
           {order.size && <span>{order.size}</span>}
           {order.wishDate && <span>🗓 {order.wishDate}</span>}
+          {/* IMP-24-FE1-02/06: экипаж и КП реестра — маленькие бейджи в мета-строке */}
+          {order.crew?.name && (
+            <span
+              className="flex items-center gap-0.5 font-medium"
+              title={`Экипаж: ${order.crew.name}${order.crew.phone ? ` · ${order.crew.phone}` : ''}`}
+            >
+              <Truck className="h-3 w-3" aria-hidden /> {order.crew.name}
+            </span>
+          )}
+          {order.areaLkCode && (
+            <Badge
+              variant="outline"
+              className="shrink-0 border-teal-300/70 bg-teal-500/10 px-1.5 text-[10px] text-teal-700 dark:border-teal-500/30 dark:text-teal-300"
+              title={`Совмещена с КП реестра ${order.areaLkCode}`}
+            >
+              КП {order.areaLkCode}
+            </Badge>
+          )}
           {order.lat != null ? (
             <span className="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400">
               <MapPin className="h-3 w-3" aria-hidden /> на карте
@@ -2133,7 +3026,10 @@ const OrderRow = memo(
     a.order.lng === b.order.lng &&
     a.order.createdAt === b.order.createdAt &&
     a.order.messagesCount === b.order.messagesCount &&
-    a.order.mytkoStatus === b.order.mytkoStatus
+    a.order.mytkoStatus === b.order.mytkoStatus &&
+    a.order.crewId === b.order.crewId &&
+    a.order.crew?.name === b.order.crew?.name &&
+    a.order.areaLkCode === b.order.areaLkCode
 );
 
 // ─── Главный вид раздела «Заявки» ────────────────────────────────────────────
@@ -2187,6 +3083,11 @@ export default function OrdersView({
   const [connLost, setConnLost] = useState(false);
   const failStreakRef = useRef(0);
   const [nowTs, setNowTs] = useState(() => Date.now());
+  // IMP-24-FE1-02: справочник экипажей (общий для карточки заявки и диалога управления)
+  const [crews, setCrews] = useState<CrewDto[]>([]);
+  const [crewsOpen, setCrewsOpen] = useState(false);
+  // IMP-24-FE1-05: карточка КП (открывается кликом по КП-маркеру на карте)
+  const [kpDialogArea, setKpDialogArea] = useState<AreaItem | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -2250,10 +3151,25 @@ export default function OrdersView({
     writeStored('bstudio.orders.search', search);
   }, [search]);
 
-  const openOrder = useCallback((id: string) => {
-    setSelectedId(id);
-    setDialogOpen(true);
-  }, []);
+  // IMP-24-FE1-02: справочник экипажей — без поллинга; обновляем при открытии
+  // карточки заявки и диалога управления (ошибки не критичны)
+  const loadCrews = useCallback(async () => {
+    try {
+      const d = await api<{ items: CrewDto[] }>(`/api/bots/${bot.id}/crews`);
+      setCrews(d.items ?? []);
+    } catch {
+      /* справочник не критичен — карточка заявки работает и без него */
+    }
+  }, [bot.id]);
+
+  const openOrder = useCallback(
+    (id: string) => {
+      setSelectedId(id);
+      setDialogOpen(true);
+      void loadCrews();
+    },
+    [loadCrews]
+  );
 
   // Переход из уведомления: карта + подсветка точки (без карточки);
   // выполненные заявки тоже показываем, иначе маркер мог бы быть скрыт
@@ -2317,6 +3233,31 @@ export default function OrdersView({
       }
     },
     [placementId, bot.id, load, toast]
+  );
+
+  // IMP-24-FE1-05: выбранная заявка (для карточки КП) + совмещение КП с заявкой
+  const selectedOrder = useMemo(
+    () => orders.find((o) => o.id === selectedId) ?? null,
+    [orders, selectedId]
+  );
+
+  const openKpDialog = useCallback((area: AreaItem) => setKpDialogArea(area), []);
+
+  const attachKpToOrder = useCallback(
+    async (area: AreaItem, orderId: string) => {
+      try {
+        const d = await api<{ order: OrderDto }>(`/api/bots/${bot.id}/orders/${orderId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ areaLkCode: area.lkCode }),
+        });
+        setOrders((prev) => prev.map((o) => (o.id === orderId ? d.order : o)));
+        setKpDialogArea(null);
+        toast({ title: `Заявка №${d.order.number} совмещена с КП ${area.lkCode}` });
+      } catch {
+        toast({ title: 'Не удалось совместить с КП', variant: 'destructive' });
+      }
+    },
+    [bot.id, toast]
   );
 
   /** FE22-10: выгрузка CSV — с сервера приходит готовый файл (status/from/to);
@@ -2550,6 +3491,7 @@ export default function OrdersView({
                 onSelect={openOrder}
                 onPlace={placeOnMap}
                 onHighlight={setSelectedId}
+                onKpSelect={openKpDialog}
               />
             </div>
             {withoutGeo.length > 0 && (
@@ -2626,6 +3568,26 @@ export default function OrdersView({
         onShowOnMap={showOnMap}
         onDataChanged={load}
         mytkoEnabled={mytkoEnabled}
+        crews={crews}
+        onOpenCrews={() => {
+          setCrewsOpen(true);
+          void loadCrews();
+        }}
+      />
+      {/* IMP-24-FE1-02: справочник экипажей (открывается из карточки заявки) */}
+      <CrewsManagerDialog
+        botId={bot.id}
+        open={crewsOpen}
+        onClose={() => setCrewsOpen(false)}
+        crews={crews}
+        setCrews={setCrews}
+      />
+      {/* IMP-24-FE1-05: карточка КП реестра (клик по КП-маркеру на карте) */}
+      <KpDialog
+        area={kpDialogArea}
+        selectedOrder={selectedOrder}
+        onClose={() => setKpDialogArea(null)}
+        onAttach={attachKpToOrder}
       />
       <NewOrderDialog
         botId={bot.id}

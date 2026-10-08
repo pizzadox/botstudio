@@ -150,6 +150,15 @@ export interface OrderDto {
   comment: string | null;
   status: string;
   assignee: string | null;
+  /** IMP-24: экипаж, назначенный на заявку */
+  crewId: string | null;
+  crew?: { id: string; name: string; phone: string | null } | null;
+  /** IMP-24: КП из реестра, с которой совмещена заявка (код lk_code MyTKO) */
+  areaLkCode: string | null;
+  /** IMP-24: адрес этой КП (снимок) */
+  areaAddress: string | null;
+  /** IMP-24: разобранная дата подачи машины (из wishDate: «завтра» → конкретная дата, ISO) */
+  pickupAt: string | null;
   lat: number | null;
   lng: number | null;
   /** Как получены координаты: manual — указаны оператором, geocode — по адресу */
@@ -262,9 +271,45 @@ export interface ComplaintDto {
   contact: string | null;
   /** scenario — собрала ветка жалоб в боте, manual — оператор добавил вручную */
   source: 'scenario' | 'manual';
+  /** IMP-24: адрес инцидента (из сценария, из последней заявки диалога или от оператора) */
+  address: string | null;
+  /** IMP-24: координаты инцидента */
+  lat: number | null;
+  lng: number | null;
+  /** IMP-24: КП, с которой совмещена жалоба */
+  areaLkCode: string | null;
+  areaAddress: string | null;
   createdAt: string;
   /** Диалог, из которого пришла жалоба (для кнопки «Открыть диалог») */
   conversationId: string | null;
+}
+
+/** IMP-24: экипаж (бригада) из справочника оператора */
+export interface CrewDto {
+  id: string;
+  name: string;
+  phone: string | null;
+  notes: string | null;
+  active: boolean;
+  /** Сколько заявок сейчас закреплено (для отображения в справочнике) */
+  ordersCount?: number;
+  createdAt: string;
+}
+
+/** IMP-24: кандидат на совмещение заявки/жалобы с КП реестра */
+export interface AreaMatchCandidate {
+  lkCode: string;
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+  /** Расстояние по координатам, м (null — у одной из сторон нет точки) */
+  distanceM: number | null;
+  /** Итоговый скор совпадения 0..1 */
+  score: number;
+  /** Совпадение по координатам (дистанция ≤ порога) */
+  byCoord: boolean;
+  /** Совпадение по адресу (пересечение значимых слов) */
+  byAddress: boolean;
 }
 
 export interface ComplaintCounts {
@@ -321,6 +366,8 @@ export interface AreaItem {
   address: string | null;
   lat: number | null;
   lng: number | null;
+  /** IMP-24: расстояние в метрах (только в ответах ?near= / relative to точки) */
+  distanceM?: number;
 }
 
 export interface AreasResponse {

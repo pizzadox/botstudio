@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { createOrder, geocodeAddress, geocodeOrderAddress } from '@/lib/orders'; // IMP-23-BE-06
+import { parseWishDate } from '@/lib/wish-date'; // IMP-24-BE-12: pickupAt из wishDate
 import { parseMytkoConfig } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string }> };
@@ -45,6 +46,12 @@ export async function GET(req: NextRequest, { params }: Params) {
         comment: true,
         status: true,
         assignee: true,
+        // IMP-24-BE-08: экипаж + КП + разобранная дата подачи машины
+        crewId: true,
+        crew: { select: { id: true, name: true, phone: true } },
+        areaLkCode: true,
+        areaAddress: true,
+        pickupAt: true,
         lat: true,
         lng: true,
         geoSource: true,
@@ -108,7 +115,9 @@ export async function POST(req: NextRequest, { params }: Params) {
       city,
       address,
       size: String(body.size ?? '').trim().slice(0, 200) || null,
-      wishDate: String(body.wishDate ?? '').trim().slice(0, 120) || null,
+      // IMP-24-BE-12: wishDate унифицирован к 60 символам + сразу разобранная pickupAt
+      wishDate: String(body.wishDate ?? '').trim().slice(0, 60) || null,
+      pickupAt: parseWishDate(String(body.wishDate ?? '')).date,
       comment: String(body.comment ?? '').trim().slice(0, 1000) || null,
       lat,
       lng,

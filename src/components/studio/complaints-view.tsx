@@ -4,6 +4,8 @@
 // (source=scenario) и добавленные оператором вручную (source=manual).
 // Паттерны: inbox-view.tsx (список + поллинг 8 с, пауза при document.hidden,
 // memo-карточки) и channels-view.tsx (формы/диалоги). API-контракт: волна 23.
+// IMP-24-FE2: адрес/координаты инцидента, inline-правка адреса и совмещение
+// с КП реестра (GET area-match → PATCH {areaLkCode} / PATCH {address}).
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -11,16 +13,24 @@ import {
   ChevronLeft,
   CircleAlert,
   Loader2,
+  MapPin,
+  MapPinned,
   MessageCircleWarning,
   MessagesSquare,
+  PencilLine,
   Plus,
   RotateCcw,
+  Unlink,
   User,
   WifiOff,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '@/lib/client-api';
-import type { ComplaintCounts, ComplaintDto } from '@/lib/studio-types';
+import type {
+  AreaMatchCandidate,
+  ComplaintCounts,
+  ComplaintDto,
+} from '@/lib/studio-types';
 import {
   COMPLAINT_SOURCE_BADGES,
   COMPLAINT_SOURCE_LABELS,
@@ -107,28 +117,55 @@ function fmtDay(iso: string): string {
   return new Date(iso).toLocaleDateString('ru-RU');
 }
 
+/** Координаты текстом: «58.52260, 31.27000» (как в areas-view) */
+function fmtCoords(lat: number, lng: number): string {
+  return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
 /** Длинное описание? — показываем «показать полностью» */
 function isLong(description: string): boolean {
   return description.length > 140 || description.split('\n').length > 3;
 }
 
+/** IMP-24-FE2: поля жалобы, меняемые из карточки через PATCH (статус — через changeStatus) */
+type ComplaintPatch = Partial<Pick<ComplaintDto, 'address' | 'areaLkCode'>>;
+
 interface ComplaintCardProps {
   complaint: ComplaintDto;
+  botId: string;
   saving: boolean;
   onStatusChange: (complaint: ComplaintDto, status: string) => void;
   onShowFull: (complaint: ComplaintDto) => void;
+  /** IMP-24-FE2-04: оптимистичный PATCH адреса/КП с откатом; true — успех */
+  onPatch: (
+    complaint: ComplaintDto,
+    patch: ComplaintPatch,
+    successTitle: string
+  ) => Promise<boolean>;
 }
 
 /**
  * Карточка обращения (memo): при поллинге перерисовываются только изменившиеся.
  * Статус меняется чипами (оптимистично), при conversationId — кнопка «Открыть диалог».
+ * IMP-24-FE2: inline-редактор адреса и блок «Совместить с КП» (area-match).
  */
 const ComplaintCard = memo(function ComplaintCard({
   complaint,
+  botId,
   saving,
   onStatusChange,
   onShowFull,
+  onPatch,
 }: ComplaintCardProps) {
+  // IMP-24-FE2-03: inline-редактор адреса (без модального окна)
+  const [editAddr, setEditAddr] = useState(false);
+  const [addrDraft, setAddrDraft] = useState('');
+  // IMP-24-FE2-02: блок «КП рядом…» — один GET area-match на каждое открытие
+  const [matchOpen, setMatchOpen] = useState(false);
+  const [matchLoading, setMatchLoading] = useState(false);
+  const [matchError, setMatchError] = useState(false);
+  const [match, setMatch] = useState<AreaMatchCandidate[] | null>(null);
+
   const openConversation = () => {
     if (!complaint.conversationId) return;
     // Тот же канал, что и кнопка «Открыть диалог» в карточке заявки (FE22-05):
@@ -139,6 +176,79 @@ const ComplaintCard = memo(function ComplaintCard({
       })
     );
   };
+
+  // IMP-24-FE2-03: сохранить адрес через общий оптимистичный PATCH (IMP-24-FE2-04)
+  const saveAddress = async () => {
+    const address = addrDraft.trim();
+    if (!address || address === complaint.address) return;
+    const ok = await onPatch(complaint, { address }, 'Адрес обновлён');
+    if (ok) setEditAddr(false);
+  };
+
+  const openAddressEditor = useCallback(() => {
+    setAddrDraft(complaint.address ?? '');
+    setMatchOpen(false);
+    setEditAddr(true);
+  }, [complaint.address]);
+
+  // IMP-24-FE2-02: кандидаты на совмещение — GET area-match, один запрос на открытие
+  const matchAbortRef = useRef<AbortController | null>(null);
+  const loadMatch = useCallback(async () => {
+    // IMP-24-REV-7: отмена предыдущего запроса — без гонок и моргающего лоадера
+    matchAbortRef.current?.abort();
+    const ac = new AbortController();
+    matchAbortRef.current = ac;
+    setMatchLoading(true);
+    setMatchError(false);
+    try {
+      const d = await api<{ candidates: AreaMatchCandidate[] }>(
+        `/api/bots/${botId}/complaints/${complaint.id}/area-match`,
+        { signal: ac.signal }
+      );
+      if (!ac.signal.aborted) setMatch(d.candidates ?? []);
+    } catch {
+      if (!ac.signal.aborted) setMatchError(true);
+    } finally {
+      if (!ac.signal.aborted) setMatchLoading(false);
+    }
+  }, [botId, complaint.id]);
+
+  // IMP-24-REV-7: размонтирование карточки — отменяем висящий запрос
+  useEffect(() => () => matchAbortRef.current?.abort(), []);
+
+  const toggleMatch = () => {
+    if (matchOpen) {
+      setMatchOpen(false);
+      return;
+    }
+    setMatch(null);
+    setMatchError(false);
+    setMatchOpen(true);
+    void loadMatch();
+  };
+
+  // Привязка/отвязка меняют areaLkCode — раскрытый блок сбрасывается эффектом ниже
+  const linkArea = (lk: string) => {
+    void onPatch(complaint, { areaLkCode: lk }, `Жалоба совмещена с КП ${lk}`);
+  };
+  const unlinkArea = () => {
+    void onPatch(complaint, { areaLkCode: null }, 'Жалоба отвязана от КП');
+  };
+
+  // IMP-24-FE2-02: адрес/привязка изменились (свой PATCH, поллинг, другой клиент) —
+  // кэш совпадений и открытый редактор больше не актуальны
+  const matchKeyRef = useRef(`${complaint.address ?? ''}|${complaint.areaLkCode ?? ''}`);
+  useEffect(() => {
+    const key = `${complaint.address ?? ''}|${complaint.areaLkCode ?? ''}`;
+    if (matchKeyRef.current !== key) {
+      matchKeyRef.current = key;
+      setMatchOpen(false);
+      setMatch(null);
+      setMatchLoading(false);
+      setMatchError(false);
+      setEditAddr(false);
+    }
+  }, [complaint.address, complaint.areaLkCode]);
 
   return (
     <article className="rounded-xl border bg-card p-3 sm:p-4">
@@ -192,6 +302,7 @@ const ComplaintCard = memo(function ComplaintCard({
         </>
       )}
 
+      {/* IMP-24-FE2-01: мета-строка — контакт, когда произошло, адрес/координаты, КП */}
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
         {complaint.contact && (
           <span className="inline-flex items-center gap-1" title="Контакт клиента">
@@ -204,39 +315,247 @@ const ComplaintCard = memo(function ComplaintCard({
             {fmtDay(complaint.happenedAt)}
           </span>
         )}
+        {complaint.address ? (
+          <span className="inline-flex min-w-0 max-w-full items-center gap-1">
+            <MapPin className="h-3 w-3 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 line-clamp-1" title={complaint.address}>
+              {complaint.address}
+            </span>
+            <button
+              type="button"
+              onClick={openAddressEditor}
+              aria-label="Изменить адрес"
+              title="Изменить адрес"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-6 sm:w-6"
+            >
+              <PencilLine className="h-3 w-3" aria-hidden="true" />
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={openAddressEditor}
+            className="inline-flex min-h-11 items-center gap-1 rounded-md font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
+          >
+            <PencilLine className="h-3 w-3" aria-hidden="true" />
+            Указать адрес
+          </button>
+        )}
+        {complaint.lat != null && complaint.lng != null && (
+          <span className="tabular-nums" title="Координаты инцидента">
+            {fmtCoords(complaint.lat, complaint.lng)}
+          </span>
+        )}
+        {complaint.areaLkCode && (
+          <Badge
+            variant="outline"
+            className="h-5 px-1.5 text-[10px] bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30"
+            title={complaint.areaAddress ?? 'Контейнерная площадка'}
+          >
+            КП {complaint.areaLkCode}
+          </Badge>
+        )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t pt-2.5">
-        <span className="mr-0.5 hidden text-[11px] text-muted-foreground sm:inline">Статус:</span>
-        {STATUS_FILTERS.filter((s) => s !== 'all').map((s) => (
-          <button
-            key={s}
-            type="button"
-            disabled={saving || complaint.status === s}
-            aria-pressed={complaint.status === s}
-            onClick={() => onStatusChange(complaint, s)}
-            className={cn(
-              'inline-flex min-h-11 items-center rounded-full border px-3 text-xs font-medium transition-colors sm:min-h-0 sm:py-1',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-              'disabled:pointer-events-none',
-              complaint.status === s
-                ? 'border-transparent bg-primary text-primary-foreground'
-                : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
-            )}
-          >
-            {COMPLAINT_STATUS_LABELS[s]}
-          </button>
-        ))}
-        {complaint.conversationId && (
+      {/* IMP-24-FE2-03: inline-редактор адреса (Enter — сохранить) */}
+      {editAddr && (
+        <form
+          className="mt-2 flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void saveAddress();
+          }}
+        >
+          <Input
+            value={addrDraft}
+            onChange={(e) => setAddrDraft(e.target.value)}
+            maxLength={300}
+            placeholder="улица и дом, город"
+            aria-label="Адрес инцидента"
+            autoFocus
+            className="h-11 min-w-0 flex-1 basis-56 sm:h-9"
+          />
           <Button
-            variant="outline"
+            type="submit"
             size="sm"
-            className="ml-auto min-h-11 sm:min-h-0"
-            onClick={openConversation}
+            className="min-h-11 sm:min-h-0"
+            disabled={saving || !addrDraft.trim() || addrDraft.trim() === complaint.address}
           >
-            <MessagesSquare className="h-3.5 w-3.5" aria-hidden />
-            Открыть диалог
+            Сохранить
           </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="min-h-11 sm:min-h-0"
+            onClick={() => setEditAddr(false)}
+          >
+            Отмена
+          </Button>
+        </form>
+      )}
+
+      <div className="mt-3 border-t pt-2.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-0.5 hidden text-[11px] text-muted-foreground sm:inline">Статус:</span>
+          {STATUS_FILTERS.filter((s) => s !== 'all').map((s) => (
+            <button
+              key={s}
+              type="button"
+              disabled={saving || complaint.status === s}
+              aria-pressed={complaint.status === s}
+              onClick={() => onStatusChange(complaint, s)}
+              className={cn(
+                'inline-flex min-h-11 items-center rounded-full border px-3 text-xs font-medium transition-colors sm:min-h-0 sm:py-1',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+                'disabled:pointer-events-none',
+                complaint.status === s
+                  ? 'border-transparent bg-primary text-primary-foreground'
+                  : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              {COMPLAINT_STATUS_LABELS[s]}
+            </button>
+          ))}
+          {complaint.conversationId && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-auto min-h-11 sm:min-h-0"
+              onClick={openConversation}
+            >
+              <MessagesSquare className="h-3.5 w-3.5" aria-hidden />
+              Открыть диалог
+            </Button>
+          )}
+        </div>
+
+        {/* IMP-24-FE2-02: совмещение с КП реестра */}
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {complaint.areaLkCode ? (
+            <>
+              <Badge
+                variant="outline"
+                className="h-5 px-1.5 text-[10px] bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30"
+                title={complaint.areaAddress ?? 'Контейнерная площадка'}
+              >
+                КП {complaint.areaLkCode}
+              </Badge>
+              {complaint.areaAddress && (
+                <span
+                  className="min-w-0 flex-1 basis-32 line-clamp-1 text-[11px] text-muted-foreground"
+                  title={complaint.areaAddress}
+                >
+                  {complaint.areaAddress}
+                </span>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto min-h-11 sm:min-h-0"
+                onClick={unlinkArea}
+                disabled={saving}
+              >
+                <Unlink className="h-3.5 w-3.5" aria-hidden />
+                Отвязать
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                className="min-h-11 sm:min-h-0"
+                onClick={toggleMatch}
+                aria-expanded={matchOpen}
+                disabled={saving}
+              >
+                <MapPinned className="h-3.5 w-3.5" aria-hidden />
+                КП рядом…
+              </Button>
+              {matchLoading && (
+                <span
+                  className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"
+                  role="status"
+                >
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                  Ищу совпадения…
+                </span>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* IMP-24-FE2-02: кандидаты area-match — до 3 строк */}
+        {matchOpen && !complaint.areaLkCode && (
+          <div
+            className="mt-2 rounded-lg border bg-muted/30 p-2"
+            aria-live="polite"
+          >
+            {matchError ? (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                <span>Не удалось загрузить совпадения.</span>
+                <button
+                  type="button"
+                  onClick={() => void loadMatch()}
+                  className="min-h-11 rounded-md font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
+                >
+                  Ещё раз
+                </button>
+              </div>
+            ) : match && match.length > 0 ? (
+              <ul className="space-y-1">
+                {match.slice(0, 3).map((cand) => {
+                  const dist = cand.distanceM != null ? Math.round(cand.distanceM) : null;
+                  const matchTitle =
+                    cand.byCoord && dist != null
+                      ? `совпадение по координатам (${dist} м)`
+                      : cand.byAddress
+                        ? 'совпадение по адресу'
+                        : 'возможное совпадение';
+                  return (
+                    <li
+                      key={cand.lkCode}
+                      title={matchTitle}
+                      className="flex flex-wrap items-center gap-x-2 gap-y-1"
+                    >
+                      <span className="min-w-0 flex-1 basis-40 text-xs leading-snug">
+                        <span className="font-medium tabular-nums text-foreground">
+                          {cand.lkCode}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {' '}— {cand.address ?? 'без адреса'}
+                          {dist != null ? ` · ${dist} м` : ''}
+                        </span>
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="min-h-11 sm:min-h-0"
+                        disabled={saving}
+                        onClick={() => linkArea(cand.lkCode)}
+                      >
+                        Совместить
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : match ? (
+              <div className="text-xs text-muted-foreground">
+                <p>Совпадений с реестром КП не найдено.</p>
+                <button
+                  type="button"
+                  onClick={openAddressEditor}
+                  className="mt-0.5 min-h-11 rounded-md text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
+                >
+                  {complaint.address
+                    ? 'Уточните адрес, чтобы найти площадку'
+                    : 'Укажите адрес, чтобы найти площадку'}
+                </button>
+              </div>
+            ) : null}
+          </div>
         )}
       </div>
     </article>
@@ -263,7 +582,13 @@ export default function ComplaintsView({
 
   // Диалог «Добавить вручную» (чистая форма при переоткрытии)
   const [addOpen, setAddOpen] = useState(false);
-  const [form, setForm] = useState({ type: 'no_pickup', description: '', contact: '', happenedAt: '' });
+  const [form, setForm] = useState({
+    type: 'no_pickup',
+    description: '',
+    address: '',
+    contact: '',
+    happenedAt: '',
+  });
   const [addBusy, setAddBusy] = useState(false);
   // Диалог полного описания
   const [fullItem, setFullItem] = useState<ComplaintDto | null>(null);
@@ -381,6 +706,49 @@ export default function ComplaintsView({
     }
   };
 
+  // IMP-24-FE2-04: общий оптимистичный PATCH адреса/КП с откатом (паттерн changeStatus).
+  // Статус намеренно идёт через changeStatus — там дополнительно корректируются счётчики фильтров.
+  const patchComplaint = useCallback(
+    async (
+      complaint: ComplaintDto,
+      patch: ComplaintPatch,
+      successTitle: string
+    ): Promise<boolean> => {
+      if (savingId) return false;
+      const prev = complaint;
+      setItems((list) =>
+        list.map((c) => (c.id === complaint.id ? { ...c, ...patch } : c))
+      );
+      setSavingId(complaint.id);
+      try {
+        const d = await api<{ item: ComplaintDto }>(
+          `/api/bots/${botId}/complaints/${complaint.id}`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify(patch),
+          }
+        );
+        setItems((list) => list.map((c) => (c.id === complaint.id ? d.item : c)));
+        toast({ title: successTitle });
+        return true;
+      } catch (e) {
+        // Откат к прежнему объекту жалобы
+        setItems((list) =>
+          list.map((c) => (c.id === complaint.id ? prev : c))
+        );
+        toast({
+          title: 'Не удалось сохранить изменения',
+          description: e instanceof Error ? e.message : '',
+          variant: 'destructive',
+        });
+        return false;
+      } finally {
+        setSavingId(null);
+      }
+    },
+    [botId, savingId, toast]
+  );
+
   const submitAdd = async () => {
     if (addBusy) return;
     const description = form.description.trim();
@@ -388,6 +756,8 @@ export default function ComplaintsView({
     setAddBusy(true);
     try {
       const body: Record<string, unknown> = { type: form.type, description };
+      // IMP-24-FE2-05: адрес опционален — бэкенд сам геокодирует, если нет координат
+      if (form.address.trim()) body.address = form.address.trim();
       if (form.contact.trim()) body.contact = form.contact.trim();
       if (form.happenedAt) body.happenedAt = form.happenedAt;
       const d = await api<{ item: ComplaintDto }>(`/api/bots/${botId}/complaints`, {
@@ -395,7 +765,13 @@ export default function ComplaintsView({
         body: JSON.stringify(body),
       });
       setAddOpen(false);
-      setForm({ type: 'no_pickup', description: '', contact: '', happenedAt: '' });
+      setForm({
+        type: 'no_pickup',
+        description: '',
+        address: '',
+        contact: '',
+        happenedAt: '',
+      });
       toast({ title: 'Обращение добавлено', description: `№${d.item.number}` });
       // Новое обращение имеет статус new — если фильтр его прячет, показываем «Все»
       if (statusFilter !== 'all' && statusFilter !== 'new') setStatusFilter('all');
@@ -536,9 +912,11 @@ export default function ComplaintsView({
               <ComplaintCard
                 key={c.id}
                 complaint={c}
+                botId={botId}
                 saving={savingId === c.id}
                 onStatusChange={(complaint, status) => void changeStatus(complaint, status)}
                 onShowFull={setFullItem}
+                onPatch={patchComplaint}
               />
             ))}
             {nextCursor && (
@@ -641,6 +1019,20 @@ export default function ComplaintsView({
                 placeholder="Что произошло, где, с каким контейнером…"
                 value={form.description}
                 onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+              />
+            </div>
+            {/* IMP-24-FE2-05: адрес инцидента — для геокодинга и поиска КП */}
+            <div className="space-y-2">
+              <Label htmlFor="cmp-address" className="text-xs font-medium">
+                Адрес{' '}
+                <span className="font-normal text-muted-foreground">(необязательно)</span>
+              </Label>
+              <Input
+                id="cmp-address"
+                placeholder="улица и дом, город"
+                maxLength={300}
+                value={form.address}
+                onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))}
               />
             </div>
             <div className="space-y-2">

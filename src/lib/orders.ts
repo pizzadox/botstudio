@@ -35,6 +35,13 @@ export interface CreateOrderInput {
   address?: string | null;
   size?: string | null;
   wishDate?: string | null;
+  /// IMP-24: разобранная дата подачи машины (parseWishDate из wish-date.ts)
+  pickupAt?: Date | null;
+  /// IMP-24: КП из реестра (код lk_code MyTKO) + снимок адреса этой КП
+  areaLkCode?: string | null;
+  areaAddress?: string | null;
+  /// IMP-24: экипаж (Crew), назначенный на заявку
+  crewId?: string | null;
   comment?: string | null;
   status?: string;
   lat?: number | null;
@@ -373,7 +380,11 @@ export async function createOrder(input: CreateOrderInput) {
   const city = input.city?.trim().slice(0, 100) || null;
   const address = input.address?.trim().slice(0, 300) || null;
   const comment = input.comment?.trim().slice(0, 1000) || null;
-  const wishDate = input.wishDate?.trim().slice(0, 30) || null;
+  // IMP-24-BE: wishDate до 60 символов (было 30 — human-строка парсера
+  // «23.10.2026, пятница, до 12:00» не помещалась; API допускает 120 — унифицируем к 60)
+  const wishDate = input.wishDate?.trim().slice(0, 60) || null;
+  const areaLkCode = input.areaLkCode?.trim().slice(0, 40) || null;
+  const areaAddress = input.areaAddress?.trim().slice(0, 300) || null;
   const phone = normalizePhone(input.phone);
 
   // Координаты — сразу при создании (метка появляется на карте моментально):
@@ -417,6 +428,11 @@ export async function createOrder(input: CreateOrderInput) {
           address,
           size: input.size ?? null,
           wishDate,
+          // IMP-24-BE: новые поля — экипаж, КП (код + снимок адреса), дата подачи
+          pickupAt: input.pickupAt ?? null,
+          areaLkCode,
+          areaAddress,
+          crewId: input.crewId ?? null,
           comment,
           status: input.status ?? 'new',
           lat,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { getAreasCached, parseMytkoConfig } from '@/lib/mytko';
+import { haversineM } from '@/lib/area-match'; // IMP-24-BE-07: сортировка по дистанции
 
 /**
  * IMP-23-BE-10: реестр КП (контейнерных площадок) бота — API для фронта.
@@ -11,6 +12,12 @@ import { getAreasCached, parseMytkoConfig } from '@/lib/mytko';
  *          SQLite-коллация LOWER() не знает нелатиницу);
  * ?city= — подмножество адресов, содержащих город;
  * ?page= (1-based), ?take= (дефолт 50, максимум 500).
+ *
+ * IMP-24-BE-06/07: режимы карты (q/city/page в них игнорируются):
+ * ?bbox=minLng,minLat,maxLng,maxLat — точки в рамке (cap 1000, page:1);
+ * ?near=lat,lng&radius=<м, def 300, cap 2000>&limit=<def 5, cap 20> —
+ * ближайшие точки по haversine, в item добавляется distanceM.
+ * Ответ во всех режимах — один контракт AreasResponse.
  *
  * lat/lng могут быть null — отдаются как есть. Сортировка address asc
  * (null последними), стабильный тайбрейк lkCode (уникален в пределах бота) —
@@ -23,6 +30,19 @@ type Params = { params: Promise<{ id: string }> };
 
 const DEFAULT_TAKE = 50;
 const MAX_TAKE = 500;
+
+// IMP-24-BE-06/07: лимиты режимов карты
+const BBOX_CAP = 1000;
+const NEAR_DEFAULT_RADIUS = 300;
+const NEAR_MAX_RADIUS = 2000;
+const NEAR_DEFAULT_LIMIT = 5;
+const NEAR_MAX_LIMIT = 20;
+
+function noStore(body: Record<string, unknown>): NextResponse {
+  const res = NextResponse.json(body);
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
+}
 
 async function loadOwnedBot(req: NextRequest, botId: string) {
   const user = await getSessionUser(req);
@@ -69,6 +89,99 @@ export async function GET(req: NextRequest, { params }: Params) {
     db.mytkoArea.count({ where: { botId: bot.id } }),
   ]);
 
+  // ── IMP-24-BE-07: режим near — ближайшие точки вокруг lat,lng ──────────────
+  const nearParam = sp.get('near');
+  if (nearParam) {
+    const [latS, lngS] = nearParam.split(',').map((s) => s.trim());
+    const lat = Number(latS);
+    const lng = Number(lngS);
+    if (!latS || !lngS || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return NextResponse.json({ error: 'near — lat,lng (2 числа)' }, { status: 400 });
+    }
+    const radiusParam = Number(sp.get('radius') ?? '');
+    const radius =
+      Number.isFinite(radiusParam) && radiusParam > 0
+        ? Math.min(radiusParam, NEAR_MAX_RADIUS)
+        : NEAR_DEFAULT_RADIUS;
+    const limitParam = Number(sp.get('limit') ?? '');
+    const limit =
+      Number.isFinite(limitParam) && limitParam > 0
+        ? Math.min(Math.floor(limitParam), NEAR_MAX_LIMIT)
+        : NEAR_DEFAULT_LIMIT;
+
+    const items = areas
+      .filter((a) => a.lat != null && a.lng != null)
+      .map((a) => ({ a, d: haversineM(lat, lng, a.lat as number, a.lng as number) }))
+      .filter(({ d }) => d <= radius)
+      .sort((x, y) => x.d - y.d)
+      .slice(0, limit)
+      .map(({ a, d }) => ({
+        lkCode: a.lkCode,
+        address: a.address,
+        lat: a.lat,
+        lng: a.lng,
+        distanceM: Math.round(d),
+      }));
+
+    return noStore({
+      items,
+      total: items.length,
+      page: 1,
+      pages: 1,
+      take: items.length,
+      areasSyncedAt,
+      areasCount,
+    });
+  }
+
+  // ── IMP-24-BE-06: режим bbox — точки в рамке minLng,minLat,maxLng,maxLat ──
+  const bboxParam = sp.get('bbox');
+  if (bboxParam) {
+    const nums = bboxParam.split(',').map((s) => Number(s.trim()));
+    if (nums.length !== 4 || nums.some((n) => !Number.isFinite(n))) {
+      return NextResponse.json(
+        { error: 'bbox — minLng,minLat,maxLng,maxLat (4 числа)' },
+        { status: 400 }
+      );
+    }
+    const [minLng, minLat, maxLng, maxLat] = nums;
+    if (minLng > maxLng || minLat > maxLat) {
+      return NextResponse.json(
+        { error: 'bbox — требуется minLng ≤ maxLng и minLat ≤ maxLat' },
+        { status: 400 }
+      );
+    }
+
+    const filtered = areas
+      .filter(
+        (a) =>
+          a.lat != null &&
+          a.lng != null &&
+          a.lat >= minLat &&
+          a.lat <= maxLat &&
+          a.lng >= minLng &&
+          a.lng <= maxLng
+      )
+      .sort((x, y) => (x.lkCode < y.lkCode ? -1 : x.lkCode > y.lkCode ? 1 : 0));
+    const total = filtered.length;
+    const items = filtered.slice(0, BBOX_CAP).map((a) => ({
+      lkCode: a.lkCode,
+      address: a.address,
+      lat: a.lat,
+      lng: a.lng,
+    }));
+
+    return noStore({
+      items,
+      total,
+      page: 1,
+      pages: 1,
+      take: items.length,
+      areasSyncedAt,
+      areasCount,
+    });
+  }
+
   // Фильтры в памяти (см. шапку): q — адрес ИЛИ код; city — только адрес
   let list = areas;
   if (q) {
@@ -104,7 +217,7 @@ export async function GET(req: NextRequest, { params }: Params) {
     lng: a.lng,
   }));
 
-  const res = NextResponse.json({
+  const res = noStore({
     items,
     total,
     page,
@@ -113,6 +226,5 @@ export async function GET(req: NextRequest, { params }: Params) {
     areasSyncedAt,
     areasCount,
   });
-  res.headers.set('Cache-Control', 'no-store');
   return res;
 }

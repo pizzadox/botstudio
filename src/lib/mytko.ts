@@ -601,7 +601,8 @@ export interface MytkoOrderSyncResult {
   error: string | null;
 }
 
-function normText(s: string): string {
+// IMP-24-BE: экспортирован для area-match.ts (совпадение адресов заявок/жалоб с КП)
+export function normText(s: string): string {
   return s
     .toLowerCase()
     .replace(/ё/g, 'е')

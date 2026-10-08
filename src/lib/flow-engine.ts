@@ -1,6 +1,9 @@
 import ZAI from 'z-ai-web-dev-sdk';
 import { db } from '@/lib/db';
-import { createOrder, geocodeVerify } from '@/lib/orders';
+// IMP-24-BE-04: geocodeAddress/geocodeOrderAddress — геокодинг адреса жалобы;
+// IMP-24-BE-02: parseWishDate — разбор желаемой даты подачи машины
+import { createOrder, geocodeAddress, geocodeOrderAddress, geocodeVerify } from '@/lib/orders';
+import { parseWishDate } from '@/lib/wish-date';
 import { inc } from '@/lib/metrics';
 import type {
   ConditionOp,
@@ -202,6 +205,10 @@ async function createScenarioComplaint(input: {
   description: string;
   happenedAt?: Date | null;
   contact?: string | null;
+  // IMP-24-BE-04: адрес/координаты инцидента (сценарий, последняя заявка диалога или геокодинг)
+  address?: string | null;
+  lat?: number | null;
+  lng?: number | null;
 }) {
   const agg = await db.complaint.aggregate({
     where: { botId: input.botId },
@@ -220,6 +227,10 @@ async function createScenarioComplaint(input: {
           description: input.description.trim().slice(0, 2000),
           happenedAt: input.happenedAt ?? null,
           contact: input.contact ?? null,
+          // IMP-24-BE-04: гео-контекст жалобы
+          address: input.address?.trim().slice(0, 300) || null,
+          lat: input.lat ?? null,
+          lng: input.lng ?? null,
           source: 'scenario',
         },
       });
@@ -705,21 +716,51 @@ export async function runEngine(
           if (v.includes('{{')) return interpolate(v, state.vars).trim();
           return (state.vars[v.trim()] ?? '').trim();
         };
+        // IMP-24-BE-03: диалог загружается ОДИН раз на узел — контакт нужен
+        // и заявке (fallback clientName), и жалобе (contact для связи)
+        const conversation =
+          (node.data.createOrder || node.data.createComplaint) && ctx?.conversationId
+            ? await db.conversation.findUnique({
+                where: { id: ctx.conversationId },
+                select: { contact: true },
+              })
+            : null;
         // Узел с флагом «Создать заявку»: номер попадает в {{order.number}}
         if (node.data.createOrder && ctx?.botId) {
           try {
             const cfg = node.data.createOrder;
+            // IMP-24-BE-02: желаемая дата разбирается ДО интерполяции текста узла —
+            // {{date}} в ответе клиенту покажет «23.10.2026, пятница, до 12:00»,
+            // а не сырой ввод («завтра»)
+            const rawWish = pick(cfg.dateVar);
+            const parsedWish = parseWishDate(rawWish);
+            if (parsedWish.matched && cfg.dateVar?.trim()) {
+              // dateVar может быть именем переменной или шаблоном «{{when}}»;
+              // IMP-24-REV-6: пишем только если в шаблоне ровно ОДИН плейсхолдер —
+              // иначе human-дата попала бы в первую переменную сложного шаблона
+              const matches = cfg.dateVar.includes('{{')
+                ? Array.from(cfg.dateVar.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g))
+                : [];
+              const varName =
+                matches.length === 1 ? matches[0][1] : matches.length === 0 ? cfg.dateVar.trim() : '';
+              if (varName) state.vars[varName] = parsedWish.human;
+            }
+            // IMP-24-BE-03: имя клиента — из переменной; пусто → контакт диалога
+            const contact = (conversation?.contact ?? '').trim();
             const order = await createOrder({
               botId: ctx.botId,
               conversationId: ctx.conversationId,
               externalUserId: ctx.externalUserId ?? null,
               type: cfg.type ?? 'waste',
-              clientName: pick(cfg.nameVar) || null,
+              clientName: pick(cfg.nameVar) || contact || null,
               phone: pick(cfg.phoneVar) || null,
               city: pick(cfg.cityVar) || null,
               address: pick(cfg.addressVar) || null,
               size: pick(cfg.sizeVar) || null,
-              wishDate: pick(cfg.dateVar) || null,
+              // IMP-24-BE-02: распознанная дата — human-строка, нераспознанная — как есть
+              wishDate: (parsedWish.matched ? parsedWish.human : rawWish) || null,
+              // IMP-24-BE-02: разобранная дата подачи машины → отдельное поле
+              pickupAt: parsedWish.date,
               comment: cfg.comment ? interpolate(cfg.comment, state.vars) : null,
             });
             state.vars['order.number'] = String(order.number);
@@ -747,13 +788,40 @@ export async function runEngine(
               const rawType = pick(cc.typeVar);
               if (rawType) type = mapComplaintType(rawType);
             }
+            // IMP-24-BE-04: адрес инцидента — addressVar; пусто → адрес последней
+            // заявки этого диалога (контекст «не вывезли» не теряет место)
+            let address = (cc.addressVar ? pick(cc.addressVar) : '').trim().slice(0, 300);
+            let lat: number | null = null;
+            let lng: number | null = null;
+            if (!address) {
+              const lastOrder = ctx.conversationId
+                ? await db.order.findFirst({
+                    where: { conversationId: ctx.conversationId, address: { not: null } },
+                    orderBy: { createdAt: 'desc' },
+                    select: { address: true, lat: true, lng: true },
+                  })
+                : null;
+              if (lastOrder?.address) {
+                address = lastOrder.address;
+                lat = lastOrder.lat;
+                lng = lastOrder.lng;
+              }
+            }
+            // Адрес есть, координат нет — геокодинг (cityVar уточняет запрос).
+            // Ошибка/таймаут Nominatim НЕ блокируют создание жалобы — точку
+            // позже поставит оператор; ждём не дольше штатного таймаута функции.
+            if (address && lat == null && lng == null) {
+              try {
+                const geo = await geocodeAddress(geocodeOrderAddress(pick(cc.cityVar), address));
+                if (geo) {
+                  lat = geo.lat;
+                  lng = geo.lng;
+                }
+              } catch {
+                // жалоба сохраняется без координат
+              }
+            }
             // Контакт — из диалога (webhook пишет contact при наличии)
-            const conversation = ctx.conversationId
-              ? await db.conversation.findUnique({
-                  where: { id: ctx.conversationId },
-                  select: { contact: true },
-                })
-              : null;
             const complaint = await createScenarioComplaint({
               botId: ctx.botId,
               conversationId: ctx.conversationId,
@@ -761,6 +829,10 @@ export async function runEngine(
               description,
               happenedAt: parseComplaintWhen(pick(cc.whenVar)),
               contact: conversation?.contact ?? null,
+              // IMP-24-BE-04: гео-контекст жалобы
+              address: address || null,
+              lat,
+              lng,
             });
             state.vars['complaint.number'] = String(complaint.number);
             state.vars['complaint.id'] = complaint.id;

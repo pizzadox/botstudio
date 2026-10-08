@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { geocodeAddress } from '@/lib/orders'; // IMP-24-BE-15: координаты при записи адреса
 
 /**
- * IMP-23-BE-02: карточка жалобы — PATCH (статус/описание) и DELETE.
+ * IMP-23-BE-02: карточка жалобы — PATCH (статус/описание, с IMP-24-BE-15 — ещё
+ * адрес с геокодингом и привязка к КП) и DELETE.
  * Матрица статусов: любые переходы между new/in_review/resolved разрешены
  * (жалоба — лёгкая сущность, «возврат в работу» из resolved — нормальный сценарий).
  */
@@ -31,6 +33,12 @@ function complaintDto(c: {
   description: string;
   happenedAt: Date | null;
   contact: string | null;
+  // IMP-24-BE-14: адрес/координаты инцидента + КП
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+  areaLkCode: string | null;
+  areaAddress: string | null;
   source: string;
   createdAt: Date;
   conversationId: string | null;
@@ -43,13 +51,18 @@ function complaintDto(c: {
     description: c.description,
     happenedAt: c.happenedAt ? c.happenedAt.toISOString() : null,
     contact: c.contact,
+    address: c.address,
+    lat: c.lat,
+    lng: c.lng,
+    areaLkCode: c.areaLkCode,
+    areaAddress: c.areaAddress,
     source: c.source,
     createdAt: c.createdAt.toISOString(),
     conversationId: c.conversationId,
   };
 }
 
-/** Обновление жалобы: status и/или description */
+/** Обновление жалобы: status, description, address (+геокодинг), areaLkCode */
 export async function PATCH(req: NextRequest, { params }: Params) {
   const { id, complaintId } = await params;
   const loaded = await loadOwnedComplaint(req, id, complaintId);
@@ -86,8 +99,55 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       data.description = description;
     }
 
+    // IMP-24-BE-15: адрес инцидента (непустой ≤ 300). Если у жалобы нет координат —
+    // пробуем геокодинг; ошибка/таймаут Nominatim НЕ блокирует запись (адрес
+    // сохраняется без точки, оператор поставит её на карте).
+    if (typeof body.address === 'string') {
+      const address = body.address.trim().slice(0, 300);
+      if (!address) {
+        return NextResponse.json(
+          { error: 'address — непустая строка до 300 символов' },
+          { status: 400 }
+        );
+      }
+      data.address = address;
+      const hasCoords =
+        loaded.complaint.lat != null && loaded.complaint.lng != null;
+      if (!hasCoords) {
+        try {
+          const geo = await geocodeAddress(address);
+          if (geo) {
+            data.lat = geo.lat;
+            data.lng = geo.lng;
+          }
+        } catch {
+          // геокодинг недоступен — пишем только адрес
+        }
+      }
+    }
+
+    // IMP-24-BE-15: привязка к КП реестра — код обязан существовать у бота,
+    // вместе с ним сохраняется снимок адреса КП; null/'' — открепить оба поля
+    if (body.areaLkCode !== undefined) {
+      const lk = typeof body.areaLkCode === 'string' ? body.areaLkCode.trim() : '';
+      if (lk) {
+        const area = await db.mytkoArea.findFirst({ where: { botId: id, lkCode: lk } });
+        if (!area) {
+          return NextResponse.json({ error: 'КП с таким кодом нет в реестре бота' }, { status: 400 });
+        }
+        data.areaLkCode = lk;
+        data.areaAddress = area.address;
+      } else {
+        data.areaLkCode = null;
+        data.areaAddress = null;
+      }
+    }
+
     if (Object.keys(data).length === 0) {
-      return NextResponse.json({ error: 'Нечего обновлять: передайте status и/или description' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Нечего обновлять: передайте status, description, address и/или areaLkCode' },
+        { status: 400 }
+      );
     }
 
     const updated = await db.complaint.update({ where: { id: complaintId }, data });

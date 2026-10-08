@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { geocodeAddress, geocodeOrderAddress, reverseGeocode } from '@/lib/orders';
 import { composeAddress } from '@/lib/cities'; // IMP-23-BE-06: чистая сборка адреса
+import { parseWishDate } from '@/lib/wish-date'; // IMP-24-BE-12: pickupAt из wishDate
 import { parseMytkoConfig } from '@/lib/mytko';
 import { checkStatusTransition } from '@/lib/order-status';
 
@@ -19,6 +20,8 @@ async function loadOwnedOrder(req: NextRequest, botId: string, orderId: string) 
       conversation: {
         select: { id: true, contact: true, source: true, externalUserId: true, needsOperator: true },
       },
+      // IMP-24-BE-09: экипаж попадает в ответ {order} карточки
+      crew: { select: { id: true, name: true, phone: true } },
     },
   });
   if (!order || order.botId !== botId) return { error: 'notfound' as const };
@@ -107,12 +110,56 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     }
     if (typeof body.assignee === 'string') data.assignee = body.assignee.trim().slice(0, 120) || null;
     if (typeof body.comment === 'string') data.comment = body.comment.trim().slice(0, 1000) || null;
-    if (typeof body.wishDate === 'string') data.wishDate = body.wishDate.trim().slice(0, 120) || null;
-    if (typeof body.phone === 'string') data.phone = body.phone.trim().slice(0, 40) || null;
-    if (typeof body.clientName === 'string') data.clientName = body.clientName.trim().slice(0, 120) || null;
+    // IMP-24-BE-12: wishDate пишется вместе с разобранной датой pickupAt
+    // («завтра до 12:00» → wishDate + pickupAt = полдень завтрашнего дня в UTC)
+    if (typeof body.wishDate === 'string') {
+      const wish = body.wishDate.trim().slice(0, 60) || null;
+      data.wishDate = wish;
+      data.pickupAt = wish ? parseWishDate(wish).date : null;
+    }
+    if (body.phone !== undefined) {
+      // IMP-24-REV-2: null — очистить поле (редактор клиента шлёт null при очистке)
+      data.phone = typeof body.phone === 'string' ? body.phone.trim().slice(0, 40) || null : null;
+    }
+    if (body.clientName !== undefined) {
+      data.clientName = typeof body.clientName === 'string' ? body.clientName.trim().slice(0, 120) || null : null;
+    }
     if (typeof body.size === 'string') data.size = body.size.trim().slice(0, 200) || null;
     if (typeof body.address === 'string') data.address = body.address.trim().slice(0, 300) || null;
-    if (typeof body.city === 'string') data.city = body.city.trim().slice(0, 120) || null;
+    if (body.city !== undefined) {
+      data.city = typeof body.city === 'string' ? body.city.trim().slice(0, 120) || null : null;
+    }
+
+    // IMP-24-BE-10: привязка к КП реестра — код lk_code обязан существовать у бота,
+    // вместе с ним сохраняется снимок адреса КП; null/'' — открепить оба поля
+    if (body.areaLkCode !== undefined) {
+      const lk = typeof body.areaLkCode === 'string' ? body.areaLkCode.trim() : '';
+      if (lk) {
+        const area = await db.mytkoArea.findFirst({ where: { botId: id, lkCode: lk } });
+        if (!area) {
+          return NextResponse.json({ error: 'КП с таким кодом нет в реестре бота' }, { status: 400 });
+        }
+        data.areaLkCode = lk;
+        data.areaAddress = area.address;
+      } else {
+        data.areaLkCode = null;
+        data.areaAddress = null;
+      }
+    }
+
+    // IMP-24-BE-11: назначение экипажа (должен принадлежать этому боту); null/'' — снять
+    if (body.crewId !== undefined) {
+      const cid = typeof body.crewId === 'string' ? body.crewId.trim() : '';
+      if (cid) {
+        const crew = await db.crew.findFirst({ where: { id: cid, botId: id } });
+        if (!crew) {
+          return NextResponse.json({ error: 'Экипаж не найден' }, { status: 400 });
+        }
+        data.crewId = cid;
+      } else {
+        data.crewId = null;
+      }
+    }
 
     if (typeof body.lat === 'number' && Number.isFinite(body.lat)) {
       data.lat = body.lat;
@@ -177,8 +224,22 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       }
     }
 
-    const updated = await db.order.update({ where: { id: orderId }, data });
-    return NextResponse.json({ order: updated, geo: geoResult });
+    // IMP-24-REV-1: ответ PATCH содержит те же связи, что GET-карточка
+    // (conversation/crew) + messagesCount — иначе фронт, заменяя order целиком,
+    // теряет «Открыть диалог», tel экипажа, счётчик сообщений и т.п. до поллинга
+    const updated = await db.order.update({
+      where: { id: orderId },
+      data,
+      include: {
+        conversation: {
+          select: { id: true, contact: true, source: true, externalUserId: true, needsOperator: true },
+        },
+        crew: { select: { id: true, name: true, phone: true } },
+        _count: { select: { messages: true } },
+      },
+    });
+    const { _count, ...flat } = updated;
+    return NextResponse.json({ order: { ...flat, messagesCount: _count.messages }, geo: geoResult });
   } catch (err) {
     console.error('[orders patch]', err);
     return NextResponse.json({ error: 'Не удалось обновить заявку' }, { status: 500 });

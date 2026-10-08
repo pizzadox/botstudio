@@ -18,7 +18,7 @@ const MAX_TAKE = 500;
 const DEFAULT_TAKE = 100;
 const MAX_DESCRIPTION = 2000;
 
-/** ComplaintDto — контракт с фронтом (закреплён в волне 23) */
+/** ComplaintDto — контракт с фронтом (закреплён в волне 23; IMP-24-BE-14 — гео-поля) */
 function toDto(c: {
   id: string;
   number: number;
@@ -27,6 +27,12 @@ function toDto(c: {
   description: string;
   happenedAt: Date | null;
   contact: string | null;
+  // IMP-24-BE-14: адрес/координаты инцидента + КП
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+  areaLkCode: string | null;
+  areaAddress: string | null;
   source: string;
   createdAt: Date;
   conversationId: string | null;
@@ -39,6 +45,11 @@ function toDto(c: {
     description: c.description,
     happenedAt: c.happenedAt ? c.happenedAt.toISOString() : null,
     contact: c.contact,
+    address: c.address,
+    lat: c.lat,
+    lng: c.lng,
+    areaLkCode: c.areaLkCode,
+    areaAddress: c.areaAddress,
     source: c.source,
     createdAt: c.createdAt.toISOString(),
     conversationId: c.conversationId,
@@ -205,6 +216,12 @@ export async function POST(req: NextRequest, { params }: Params) {
       conversationId = conv.id;
     }
 
+    // IMP-24-BE-14: адрес инцидента (≤ 300, опционально) и координаты (если переданы)
+    const address =
+      typeof body.address === 'string' ? body.address.trim().slice(0, 300) || null : null;
+    const lat = typeof body.lat === 'number' && Number.isFinite(body.lat) ? body.lat : null;
+    const lng = typeof body.lng === 'number' && Number.isFinite(body.lng) ? body.lng : null;
+
     // IMP-23-REV-1 (reviewer MAJOR-1): number = max+1 может столкнуться при гонке
     // (два оператора / оператор+сценарий) — ретрай до 3 раз по паттерну движка.
     const agg = await db.complaint.aggregate({ where: { botId: id }, _max: { number: true } });
@@ -223,6 +240,10 @@ export async function POST(req: NextRequest, { params }: Params) {
             happenedAt,
             contact:
               typeof body.contact === 'string' ? body.contact.trim().slice(0, 200) || null : null,
+            // IMP-24-BE-14: гео-контекст ручной жалобы
+            address,
+            lat,
+            lng,
             conversationId,
             source: 'manual',
           },

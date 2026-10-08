@@ -48,6 +48,8 @@ model Bot {
   orders        Order[]
   /// Жалобы клиентов (не вывезли / повреждён контейнер / переполнена площадка / другая)
   complaints    Complaint[]
+  /// IMP-24: экипажи (бригады) для назначения на заявки
+  crews         Crew[]
   /// Реестр КП (контейнерных площадок), загруженный из MyTKO — «все возможные КОДЫ КП»
   mytkoAreas    MytkoArea[]
 
@@ -167,6 +169,15 @@ model Order {
   /// new → assigned → in_progress → completed | cancelled
   status         String        @default("new")
   assignee       String?
+  /// IMP-24: экипаж, назначенный на заявку (справочник Crew)
+  crewId         String?
+  crew           Crew?         @relation(fields: [crewId], references: [id], onDelete: SetNull)
+  /// IMP-24: КП из реестра, с которой совмещена заявка (стабильный код lk_code MyTKO)
+  areaLkCode     String?
+  /// IMP-24: адрес этой КП (снимок для отображения без join; реестр перезаписывается синком)
+  areaAddress    String?
+  /// IMP-24: разобранная дата подачи машины (из wishDate: «завтра» → конкретная дата)
+  pickupAt       DateTime?
   /// Координаты для карты (OpenFreeMap); заполняются геокодингом или оператором
   lat            Float?
   lng            Float?
@@ -188,11 +199,13 @@ model Order {
   @@index([botId, status])
   @@index([botId, externalUserId])
   @@index([botId, createdAt])
+  @@index([botId, crewId])
   @@index([conversationId])
 }
 
 /// IMP-23-BE-01: жалоба клиента (проблема с вывозом), создаётся сценарием бота
-/// (узел «Сообщение» с флагом createComplaint) или вручную оператором
+/// (узел «Сообщение» с флагом createComplaint) или вручную оператором.
+/// IMP-24: добавлены гео-контекст (адрес/координаты инцидента) и привязка к КП
 model Complaint {
   id             String        @id @default(cuid())
   botId          String
@@ -211,6 +224,15 @@ model Complaint {
   happenedAt     DateTime?
   /// Контакт для связи (из диалога или от оператора)
   contact        String?
+  /// IMP-24: адрес инцидента (из сценария, из последней заявки диалога или от оператора)
+  address        String?
+  /// IMP-24: координаты инцидента (геокодинг адреса или точка оператора)
+  lat            Float?
+  lng            Float?
+  /// IMP-24: КП из реестра, с которой совмещена жалоба (код lk_code MyTKO)
+  areaLkCode     String?
+  /// IMP-24: адрес этой КП (снимок для отображения)
+  areaAddress    String?
   /// scenario — создана сценарием бота; manual — оператором из ЛК
   source         String        @default("scenario")
   createdAt      DateTime      @default(now())
@@ -219,6 +241,24 @@ model Complaint {
   @@unique([botId, number])
   @@index([botId, status])
   @@index([botId, conversationId])
+}
+
+/// IMP-24: экипаж (бригада), назначаемый на заявки; справочник ведёт оператор
+model Crew {
+  id        String   @id @default(cuid())
+  botId     String
+  bot       Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+  /// Название, например «Экипаж 1 — Иванов И. (КамАЗ)»
+  name      String
+  phone     String?
+  notes     String?
+  /// Неактивные экипажи не предлагаются в выборе, но остаются в истории заявок
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  orders    Order[]
+
+  @@index([botId, active])
 }
 
 /// Запись базы знаний ИИ-ассистента бота
