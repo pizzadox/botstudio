@@ -1,10 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { maskToken, webhookUrlFor } from '@/lib/mask';
+import type { Channel } from '@prisma/client';
 
 type Params = { params: Promise<{ id: string }> };
 
 const VALID_TYPES = ['telegram', 'whatsapp', 'max', 'web'];
+
+/**
+ * Санитайзер канала: token не покидает сервер (IMP-BE21-01) —
+ * фронт получает tokenMasked/hasToken и готовый webhookUrl.
+ */
+function sanitizeChannel(ch: Channel, origin: string) {
+  return {
+    id: ch.id,
+    botId: ch.botId,
+    type: ch.type,
+    title: ch.title,
+    tokenMasked: maskToken(ch.token),
+    hasToken: !!ch.token,
+    phone: ch.phone,
+    secret: ch.secret,
+    webhookUrl: webhookUrlFor(origin, ch.type, ch.secret),
+    active: ch.active,
+    lastStatus: ch.lastStatus,
+    createdAt: ch.createdAt,
+  };
+}
 
 export async function GET(req: NextRequest, { params }: Params) {
   const { id } = await params;
@@ -16,8 +39,9 @@ export async function GET(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Бот не найден' }, { status: 404 });
   }
 
+  const origin = new URL(req.url).origin;
   const channels = await db.channel.findMany({ where: { botId: id }, orderBy: { createdAt: 'asc' } });
-  return NextResponse.json({ channels });
+  return NextResponse.json({ channels: channels.map((ch) => sanitizeChannel(ch, origin)) });
 }
 
 export async function POST(req: NextRequest, { params }: Params) {
@@ -36,7 +60,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (!VALID_TYPES.includes(type)) {
       return NextResponse.json({ error: 'Неизвестный тип канала' }, { status: 400 });
     }
-    const title = String(body.title ?? '').trim() || null;
+    const title = String(body.title ?? '').trim().slice(0, 120) || null;
     const token = String(body.token ?? '').trim() || null;
     const phone = String(body.phone ?? '').trim() || null;
 
@@ -60,7 +84,8 @@ export async function POST(req: NextRequest, { params }: Params) {
         phone,
       },
     });
-    return NextResponse.json({ channel });
+    const origin = new URL(req.url).origin;
+    return NextResponse.json({ channel: sanitizeChannel(channel, origin) });
   } catch (err) {
     console.error('[channels POST]', err);
     return NextResponse.json({ error: 'Не удалось создать канал' }, { status: 500 });

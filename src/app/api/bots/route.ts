@@ -78,9 +78,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const name = String(body.name ?? '').trim();
+    // IMP-BE21-12: ограничиваем длину строк (name ≤120, description ≤500)
+    const name = (String(body.name ?? '').trim() || '').slice(0, 120);
     if (!name) return NextResponse.json({ error: 'Укажите название бота' }, { status: 400 });
-    const description = String(body.description ?? '').trim() || null;
+    const description = String(body.description ?? '').trim().slice(0, 500) || null;
 
     const bot = await db.bot.create({
       data: {

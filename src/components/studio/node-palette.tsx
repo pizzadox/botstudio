@@ -47,7 +47,7 @@ export default function NodePalette({
             onClick={() => onAdd(type)}
             title={`${meta.title} — ${meta.description}`}
             aria-label={`${meta.title}: ${meta.description}`}
-            className="group flex w-full cursor-grab items-center gap-2.5 rounded-lg border bg-card p-2 text-left transition-colors hover:border-primary/40 hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:cursor-grabbing active:bg-primary/5 active:ring-1 active:ring-primary/30"
+            className="group flex min-h-11 w-full cursor-grab items-center gap-2.5 rounded-lg border bg-card p-2 text-left transition-colors hover:border-primary/40 hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:cursor-grabbing active:bg-primary/5 active:ring-1 active:ring-primary/30"
           >
             <div
               className={cn(
@@ -91,7 +91,7 @@ export function NodePaletteStrip({ onAdd }: { onAdd: (type: FlowNodeType) => voi
             onDragStart={(e) => handleDragStart(e, type)}
             onClick={() => onAdd(type)}
             aria-label={`Добавить блок «${meta.title}»`}
-            className="flex shrink-0 items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:bg-primary/5 active:ring-1 active:ring-primary/30"
+            className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:bg-primary/5 active:ring-1 active:ring-primary/30"
           >
             <Icon className={cn('h-3.5 w-3.5', meta.color, NODE_DARK[type].text)} aria-hidden />
             {meta.title}

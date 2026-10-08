@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Bot, Headset, Loader2, LockKeyhole, MessageSquareText, Sparkles, Workflow } from 'lucide-react';
+import { Bot, Eye, EyeOff, Headset, Loader2, LockKeyhole, MessageSquareText, Sparkles, Workflow } from 'lucide-react';
 import { api, setAuthToken } from '@/lib/client-api';
 import type { SessionUser } from '@/lib/studio-types';
 import { Button } from '@/components/ui/button';
@@ -38,6 +38,8 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // IMP-FE21-11: «показать пароль» — с клавиатурным доступом (aria-pressed, focus-ring)
+  const [showPassword, setShowPassword] = useState(false);
 
   const submit = async (mode: 'login' | 'register') => {
     setError(null);
@@ -102,7 +104,14 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
               <div className="text-xl font-bold tracking-tight">BotStudio</div>
             </div>
             <div className="rounded-xl border bg-card p-6 shadow-sm">
-              <Tabs defaultValue="login">
+              {/* IMP-FE21-11: при смене вкладки сбрасываем ошибку и видимость пароля */}
+              <Tabs
+                defaultValue="login"
+                onValueChange={() => {
+                  setError(null);
+                  setShowPassword(false);
+                }}
+              >
                 <TabsList className="grid w-full grid-cols-2 mb-6">
                   <TabsTrigger value="login">Вход</TabsTrigger>
                   <TabsTrigger value="register">Регистрация</TabsTrigger>
@@ -120,6 +129,7 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                       <Label htmlFor="login-username">Логин</Label>
                       <Input
                         id="login-username"
+                        autoFocus
                         placeholder="ваш_логин"
                         autoComplete="username"
                         aria-describedby="login-username-hint"
@@ -134,17 +144,33 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="login-password">Пароль</Label>
-                      <Input
-                        id="login-password"
-                        type="password"
-                        placeholder="••••••••"
-                        autoComplete="current-password"
-                        aria-describedby="login-password-hint"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        disabled={busy}
-                        required
-                      />
+                      <div className="relative">
+                        <Input
+                          id="login-password"
+                          type={showPassword ? 'text' : 'password'}
+                          placeholder="••••••••"
+                          autoComplete="current-password"
+                          aria-describedby="login-password-hint"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          disabled={busy}
+                          required
+                          className="pr-9"
+                        />
+                        <button
+                          type="button"
+                          aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                          aria-pressed={showPassword}
+                          onClick={() => setShowPassword((v) => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {showPassword ? (
+                            <EyeOff className="h-4 w-4" aria-hidden="true" />
+                          ) : (
+                            <Eye className="h-4 w-4" aria-hidden="true" />
+                          )}
+                        </button>
+                      </div>
                       <p id="login-password-hint" className="text-xs text-muted-foreground">
                         Пароль от вашей учётной записи
                       </p>
@@ -181,6 +207,7 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                       <Label htmlFor="reg-name">Имя (необязательно)</Label>
                       <Input
                         id="reg-name"
+                        autoFocus
                         placeholder="Как к вам обращаться"
                         aria-describedby="reg-name-hint"
                         value={name}
@@ -209,19 +236,40 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="reg-password">Пароль</Label>
-                      <Input
-                        id="reg-password"
-                        type="password"
-                        placeholder="минимум 6 символов"
-                        autoComplete="new-password"
-                        aria-describedby="reg-password-hint"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        disabled={busy}
-                        required
-                      />
+                      <div className="relative">
+                        <Input
+                          id="reg-password"
+                          type={showPassword ? 'text' : 'password'}
+                          placeholder="минимум 6 символов"
+                          autoComplete="new-password"
+                          aria-describedby="reg-password-hint"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          disabled={busy}
+                          required
+                          // IMP-FE21-11: клиентская валидация до запроса —
+                          // согласована с подсказкой (латиница/цифры/знаки, без пробелов и кириллицы)
+                          minLength={6}
+                          pattern="[!-~]+"
+                          title="От 6 символов — латиница, цифры и знаки (без пробелов и кириллицы)"
+                          className="pr-9"
+                        />
+                        <button
+                          type="button"
+                          aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                          aria-pressed={showPassword}
+                          onClick={() => setShowPassword((v) => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {showPassword ? (
+                            <EyeOff className="h-4 w-4" aria-hidden="true" />
+                          ) : (
+                            <Eye className="h-4 w-4" aria-hidden="true" />
+                          )}
+                        </button>
+                      </div>
                       <p id="reg-password-hint" className="text-xs text-muted-foreground">
-                        От 6 символов — латиница, цифры, знаки
+                        От 6 символов — латиница, цифры, знаки (без пробелов и кириллицы)
                       </p>
                     </div>
                     {error && (

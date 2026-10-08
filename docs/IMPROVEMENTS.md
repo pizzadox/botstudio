@@ -75,3 +75,76 @@
 - docs/UI-CONVENTIONS.md — дизайн-система и правила кода для будущих агентов
 - docs/IMPROVEMENTS.md — этот реестр (обновлять статусы)
 - worklog.md — журнал работ по задачам
+
+---
+
+# Реестр улучшений BotStudio — волна 21 (2026-10-08)
+
+Источник: второй аудит (2 Explore-агента: 24 FE- + 26 BE-находок). Все пункты выполнены 4 параллельными агентами (21-BE1, 21-BE2, 21-FE1, 21-FE2).
+
+## A. Безопасность API (агент 21-BE1)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-BE21-01 | Маскирование секретов: GET/PUT bots/[id] — mytkoConfig вырезан (→ mytko:{enabled,hasToken}), каналы token → tokenMasked+hasToken+webhookUrl; санитайзеры во всех роутах каналов; PUT «пустой token = не менять» больше не затирает токен | ✅ |
+| IMP-BE21-03 | НОВЫЙ POST /api/channels/[id]/test: max (maxGetMe) / telegram (getMe) / whatsapp (graph.me) / web; lastStatus пишется; кнопка «Проверить» наконец работает | ✅ |
+| IMP-BE21-04 | Rate-limit login (5/15мин по ip+username) и register (5/15мин по ip) → 429 | ✅ |
+| IMP-BE21-07 | register: P2002 → 409 «Логин занят» (был 500) | ✅ |
+| IMP-BE21-11 | Cache-Control: no-store на поллинг-GET: notifications, conversations/[id], orders messages, demo | ✅ |
+| IMP-BE21-10 | Demo webhook rate-limit: 20/мин per-IP + 10/мин per-conversation → 429 | ✅ |
+| IMP-BE21-22 | Индекс Session(expiresAt) для часовой чистки | ✅ |
+| IMP-BE21-19 | notifications: botNames через Map вместо find | ✅ |
+| IMP-BE21-21 | Пагинация ?take (cap 500) в bots/[id]/conversations и orders | ✅ |
+| IMP-BE21-12 | Лимиты длин: name 120 / description 500 / channel title 120 | ✅ |
+
+## B. Надёжность и MyTKO (агент 21-BE2)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-BE21-02 | Таймаут ИИ-вызова 45с (Promise.race, unref, clearTimeout) → существующие fallback-тексты | ✅ |
+| IMP-BE21-13 | persistFreshToken в finally — свежий токен MyTKO больше не теряется при неуспехе | ✅ |
+| IMP-BE21-08 | MyTKO: отчёты — чанки параллельно (concurrency 3), таймаут 90→35с, префильтр кодов по городу (getAreasCached + resolveAreaCodes, фолбэк полный реестр); sync-areas — bulk INSERT..ON CONFLICT чанками 400 (проверено на копии БД: 850 строк, повторный апдейт, null'ы) | ✅ |
+| IMP-BE21-09 | Шифрование пароля MyTKO AES-256-GCM (APP_SECRET в .env.local, enc:v1:, plaintext-совместимость, живой тест цепочки) | ✅ |
+| IMP-BE21-05 | Demo-guard: conversationId принимается только от web-каналов (channel.type==='web' или source='web'); чужой ID → «как без ID», инъекции в MAX/Telegram-диалоги невозможны (живой тест) | ✅ |
+| IMP-BE21-06 | simulate: валидация state (≤32КБ, history slice(-50), vars ≤4КБ) → 400; messages через createMany | ✅ |
+| IMP-BE21-14 | webhook persistBotMessages: createMany одним запросом | ✅ |
+| IMP-BE21-24 | close: (message.create + deliver) пары в Promise.all | ✅ |
+| IMP-BE21-25 | orders.ts: unref у гео-таймеров | ✅ |
+| IMP-BE21-23 | inbound-dedupe: sweep не чаще раза в минуту | ✅ |
+| (фикс) | orders/[orderId]/mytko: serializeMytkoConfig вместо JSON.stringify (пароль не возвращается в БД plaintext'ом) | ✅ |
+
+## C. Редактор флоу (агент 21-FE1)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-FE21-01 | Защита от затирания сценария: loadError-state + LoadErrorCard («Повторить»), loadedRef false при сбое, гварды saveNow/handleNodesChange/addNode, палитры скрыты | ✅ |
+| IMP-FE21-03 | Undo удаления блока: снапшот nodes/edges (оба пути: кнопка и Delete-клавиша), тост с ToastAction «Отменить» 5с, восстановление + выбор узла | ✅ |
+| IMP-FE21-04 | togglePublish: await saveNow() при unsaved/saving, сбой → публикация прервана | ✅ |
+| IMP-FE21-13 | Инспектор: clamp(0,3)+inputMode для паузы; мягкая live-валидация JSON http-блока | ✅ |
+| IMP-FE21-20 | maxLength 4000 + счётчики на textarea инспектора (amber >90%) | ✅ |
+| IMP-FE21-07 | Тест-чат: поллинг пауза на document.hidden (паттерн волны 20) | ✅ |
+| IMP-FE21-08 | Тест-чат: runIdRef-поколения — старые ответы не догоняют новую генерацию | ✅ |
+| IMP-FE21-16 | Пузыри бота тест-чата → конвенция (border bg-card rounded-br-md) | ✅ |
+| IMP-FE21-21 | Палитра: min-h-11 (44px тач) на чипах | ✅ |
+
+## D. Оболочка, каналы, формы (агент 21-FE2)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-FE21-02 | Мобильное «Ещё»-меню (MoreVertical): тема (RadioGroup light/dark), «Палитра команд» (prop onOpenPalette), «Выйти»; logout убран из мобильного хедера | ✅ |
+| IMP-FE21-06 | Persist view+botId в localStorage (bstudio.view/bstudio.botId), восстановление одним GET /api/bots, очистка при logout | ✅ |
+| IMP-FE21-05 | Палитра: перезапрос ботов при каждом открытии | ✅ |
+| IMP-FE21-24 | Notifications: 3 сбоя подряд → разовый тост «Нет связи», сброс при успехе | ✅ |
+| IMP-FE21-10 | form+Enter+autofocus: создание/переименование бота, канал, запись БЗ; busy-кнопки | ✅ |
+| IMP-FE21-11 | Login: autofocus, клиентская валидация пароля (minLength/pattern), сброс ошибки при смене вкладки, eye-toggle с aria-pressed | ✅ |
+| IMP-FE21-09 | «Проверить» канала: testBusyId → Loader2+disabled на проверяемой карточке | ✅ |
+| IMP-FE21-14 | Webhook URL с сервера (ch.webhookUrl) + tokenMasked вместо token | ✅ |
+| IMP-FE21-12 | MytkoCard: inline-Alert при сбое загрузки с «Повторить», hasPassword только после успешного save, скелетон вместо null | ✅ |
+| IMP-FE21-23 | DemoChat через api() + системное сообщение при сбое, aria-label input | ✅ |
+| IMP-FE21-17 | Таблица отчётов MyTKO в overflow-x-auto | ✅ |
+| IMP-FE21-15 | Empty-states унифицированы h-12 w-12 rounded-xl | ✅ |
+| IMP-FE21-18 | Eye-toggle: tabIndex убран, focus-visible ring | ✅ |
+| IMP-FE21-19 | Dashboard: role="button" убран, явная кнопка на имени бота | ✅ |
+| IMP-FE21-20 | Счётчики prompt (4000) и БЗ (20000) в ai-assistant | ✅ |
+| IMP-FE21-22 | createBot: один запрос (POST отдаёт {id,name}), сразу onOpenBot | ✅ |
+
+## Итог волны 21
+- 45 улучшений выполнено (BE1: 10, BE2: 11, FE1: 9, FE2: 16 — с учётом фикса сериализации).
+- Критичные: защита от затирания сценария (data loss), рабочий «Проверить» канал, маскирование всех секретов в API, шифрование пароля MyTKO, защита демо-виджета от инъекций в чужие диалоги.
+- tsc: 0; lint: 0; browser-верификация: см. worklog Task 21.

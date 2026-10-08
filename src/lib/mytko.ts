@@ -25,7 +25,85 @@
  *     EXTERNAL_SYNC_DSP_EXPORT_{server_name} (доступ выдаёт mytko@groupstp.ru).
  */
 
+import crypto from 'node:crypto';
 import { db } from '@/lib/db';
+
+// ─── Шифрование секретов в mytkoConfig (IMP-BE21-09) ─────────────────────────
+//
+// Пароль в bot.mytkoConfig раньше хранился plaintext. При СОХРАНЕНИИ он теперь
+// шифруется AES-256-GCM ключом из APP_SECRET (sha256 от строки), префикс 'enc:v1:'.
+// Чтение обратно совместимо: строка без префикса считается plaintext (старые записи).
+// Если APP_SECRET не задан — сохраняем как раньше (plaintext), предупреждаем раз в процесс.
+
+const ENC_PREFIX = 'enc:v1:';
+let warnedNoSecret = false;
+
+/** Ключ шифрования из APP_SECRET (32 байта через sha256) или null, если секрет не задан */
+function secretKey(): Buffer | null {
+  const secret = process.env.APP_SECRET?.trim();
+  if (!secret) return null;
+  return crypto.createHash('sha256').update(secret).digest();
+}
+
+/**
+ * Зашифровать секрет для записи в mytkoConfig.
+ * Без APP_SECRET возвращает plaintext как раньше (console.warn раз в процесс).
+ */
+export function encryptMytkoSecret(plain: string): string {
+  const key = secretKey();
+  if (!key) {
+    if (!warnedNoSecret) {
+      warnedNoSecret = true;
+      console.warn(
+        '[mytko] APP_SECRET не задан — пароль MyTKO сохраняется в БД без шифрования. ' +
+          'Добавьте APP_SECRET=<hex> в .env.local и пересохраните пароль в настройках интеграции.'
+      );
+    }
+    return plain;
+  }
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const data = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  return [ENC_PREFIX + iv.toString('base64'), cipher.getAuthTag().toString('base64'), data.toString('base64')].join(':');
+}
+
+/**
+ * Расшифровать секрет из mytkoConfig. Строка без префикса 'enc:v1:' возвращается
+ * как есть (обратная совместимость с plaintext-записями).
+ * Ключ шифрования не совпал / APP_SECRET потерян — бросаем понятную ошибку.
+ */
+export function decryptMytkoSecret(stored: string): string {
+  if (!stored.startsWith(ENC_PREFIX)) return stored;
+  const key = secretKey();
+  if (!key) {
+    throw new Error(
+      'Пароль MyTKO зашифрован (enc:v1), но APP_SECRET не задан. ' +
+        'Добавьте APP_SECRET=<hex> в .env.local — тот же ключ, которым шифровали пароль.'
+    );
+  }
+  const [ivB64, tagB64, dataB64] = stored.slice(ENC_PREFIX.length).split(':');
+  if (!ivB64 || !tagB64 || !dataB64) {
+    throw new Error('Повреждена зашифрованная запись пароля MyTKO — введите пароль заново в настройках интеграции.');
+  }
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64, 'base64'));
+    decipher.setAuthTag(Buffer.from(tagB64, 'base64'));
+    return Buffer.concat([decipher.update(Buffer.from(dataB64, 'base64')), decipher.final()]).toString('utf8');
+  } catch {
+    throw new Error(
+      'Не удалось расшифровать пароль MyTKO: APP_SECRET не совпадает с тем, которым шифровали пароль. ' +
+        'Задайте прежний APP_SECRET или введите пароль заново в настройках интеграции.'
+    );
+  }
+}
+
+/**
+ * Сериализация mytkoConfig для записи в БД: пароль шифруется (при заданном APP_SECRET).
+ * Все записи конфига должны идти через неё — иначе пароль вернётся в БД plaintext'ом.
+ */
+export function serializeMytkoConfig(cfg: MytkoConfig): string {
+  return JSON.stringify({ ...cfg, password: cfg.password ? encryptMytkoSecret(cfg.password) : '' });
+}
 
 // ─── Конфигурация ─────────────────────────────────────────────────────────────
 
@@ -70,29 +148,34 @@ export interface MytkoConfig {
 
 export function parseMytkoConfig(raw: string | null | undefined): MytkoConfig {
   const empty = { enabled: false, apiUrl: '', username: '', password: '', lkCodes: '', useAllAreas: false, token: '', tokenIssuedAt: '', areasSyncedAt: '' };
+  let parsed: Record<string, unknown>;
   try {
-    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    const d = (parsed.directions ?? {}) as Record<string, unknown>;
-    return {
-      enabled: parsed.enabled === true,
-      apiUrl: typeof parsed.apiUrl === 'string' ? parsed.apiUrl : '',
-      username: typeof parsed.username === 'string' ? parsed.username : '',
-      password: typeof parsed.password === 'string' ? parsed.password : '',
-      lkCodes: typeof parsed.lkCodes === 'string' ? parsed.lkCodes : '',
-      useAllAreas: parsed.useAllAreas === true,
-      directions: {
-        areas: d.areas !== false, // по умолчанию включено
-        driverReports: d.driverReports !== false,
-        requests: d.requests === true,
-        sendRequests: d.sendRequests === true,
-      },
-      token: typeof parsed.token === 'string' ? parsed.token : '',
-      tokenIssuedAt: typeof parsed.tokenIssuedAt === 'string' ? parsed.tokenIssuedAt : '',
-      areasSyncedAt: typeof parsed.areasSyncedAt === 'string' ? parsed.areasSyncedAt : '',
-    };
+    parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
   } catch {
     return { ...empty, directions: { ...DEFAULT_MYTKO_DIRECTIONS } };
   }
+  const d = (parsed.directions ?? {}) as Record<string, unknown>;
+  const storedPassword = typeof parsed.password === 'string' ? parsed.password : '';
+  return {
+    enabled: parsed.enabled === true,
+    apiUrl: typeof parsed.apiUrl === 'string' ? parsed.apiUrl : '',
+    username: typeof parsed.username === 'string' ? parsed.username : '',
+    // Пароль может быть зашифрован ('enc:v1:...') — расшифровываем при чтении;
+    // plaintext (старые записи) возвращается как есть. Ошибка расшифровки
+    // (потерян APP_SECRET) пробрасывается наружу с понятным текстом.
+    password: storedPassword ? decryptMytkoSecret(storedPassword) : '',
+    lkCodes: typeof parsed.lkCodes === 'string' ? parsed.lkCodes : '',
+    useAllAreas: parsed.useAllAreas === true,
+    directions: {
+      areas: d.areas !== false, // по умолчанию включено
+      driverReports: d.driverReports !== false,
+      requests: d.requests === true,
+      sendRequests: d.sendRequests === true,
+    },
+    token: typeof parsed.token === 'string' ? parsed.token : '',
+    tokenIssuedAt: typeof parsed.tokenIssuedAt === 'string' ? parsed.tokenIssuedAt : '',
+    areasSyncedAt: typeof parsed.areasSyncedAt === 'string' ? parsed.areasSyncedAt : '',
+  };
 }
 
 /**
@@ -198,7 +281,8 @@ async function mytkoGraphQL<T>(
           Authorization: `Bearer ${auth.token}`,
         },
         body: JSON.stringify({ query, variables }),
-        signal: AbortSignal.timeout(90_000),
+        // MyTKO сам ограничивает запрос 30 с — 90 с были избыточны (IMP-BE21-08а)
+        signal: AbortSignal.timeout(35_000),
       });
       // Токен протух — получаем новый и повторяем один раз
       if (res.status === 401 && attempt === 0) {
@@ -271,6 +355,7 @@ export async function mytkoWhoAmI(
 
 const areaCodeGlobals = globalThis as unknown as {
   __mytkoAreaCodeCache?: Map<string, { codes: string[]; expiresAt: number }>;
+  __mytkoAreasCache?: Map<string, { areas: MytkoArea[]; expiresAt: number }>;
 };
 const AREA_CODES_TTL = 5 * 60 * 1000; // 5 минут
 
@@ -289,9 +374,33 @@ export async function getAreaCodesCached(botId: string): Promise<string[]> {
   return codes;
 }
 
-/** Сбросить кэш кодов КП бота (после sync-areas / изменения реестра) */
+/** Полный реестр КП бота (lkCode + адрес + координаты), кэш TTL 5 минут —
+ *  та же инфраструктура, что у getAreaCodesCached. Нужен для префильтра
+ *  кодов отчётов по городу (IMP-BE21-08б), чтобы не слать ~11k кодов в MyTKO,
+ *  когда боту интересен один город. */
+export async function getAreasCached(botId: string): Promise<MytkoArea[]> {
+  const cache = (areaCodeGlobals.__mytkoAreasCache ??= new Map());
+  const hit = cache.get(botId);
+  if (hit && hit.expiresAt > Date.now()) return hit.areas;
+  const rows = await db.mytkoArea.findMany({
+    where: { botId },
+    select: { lkCode: true, address: true, lat: true, lng: true },
+  });
+  const areas: MytkoArea[] = rows.map((a) => ({
+    lkCode: a.lkCode,
+    address: a.address,
+    lat: a.lat,
+    lng: a.lng,
+  }));
+  cache.set(botId, { areas, expiresAt: Date.now() + AREA_CODES_TTL });
+  return areas;
+}
+
+/** Сбросить кэши реестра КП бота (после sync-areas / изменения реестра).
+ *  Сигнатура прежняя — сбрасываются и коды, и полный реестр. */
 export function invalidateAreaCodesCache(botId: string): void {
   (areaCodeGlobals.__mytkoAreaCodeCache ??= new Map()).delete(botId);
+  (areaCodeGlobals.__mytkoAreasCache ??= new Map()).delete(botId);
 }
 
 // ─── Реестр КП: все возможные коды контейнерных площадок ─────────────────────
@@ -414,12 +523,15 @@ export async function mytkoGetDriverReports(
   const from = opts?.fromIso ?? new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
   const codes = opts?.areaCodes ?? [];
 
-  const reports: MytkoDriverReport[] = [];
-  const CHUNK = 800;
-  if (codes.length === 0) return { ok: true, reports };
+  if (codes.length === 0) return { ok: true, reports: [] };
 
-  for (let i = 0; i < codes.length; i += CHUNK) {
-    const chunk = codes.slice(i, i + CHUNK);
+  const CHUNK = 800;
+  const chunks: string[][] = [];
+  for (let i = 0; i < codes.length; i += CHUNK) chunks.push(codes.slice(i, i + CHUNK));
+
+  const fetchChunk = async (
+    chunk: string[]
+  ): Promise<{ ok: true; reports: MytkoDriverReport[] } | { ok: false; error: string }> => {
     const res = await mytkoGraphQL<{
       reportsFromDriverByAreaCodesAndPeriod: Array<{
         area?: { lkCode?: string | null; address?: { view?: string | null } | null } | null;
@@ -434,12 +546,13 @@ export async function mytkoGetDriverReports(
     }>(cfg, REPORTS_QUERY, { areaCodes: chunk, from, to });
     if (!res.ok) return res;
 
+    const out: MytkoDriverReport[] = [];
     for (const item of res.data.reportsFromDriverByAreaCodesAndPeriod ?? []) {
       const lkCode = item?.area?.lkCode ?? null;
       const areaName = item?.area?.address?.view ?? null;
       for (const r of item?.reports ?? []) {
         if (!r?.id) continue;
-        reports.push({
+        out.push({
           id: r.id,
           removalTs: r.removalDate ?? null,
           vehicleNumber: r.vehicle?.number?.full ?? null,
@@ -450,6 +563,21 @@ export async function mytkoGetDriverReports(
           notRemoved: 0,
         });
       }
+    }
+    return { ok: true, reports: out };
+  };
+
+  // IMP-BE21-08а: раньше чанки шли строго последовательно (~14 запросов).
+  // Теперь — параллельно с concurrency 3: группы по 3, Promise.all,
+  // группы последовательно (не DDoS-им MyTKO). ~5 волн вместо 14 ожиданий.
+  const CONCURRENCY = 3;
+  const reports: MytkoDriverReport[] = [];
+  for (let gi = 0; gi < chunks.length; gi += CONCURRENCY) {
+    const group = chunks.slice(gi, gi + CONCURRENCY);
+    const results = await Promise.all(group.map((chunk) => fetchChunk(chunk)));
+    for (const r of results) {
+      if (!r.ok) return r;
+      reports.push(...r.reports);
     }
   }
 

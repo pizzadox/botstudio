@@ -8,12 +8,15 @@
 
 interface DedupeGlobal {
   __inboundDedupe?: Map<string, number>;
+  /** Время последней чистки (мс) — защита от перебора всей Map на каждый claim */
+  __inboundDedupeSweepAt?: number;
 }
 
 const g = globalThis as unknown as DedupeGlobal;
 
 const TTL_MS = 10 * 60 * 1000; // 10 минут
 const MAX_ENTRIES = 5000;
+const SWEEP_INTERVAL_MS = 60 * 1000; // чистка не чаще раза в минуту
 
 /** true — сообщение видно впервые (можно обрабатывать); false — уже обрабатывали. */
 export function claimInboundKey(key: string): boolean {
@@ -22,8 +25,10 @@ export function claimInboundKey(key: string): boolean {
   const map = g.__inboundDedupe;
   const now = Date.now();
 
-  // Периодическая чистка устаревших ключей
-  if (map.size > MAX_ENTRIES) {
+  // Периодическая чистка устаревших ключей (IMP-BE21-23: полный перебор Map
+  // выполняется не чаще раза в минуту, а не на каждый вызов при переполнении)
+  if (map.size > MAX_ENTRIES && now - (g.__inboundDedupeSweepAt ?? 0) > SWEEP_INTERVAL_MS) {
+    g.__inboundDedupeSweepAt = now;
     for (const [k, ts] of map) {
       if (now - ts > TTL_MS) map.delete(k);
     }

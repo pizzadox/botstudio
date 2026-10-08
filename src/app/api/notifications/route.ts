@@ -24,7 +24,9 @@ export async function GET(req: NextRequest) {
       totals: { newOrders: 0, openConvs: 0 },
     });
   }
-  const botName = (id: string) => bots.find((b) => b.id === id)?.name ?? '';
+  // IMP-BE21-19: Map вместо линейного find на каждое уведомление
+  const botNames = new Map(bots.map((b) => [b.id, b.name]));
+  const botName = (id: string) => botNames.get(id) ?? '';
 
   // Серверный курсор времени: фиксируем ДО запросов, чтобы заявка/диалог,
   // созданные во время выборки, гарантированно попали в СЛЕДУЮЩИЙ опрос
@@ -52,10 +54,13 @@ export async function GET(req: NextRequest) {
   // курсор брался из часов браузера — расхождение часов браузера и сервера
   // делало одно и то же уведомление «новым» на каждом опросе, и тост
   // вылезал бесконечно.
-  return NextResponse.json({
+  // IMP-BE21-11: личные данные опрашиваются часто — никакой кэш недопустим.
+  const res = NextResponse.json({
     now,
     newOrders: newOrders.map((o) => ({ ...o, botName: botName(o.botId) })),
     newChats: newChats.map((c) => ({ ...c, botName: botName(c.botId) })),
     totals: { newOrders: totalNewOrders, openConvs: totalOpenConvs },
   });
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
 }

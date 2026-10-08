@@ -48,7 +48,8 @@ export async function GET(req: NextRequest, { params }: Params) {
     }),
   ]);
 
-  return NextResponse.json({
+  // IMP-BE21-11: персональная переписка — никогда не кэшируется
+  const res = NextResponse.json({
     conversation: {
       id: conversation.id,
       source: conversation.source,
@@ -65,6 +66,8 @@ export async function GET(req: NextRequest, { params }: Params) {
       createdAt: m.createdAt,
     })),
   });
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
 }
 
 export async function DELETE(req: NextRequest, { params }: Params) {

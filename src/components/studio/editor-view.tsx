@@ -4,12 +4,14 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import type { DragEvent, MouseEvent } from 'react';
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 import {
+  AlertTriangle,
   ChevronLeft,
   Loader2,
   MessageSquareText,
   Radio,
   Save,
   Sparkles,
+  Undo2,
 } from 'lucide-react';
 import {
   ReactFlow,
@@ -45,6 +47,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
 
 function defaultDataFor(type: FlowNodeType): FlowNodeData {
@@ -153,6 +156,41 @@ function PaletteSkeleton() {
   );
 }
 
+/** IMP-FE21-01: карточка ошибки загрузки сценария вместо пустого канваса */
+function LoadErrorCard({ message, onRetry, onBack }: { message: string; onRetry: () => void; onBack: () => void }) {
+  return (
+    <div
+      role="alert"
+      className="flex h-full w-full items-center justify-center bg-muted/40 p-4"
+    >
+      <div className="w-full max-w-sm rounded-xl border bg-card p-6 text-center shadow-sm">
+        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="h-6 w-6" aria-hidden="true" />
+        </div>
+        <p className="font-medium">Не удалось загрузить сценарий</p>
+        <p className="mt-1 break-words text-sm text-muted-foreground">
+          {message.length > 140 ? `${message.slice(0, 140)}…` : message}
+        </p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Редактирование заблокировано, чтобы автосохранение не затёрло текущий сценарий бота.
+        </p>
+        <div className="mt-4 flex justify-center gap-2">
+          <Button size="sm" onClick={onRetry}>Повторить</Button>
+          <Button size="sm" variant="outline" onClick={onBack}>На дашборд</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Снапшот для отмены удаления блока (IMP-FE21-03): полные массивы до удаления */
+interface DeleteSnapshot {
+  label: string;
+  selectId: string | null;
+  nodes: FlowCardNode[];
+  edges: Edge[];
+}
+
 function EditorInner({
   bot,
   onBack,
@@ -175,16 +213,27 @@ function EditorInner({
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'unsaved'>('saved');
   const [testOpen, setTestOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  // IMP-FE21-01: ошибка загрузки сценария — канвас заменяется error-карточкой,
+  // автосейв и правки заблокированы, чтобы не перезаписать реальный сценарий пустым
+  const [loadError, setLoadError] = useState<string | null>(null);
   const loadedRef = useRef(false);
+  // IMP-FE21-03: снапшот последнего удаления блока (заменяется каждым новым удалением)
+  const deleteSnapshotRef = useRef<DeleteSnapshot | null>(null);
+  // Счётчик попыток загрузки: перезагрузка по «Повторить» инвалидирует предыдущий запрос
+  const loadSeqRef = useRef(0);
   const isDesktop = useMediaQuery('(min-width: 1024px)');
   const isWide = useMediaQuery('(min-width: 1440px)');
 
-  // Загрузка сценария
-  useEffect(() => {
-    let alive = true;
+  // Загрузка сценария. setState — только в асинхронных колбэках; синхронные сбросы
+  // (кнопка «Повторить») делает retryLoad — так не нарушается react-hooks/set-state-in-effect
+  const loadFlow = useCallback(() => {
+    const seq = ++loadSeqRef.current;
+    // На время загрузки запрещаем автосейв: при повторе после ошибки loadedRef
+    // уже мог быть true от предыдущего успеха — сбрасываем, чтобы не затирать сценарий
+    loadedRef.current = false;
     api<{ bot: BotDetail }>(`/api/bots/${bot.id}`)
       .then(({ bot: b }) => {
-        if (!alive) return;
+        if (seq !== loadSeqRef.current) return;
         let flow: Flow = { nodes: [], edges: [] };
         try {
           flow = JSON.parse(b.flow) as Flow;
@@ -211,17 +260,45 @@ function EditorInner({
             markerEnd: { type: MarkerType.ArrowClosed },
           }))
         );
-        requestAnimationFrame(() => requestAnimationFrame(() => fitView({ padding: 0.15 })));
-      })
-      .catch(() => toast({ title: 'Не удалось загрузить сценарий', variant: 'destructive' }))
-      .finally(() => {
         loadedRef.current = true;
         setLoading(false);
+        setLoadError(null);
+        requestAnimationFrame(() => requestAnimationFrame(() => fitView({ padding: 0.15 })));
+      })
+      .catch((err: unknown) => {
+        // IMP-FE21-01: loadedRef остаётся false — автосейв пустого канваса не сработает
+        if (seq !== loadSeqRef.current) return;
+        const message = err instanceof Error ? err.message : 'Ошибка запроса';
+        setLoadError(message);
+        setLoading(false);
       });
+  }, [bot.id, fitView, setEdges, setNodes]);
+
+  useEffect(() => {
+    loadFlow();
     return () => {
-      alive = false;
+      // размонтирование (смена бота → remount) инвалидирует in-flight загрузку
+      loadSeqRef.current++;
     };
-  }, [bot.id]);
+  }, [loadFlow]);
+
+  // IMP-FE21-01: «Повторить» — синхронный сброс состояния и новая попытка загрузки
+  const retryLoad = useCallback(() => {
+    setLoading(true);
+    setLoadError(null);
+    loadFlow();
+  }, [loadFlow]);
+
+  // IMP-FE21-03: восстановить nodes/edges из снапшота; выбор — на возвращённый блок
+  const undoDelete = useCallback(() => {
+    const snap = deleteSnapshotRef.current;
+    if (!snap) return;
+    deleteSnapshotRef.current = null;
+    setNodes(snap.nodes);
+    setEdges(snap.edges);
+    setSaveState('unsaved');
+    setSelectedId(snap.selectId);
+  }, [setEdges, setNodes]);
 
   const buildFlow = useCallback((): Flow => {
     return {
@@ -236,8 +313,11 @@ function EditorInner({
     };
   }, [nodes, edges]);
 
-  // Немедленное сохранение сценария — используется и автосейвом, и Ctrl/Cmd+S (IMP-F19)
-  const saveNow = useCallback(async () => {
+  // Немедленное сохранение сценария — используется и автосейвом, и Ctrl/Cmd+S (IMP-F19).
+  // Возвращает успех — togglePublish (IMP-FE21-04) прерывает публикацию при сбое
+  const saveNow = useCallback(async (): Promise<boolean> => {
+    // IMP-FE21-01: сценарий не загружен (или загрузка упала) — сохранять пустой канвас нельзя
+    if (loadError || !loadedRef.current) return false;
     setSaveState('saving');
     try {
       await api(`/api/bots/${bot.id}`, {
@@ -245,10 +325,12 @@ function EditorInner({
         body: JSON.stringify({ flow: buildFlow() }),
       });
       setSaveState('saved');
+      return true;
     } catch {
       setSaveState('unsaved');
+      return false;
     }
-  }, [buildFlow, bot.id]);
+  }, [buildFlow, bot.id, loadError]);
 
   // Автосохранение сценария (debounce 900 мс, только когда есть несохранённые изменения)
   useEffect(() => {
@@ -310,6 +392,8 @@ function EditorInner({
 
   const addNode = useCallback(
     (type: FlowNodeType, position: XYPosition) => {
+      // IMP-FE21-01: при ошибке загрузки добавление блокировано (палитры скрыты + страховка здесь)
+      if (loadError || !loadedRef.current) return;
       const id = `n_${Math.random().toString(36).slice(2, 10)}`;
       const flowNode: FlowNode = { id, type, position, data: defaultDataFor(type) };
       setSaveState('unsaved');
@@ -319,7 +403,7 @@ function EditorInner({
       ]);
       setSelectedId(id);
     },
-    [setNodes]
+    [loadError, setNodes]
   );
 
   const addNodeCenter = useCallback(
@@ -399,14 +483,43 @@ function EditorInner({
     [setNodes]
   );
 
+  // IMP-FE21-03: показ тоста с кнопкой «Отменить» над последним снапшотом удаления.
+  // Хук тостов поддерживает action (ToastAction) и duration — Radix сам закроет через 5 с
+  const announceDelete = useCallback(
+    (snapshot: DeleteSnapshot) => {
+      deleteSnapshotRef.current = snapshot; // новое удаление заменяет предыдущий снапшот
+      toast({
+        title: `Блок «${snapshot.label}» удалён`,
+        description: 'Восстановить можно в течение 5 секунд',
+        duration: 5000,
+        action: (
+          <ToastAction altText="Отменить удаление блока" onClick={() => undoDelete()}>
+            <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
+            Отменить
+          </ToastAction>
+        ),
+      });
+    },
+    [toast, undoDelete]
+  );
+
   const deleteNode = useCallback(
     (nodeId: string) => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      // Снапшот ДО удаления: полные массивы — восстановление просто возвращает их обратно
+      announceDelete({
+        label: node.data.node.data.label || node.data.node.type,
+        selectId: nodeId,
+        nodes,
+        edges,
+      });
       setSaveState('unsaved');
       setNodes((nds) => nds.filter((n) => n.id !== nodeId));
       setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
       setSelectedId(null);
     },
-    [setNodes, setEdges]
+    [announceDelete, edges, nodes, setEdges, setNodes]
   );
 
   // Обёртки над изменениями React Flow — отмечают сценарий «грязным».
@@ -416,25 +529,41 @@ function EditorInner({
   // Autosave-таймер не затронут: он пересоздаётся по изменению самих nodes/edges.
   const handleNodesChange = useCallback(
     (changes: Parameters<typeof onNodesChange>[0]) => {
-      if (loadedRef.current && changes.length > 0) {
+      // IMP-FE21-01: при ошибке загрузки правки (в т.ч. контентные) не помечают сценарий «грязным»
+      if (loadedRef.current && !loadError && changes.length > 0) {
         const geometryOnly = changes.every(
           (c) => c.type === 'position' || c.type === 'dimensions' || c.type === 'select'
         );
         setSaveState((prev) => (geometryOnly && prev === 'unsaved' ? prev : 'unsaved'));
       }
+      // IMP-FE21-03: удаление клавишей Delete приходит как remove-изменения —
+      // снапшот снимаем ДО применения, снапшот заменяет предыдущий
+      if (loadedRef.current && changes.some((c) => c.type === 'remove')) {
+        const removedIds = changes.filter((c) => c.type === 'remove').map((c) => c.id);
+        const firstNode = nodes.find((n) => n.id === removedIds[0]);
+        announceDelete({
+          label:
+            removedIds.length === 1 && firstNode
+              ? firstNode.data.node.data.label || firstNode.data.node.type
+              : `Блоков: ${removedIds.length}`,
+          selectId: removedIds.length === 1 ? removedIds[0] : null,
+          nodes,
+          edges,
+        });
+      }
       onNodesChange(changes);
     },
-    [onNodesChange]
+    [announceDelete, edges, loadError, nodes, onNodesChange]
   );
   const handleEdgesChange = useCallback(
     (changes: Parameters<typeof onEdgesChange>[0]) => {
-      if (loadedRef.current && changes.length > 0) {
+      if (loadedRef.current && !loadError && changes.length > 0) {
         const selectionOnly = changes.every((c) => c.type === 'select');
         setSaveState((prev) => (selectionOnly && prev === 'unsaved' ? prev : 'unsaved'));
       }
       onEdgesChange(changes);
     },
-    [onEdgesChange]
+    [loadError, onEdgesChange]
   );
 
   const saveName = async () => {
@@ -451,6 +580,19 @@ function EditorInner({
 
   const togglePublish = async (published: boolean) => {
     const next = published ? 'published' : 'draft';
+    // IMP-FE21-04: перед публикацией дожидаемся сохранения сценария —
+    // иначе каналы получат старую версию при только что внесённых правках
+    if (saveState !== 'saved') {
+      const ok = await saveNow();
+      if (!ok) {
+        toast({
+          title: 'Сначала сохраните сценарий',
+          description: 'Не удалось сохранить изменения — публикация прервана',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
     setStatus(next);
     try {
       await api(`/api/bots/${bot.id}`, { method: 'PUT', body: JSON.stringify({ status: next }) });
@@ -545,13 +687,13 @@ function EditorInner({
         </div>
       </div>
 
-      {/* Мобильная палитра */}
-      <NodePaletteStrip onAdd={addNodeCenter} />
+      {/* Мобильная палитра — скрыта при ошибке загрузки (IMP-FE21-01: нельзя добавлять блоки) */}
+      {!loadError && <NodePaletteStrip onAdd={addNodeCenter} />}
 
       {/* Рабочая область */}
       <div className="relative flex min-h-0 flex-1">
-        {/* Палитра (десктоп) */}
-        {isDesktop && (
+        {/* Палитра (десктоп) — при ошибке загрузки скрываем полностью */}
+        {isDesktop && !loadError && (
           <div className="w-56 shrink-0 border-r bg-muted/30 xl:w-60">
             {loading ? <PaletteSkeleton /> : <NodePalette onAdd={addNodeCenter} className="h-full" />}
           </div>
@@ -559,7 +701,9 @@ function EditorInner({
 
         {/* Канвас */}
         <div className="relative min-w-0 flex-1">
-          {loading ? (
+          {loadError ? (
+            <LoadErrorCard message={loadError} onRetry={retryLoad} onBack={onBack} />
+          ) : loading ? (
             <CanvasSkeleton />
           ) : (
             <ReactFlow
@@ -595,7 +739,7 @@ function EditorInner({
               />
             </ReactFlow>
           )}
-          {nodes.length === 0 && !loading && (
+          {nodes.length === 0 && !loading && !loadError && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <div className="rounded-xl border bg-card/95 px-6 py-4 text-center text-sm text-muted-foreground shadow-lg backdrop-blur">
                 <Sparkles aria-hidden="true" className="mx-auto mb-2 h-5 w-5 text-primary" />

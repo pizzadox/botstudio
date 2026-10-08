@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 import {
+  AlertTriangle,
   ArrowDownToLine,
   ArrowLeftRight,
   ArrowUpFromLine,
@@ -124,6 +125,8 @@ export default function ChannelsView({
   const [token, setToken] = useState('');
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
+  // IMP-FE21-09: id канала, для которого идёт проверка — повторный клик невозможен
+  const [testBusyId, setTestBusyId] = useState<string | null>(null);
   const [demoChannel, setDemoChannel] = useState<ChannelItem | null>(null);
   const [origin, setOrigin] = useState('');
   // Подтверждение удаления (AlertDialog): state-target + open={!!target}
@@ -175,6 +178,8 @@ export default function ChannelsView({
   };
 
   const testChannel = async (ch: ChannelItem) => {
+    if (testBusyId) return;
+    setTestBusyId(ch.id);
     toast({ title: 'Проверяем подключение…' });
     try {
       const d = await api<{ ok: boolean; message: string }>(`/api/channels/${ch.id}/test`, {
@@ -184,6 +189,8 @@ export default function ChannelsView({
       load();
     } catch {
       toast({ title: 'Ошибка проверки', variant: 'destructive' });
+    } finally {
+      setTestBusyId(null);
     }
   };
 
@@ -206,7 +213,10 @@ export default function ChannelsView({
     }
   };
 
-  const webhookUrl = (ch: ChannelItem) => `${origin}/api/webhook/${ch.type}/${ch.secret}`;
+  // IMP-FE21-14: готовый URL приходит с сервера (ch.webhookUrl); клиентская
+  // сборка из secret — фолбэк на случай, если BE ещё не выкатил поле
+  const webhookUrl = (ch: ChannelItem) =>
+    ch.webhookUrl ?? `${origin}/api/webhook/${ch.type}/${ch.secret}`;
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto space-y-6 p-4 sm:p-6 lg:p-8">
@@ -266,8 +276,9 @@ export default function ChannelsView({
       ) : channels.length === 0 ? (
         <Card className="border-dashed">
           <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <Plug className="h-7 w-7" />
+            {/* IMP-FE21-15: унификация пустых состояний — h-12 w-12 rounded-xl */}
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Plug className="h-6 w-6" aria-hidden="true" />
             </div>
             <div className="font-semibold">Ни один канал не подключён</div>
             <p className="max-w-md text-sm text-muted-foreground">
@@ -365,8 +376,20 @@ export default function ChannelsView({
                     </div>
                   )}
                   <div className="flex gap-2">
-                    <Button size="sm" variant="outline" className="flex-1" onClick={() => testChannel(ch)}>
-                      <Zap className="h-3.5 w-3.5" /> Проверить
+                    {/* IMP-FE21-09: на время запроса кнопка заблокирована */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => testChannel(ch)}
+                      disabled={testBusyId === ch.id}
+                    >
+                      {testBusyId === ch.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+                      )}
+                      {testBusyId === ch.id ? 'Проверяем…' : 'Проверить'}
                     </Button>
                     <Button
                       size="sm"
@@ -409,75 +432,86 @@ export default function ChannelsView({
               Выберите мессенджер и вставьте данные доступа.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {(Object.keys(CHANNEL_META) as ChannelItem['type'][]).map((t) => {
-                const meta = CHANNEL_META[t];
-                const Icon = meta.icon;
-                return (
-                  <button
-                    key={t}
-                    onClick={() => setType(t)}
-                    aria-pressed={type === t}
-                    className={cn(
-                      'flex flex-col items-center gap-1.5 rounded-xl border p-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40',
-                      type === t
-                        ? 'border-primary bg-primary/5 shadow-sm ring-1 ring-primary/30'
-                        : 'hover:border-primary/40 hover:bg-muted/50'
-                    )}
-                  >
-                    <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', meta.color)}>
-                      <Icon className="h-4 w-4" />
-                    </div>
-                    {meta.label}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="ch-title" className="text-xs font-medium">Название канала</Label>
-              <Input
-                id="ch-title"
-                placeholder={`${CHANNEL_META[type].label} — основной`}
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-              />
-            </div>
-            {type !== 'web' && (
+          {/* IMP-FE21-10: Enter отправляет форму, preventDefault обязателен */}
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              createChannel();
+            }}
+          >
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {(Object.keys(CHANNEL_META) as ChannelItem['type'][]).map((t) => {
+                  const meta = CHANNEL_META[t];
+                  const Icon = meta.icon;
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setType(t)}
+                      aria-pressed={type === t}
+                      className={cn(
+                        'flex flex-col items-center gap-1.5 rounded-xl border p-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40',
+                        type === t
+                          ? 'border-primary bg-primary/5 shadow-sm ring-1 ring-primary/30'
+                          : 'hover:border-primary/40 hover:bg-muted/50'
+                      )}
+                    >
+                      <div className={cn('flex h-8 w-8 items-center justify-center rounded-lg', meta.color)}>
+                        <Icon className="h-4 w-4" />
+                      </div>
+                      {meta.label}
+                    </button>
+                  );
+                })}
+              </div>
               <div className="space-y-2">
-                <Label htmlFor="ch-token" className="text-xs font-medium">{CHANNEL_META[type].tokenLabel}</Label>
+                <Label htmlFor="ch-title" className="text-xs font-medium">Название канала</Label>
                 <Input
-                  id="ch-token"
-                  type="password"
-                  placeholder="вставьте токен"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
+                  id="ch-title"
+                  autoFocus
+                  placeholder={`${CHANNEL_META[type].label} — основной`}
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
                 />
               </div>
-            )}
-            {type === 'whatsapp' && (
-              <div className="space-y-2">
-                <Label htmlFor="ch-phone" className="text-xs font-medium">Phone Number ID</Label>
-                <Input
-                  id="ch-phone"
-                  placeholder="например 123456789012345"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                />
-              </div>
-            )}
-            <p className="whitespace-pre-line rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
-              {CHANNEL_META[type].hint}
-            </p>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAddOpen(false)}>
-              Отмена
-            </Button>
-            <Button onClick={createChannel} disabled={busy || (type !== 'web' && !token.trim())}>
-              {busy && <Loader2 className="h-4 w-4 animate-spin" />} Подключить
-            </Button>
-          </DialogFooter>
+              {type !== 'web' && (
+                <div className="space-y-2">
+                  <Label htmlFor="ch-token" className="text-xs font-medium">{CHANNEL_META[type].tokenLabel}</Label>
+                  <Input
+                    id="ch-token"
+                    type="password"
+                    placeholder="вставьте токен"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                  />
+                </div>
+              )}
+              {type === 'whatsapp' && (
+                <div className="space-y-2">
+                  <Label htmlFor="ch-phone" className="text-xs font-medium">Phone Number ID</Label>
+                  <Input
+                    id="ch-phone"
+                    placeholder="например 123456789012345"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                  />
+                </div>
+              )}
+              <p className="whitespace-pre-line rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
+                {CHANNEL_META[type].hint}
+              </p>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>
+                Отмена
+              </Button>
+              <Button type="submit" disabled={busy || (type !== 'web' && !token.trim())}>
+                {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />} Подключить
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
@@ -555,22 +589,26 @@ function DemoChat({ secret }: { secret: string }) {
     }
   }, [visitorKey]);
 
-  // Восстановить диалог посетителя (как реальный виджет сайта)
+  // Восстановить диалог посетителя (как реальный виджет сайта).
+  // IMP-FE21-23: через api() — проверяется res.ok, ошибки не глотаются молча
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem(storageKey);
-      if (saved) {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const saved = window.localStorage.getItem(storageKey);
+        if (!saved) return;
         convRef.current = saved;
-        fetch(`/api/webhook/demo/${secret}?conversationId=${saved}`)
-          .then((r) => r.json())
-          .then((d) => {
-            if (d.messages?.length) setMessages(d.messages);
-          })
-          .catch(() => {});
+        const d = await api<{
+          messages?: { id: string; role: string; text: string; buttons?: { id: string; text: string }[] }[];
+        }>(`/api/webhook/demo/${secret}?conversationId=${saved}`);
+        if (!cancelled && d.messages?.length) setMessages(d.messages);
+      } catch {
+        /* диалог не восстановился — начнётся новый при отправке */
       }
-    } catch {
-      /* ignore */
-    }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [secret, storageKey]);
 
   const scrollToBottom = () => {
@@ -624,9 +662,14 @@ function DemoChat({ secret }: { secret: string }) {
       setMessages(d.messages);
       scrollToBottom();
     } catch (e) {
+      // IMP-FE21-23: сбой виден в чате системным сообщением, а не теряется молча
       setMessages((prev) => [
         ...prev,
-        { id: `err-${Date.now()}`, role: 'bot', text: e instanceof Error ? e.message : 'Ошибка' },
+        {
+          id: `err-${Date.now()}`,
+          role: 'bot',
+          text: `Не удалось отправить${e instanceof Error && e.message ? `: ${e.message}` : ''}`,
+        },
       ]);
     } finally {
       setSending(false);
@@ -697,7 +740,12 @@ function DemoChat({ secret }: { secret: string }) {
           send(input);
         }}
       >
-        <Input placeholder="Сообщение…" value={input} onChange={(e) => setInput(e.target.value)} />
+        <Input
+          aria-label="Сообщение"
+          placeholder="Сообщение…"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+        />
         <Button type="submit" size="icon" className="h-10 w-10 shrink-0" disabled={sending || !input.trim()}>
           {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </Button>
@@ -783,6 +831,8 @@ function MytkoCard({ botId }: { botId: string }) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // IMP-FE21-12: ошибка загрузки конфига — инлайн-плашка с «Повторить» вместо молчаливого сбоя
+  const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState<'login' | 'test' | 'reports' | 'save' | 'areas' | null>(null);
   const [reports, setReports] = useState<MytkoReportItem[] | null>(null);
   // Показываем первые REPORTS_DEFAULT_LIMIT строк; расширяем кнопкой «Показать все».
@@ -790,12 +840,21 @@ function MytkoCard({ botId }: { botId: string }) {
   const [reportsLimit, setReportsLimit] = useState(REPORTS_DEFAULT_LIMIT);
   const [connectionName, setConnectionName] = useState<string | null>(null);
 
-  useEffect(() => {
-    api<{ config: typeof cfg }>(`/api/bots/${botId}/mytko`)
-      .then((d) => setCfg(d.config))
-      .catch(() => {})
-      .finally(() => setLoaded(true));
+  const loadConfig = useCallback(async () => {
+    try {
+      const d = await api<{ config: typeof cfg }>(`/api/bots/${botId}/mytko`);
+      setCfg(d.config);
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoaded(true);
+    }
   }, [botId]);
+
+  useEffect(() => {
+    void loadConfig();
+  }, [loadConfig]);
 
   const save = async (patch?: Record<string, unknown>) => {
     try {
@@ -922,7 +981,30 @@ function MytkoCard({ botId }: { botId: string }) {
     }
   };
 
-  if (!loaded) return null;
+  if (!loaded) {
+    // IMP-FE21-12: скелетон вместо null — без прыжка layout'а при загрузке
+    return (
+      <Card role="status">
+        <p className="sr-only">Загружаем MyTKO…</p>
+        <CardHeader className="pb-3">
+          <div className="flex min-w-0 items-start justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-3">
+              <Skeleton className="h-10 w-10 rounded-xl" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-4 w-44" />
+                <Skeleton className="h-3 w-60 max-w-full" />
+              </div>
+            </div>
+            <Skeleton className="h-5 w-9 rounded-full" />
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Skeleton className="h-10 w-full rounded-lg" />
+          <Skeleton className="h-24 w-full rounded-lg" />
+        </CardContent>
+      </Card>
+    );
+  }
 
   const toggleDirection = (key: keyof MytkoDirectionsUi) => {
     const next = { ...cfg.directions, [key]: !cfg.directions[key] };
@@ -972,8 +1054,31 @@ function MytkoCard({ botId }: { botId: string }) {
           />
         </div>
       </CardHeader>
-      {cfg.enabled && (
+      {/* Контент — при включённой интеграции; при ошибке загрузки показываем хотя бы плашку */}
+      {(cfg.enabled || loadError) && (
         <CardContent className="space-y-4">
+          {loadError && (
+            <div
+              role="alert"
+              className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
+            >
+              <AlertTriangle
+                className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+                aria-hidden="true"
+              />
+              <span className="min-w-0 flex-1">Не удалось загрузить настройки MyTKO</span>
+              <button
+                type="button"
+                onClick={() => void loadConfig()}
+                className="shrink-0 rounded-md font-medium underline underline-offset-2 transition-colors hover:text-amber-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-amber-200"
+              >
+                Повторить
+              </button>
+            </div>
+          )}
+          {/* Секции настроек — только когда конфиг реально загружен */}
+          {cfg.enabled && (
+            <>
           {/* ── Секция «Подключение»: адрес API, логин, пароль, токен ── */}
           <section className="space-y-4">
             <div className="flex items-center gap-2.5">
@@ -1033,21 +1138,21 @@ function MytkoCard({ botId }: { botId: string }) {
                     placeholder={cfg.hasPassword ? 'введён — введите новый, чтобы заменить' : 'пароль MyTKO'}
                     onChange={(e) => setPassword(e.target.value)}
                     onBlur={() => {
-                      // Сохраняем сразу при уходе с поля, но НЕ стираем введённое:
-                      // кнопка «Войти» также отправит пароль напрямую
-                      if (password.trim()) {
-                        save({ password: password.trim() });
-                        setCfg((c) => ({ ...c, hasPassword: true }));
-                      }
+                      const p = password.trim();
+                      if (!p) return;
+                      // IMP-FE21-12: hasPassword:true — ТОЛЬКО после успешного save()
+                      void save({ password: p }).then((ok) => {
+                        if (ok) setCfg((c) => ({ ...c, hasPassword: true }));
+                      });
                     }}
                     className="pr-9"
                   />
                   <button
                     type="button"
-                    tabIndex={-1}
                     aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                    aria-pressed={showPassword}
                     onClick={() => setShowPassword((v) => !v)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -1274,40 +1379,45 @@ function MytkoCard({ botId }: { botId: string }) {
                       Отчётов за последние 7 дней по указанным КП нет.
                     </div>
                   ) : (
-                    <table className="w-full text-xs tabular-nums">
-                      <thead className="sticky top-0 bg-muted/70 text-left text-muted-foreground">
-                        <tr>
-                          <th className="px-2 py-1.5 font-medium">Дата вывоза</th>
-                          <th className="px-2 py-1.5 font-medium">КП</th>
-                          <th className="px-2 py-1.5 font-medium">Машина</th>
-                          <th className="px-2 py-1.5 font-medium">Факт</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {reports.slice(0, reportsLimit).map((r) => (
-                        <tr key={r.id} className="border-t">
-                          <td className="whitespace-nowrap px-2 py-1.5">
-                            {r.removalTs
-                              ? new Date(r.removalTs).toLocaleString('ru-RU', {
-                                  day: '2-digit',
-                                  month: '2-digit',
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })
-                              : '—'}
-                          </td>
-                          <td className="px-2 py-1.5">{r.lkCode ?? '—'}</td>
-                          <td className="whitespace-nowrap px-2 py-1.5 font-medium">{r.vehicleNumber ?? '—'}</td>
-                          <td className="whitespace-nowrap px-2 py-1.5">
-                            {r.factContainersAmount ?? '—'}
-                            {r.notRemoved > 0 && (
-                              <span className="ml-1 text-destructive">(-{r.notRemoved})</span>
-                            )}
-                          </td>
-                        </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    // IMP-FE21-17: на узких экранах таблица скроллится горизонтально,
+                    // а не распирает карточку (no-h-scroll на 390px)
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[480px] text-xs tabular-nums">
+                        <caption className="sr-only">Отчёты по площадкам</caption>
+                        <thead className="sticky top-0 bg-muted/70 text-left text-muted-foreground">
+                          <tr>
+                            <th className="px-2 py-1.5 font-medium">Дата вывоза</th>
+                            <th className="px-2 py-1.5 font-medium">КП</th>
+                            <th className="px-2 py-1.5 font-medium">Машина</th>
+                            <th className="px-2 py-1.5 font-medium">Факт</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reports.slice(0, reportsLimit).map((r) => (
+                            <tr key={r.id} className="border-t">
+                              <td className="whitespace-nowrap px-2 py-1.5">
+                                {r.removalTs
+                                  ? new Date(r.removalTs).toLocaleString('ru-RU', {
+                                      day: '2-digit',
+                                      month: '2-digit',
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })
+                                  : '—'}
+                              </td>
+                              <td className="px-2 py-1.5">{r.lkCode ?? '—'}</td>
+                              <td className="whitespace-nowrap px-2 py-1.5 font-medium">{r.vehicleNumber ?? '—'}</td>
+                              <td className="whitespace-nowrap px-2 py-1.5">
+                                {r.factContainersAmount ?? '—'}
+                                {r.notRemoved > 0 && (
+                                  <span className="ml-1 text-destructive">(-{r.notRemoved})</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
                 {reports.length > reportsLimit && (
@@ -1338,6 +1448,8 @@ function MytkoCard({ botId }: { botId: string }) {
               </p>
             </details>
           </section>
+            </>
+          )}
         </CardContent>
       )}
     </Card>

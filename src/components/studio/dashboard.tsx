@@ -82,6 +82,7 @@ export default function Dashboard({
   const [busy, setBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<BotListItem | null>(null);
   const [renameName, setRenameName] = useState('');
+  const [renameBusy, setRenameBusy] = useState(false);
   // Подтверждение удаления (AlertDialog): state-target + open={!!target}
   const [deleteTarget, setDeleteTarget] = useState<BotListItem | null>(null);
 
@@ -101,23 +102,37 @@ export default function Dashboard({
     load();
   }, []);
 
+  // IMP-FE21-22: один запрос — POST /api/bots отдаёт { id, name }, поэтому бота
+  // открываем сразу из локальных данных (optimistic), а список дашборда
+  // обновится в фоне (botsVersion перемонтирует дашборд при возврате).
   const createBot = async () => {
-    if (!name.trim()) return;
+    const botName = name.trim();
+    if (!botName) return;
     setBusy(true);
     try {
-      const d = await api<{ bot: { id: string } }>('/api/bots', {
+      const d = await api<{ bot: { id: string; name: string } }>('/api/bots', {
         method: 'POST',
-        body: JSON.stringify({ name, description }),
+        body: JSON.stringify({ name: botName, description }),
       });
       setCreateOpen(false);
       setName('');
       setDescription('');
       toast({ title: 'Бот создан', description: 'Сценарий-шаблон уже готов к настройке' });
+      onOpenBot(
+        {
+          id: d.bot.id,
+          name: d.bot.name,
+          description: description.trim() || null,
+          status: 'draft',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          channelsCount: 0,
+          conversationsCount: 0,
+          channelTypes: [],
+        },
+        'editor'
+      );
       onBotsChanged();
-      await load();
-      const created = await api<{ bots: BotListItem[] }>('/api/bots');
-      const bot = created.bots.find((b) => b.id === d.bot.id);
-      if (bot) onOpenBot(bot, 'editor');
     } catch (e) {
       toast({ title: 'Ошибка', description: e instanceof Error ? e.message : '', variant: 'destructive' });
     } finally {
@@ -138,6 +153,7 @@ export default function Dashboard({
 
   const renameBot = async () => {
     if (!renameTarget || !renameName.trim()) return;
+    setRenameBusy(true);
     try {
       await api(`/api/bots/${renameTarget.id}`, {
         method: 'PUT',
@@ -148,6 +164,8 @@ export default function Dashboard({
       load();
     } catch {
       toast({ title: 'Не удалось переименовать', variant: 'destructive' });
+    } finally {
+      setRenameBusy(false);
     }
   };
 
@@ -181,35 +199,45 @@ export default function Dashboard({
                 Мы сразу создадим готовый сценарий-шаблон: приветствие, меню, ИИ-ответы и передачу оператору.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="bot-name">Название</Label>
-                <Input
-                  id="bot-name"
-                  placeholder="Например: Поддержка интернет-магазина"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
+            {/* IMP-FE21-10: Enter отправляет форму, preventDefault обязателен */}
+            <form
+              className="space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                createBot();
+              }}
+            >
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="bot-name">Название</Label>
+                  <Input
+                    id="bot-name"
+                    autoFocus
+                    placeholder="Например: Поддержка интернет-магазина"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="bot-desc">Описание</Label>
+                  <Textarea
+                    id="bot-desc"
+                    placeholder="Для чего этот бот?"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    rows={2}
+                  />
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="bot-desc">Описание</Label>
-                <Textarea
-                  id="bot-desc"
-                  placeholder="Для чего этот бот?"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  rows={2}
-                />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCreateOpen(false)}>
-                Отмена
-              </Button>
-              <Button onClick={createBot} disabled={busy || !name.trim()}>
-                {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />} {busy ? 'Создаю…' : 'Создать'}
-              </Button>
-            </DialogFooter>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
+                  Отмена
+                </Button>
+                <Button type="submit" disabled={busy || !name.trim()}>
+                  {busy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />} {busy ? 'Создаю…' : 'Создать'}
+                </Button>
+              </DialogFooter>
+            </form>
           </DialogContent>
         </Dialog>
       </div>
@@ -251,8 +279,8 @@ export default function Dashboard({
         ) : bots.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
-              <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                <Bot className="h-7 w-7" aria-hidden="true" />
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <Bot className="h-6 w-6" aria-hidden="true" />
               </div>
               <div className="font-medium">Пока нет ни одного бота</div>
               <p className="max-w-sm text-sm text-muted-foreground">
@@ -266,19 +294,13 @@ export default function Dashboard({
         ) : (
           <div className={BOTS_GRID_CLASSES}>
             {bots.map((bot) => (
+              // IMP-FE21-19: контейнер больше не role="button" (внутри есть свои
+              // кнопки — вложенность ломает скринридер). Тело осталось кликабельным,
+              // а явная кнопка — имя бота в заголовке.
               <Card
                 key={bot.id}
-                role="button"
-                tabIndex={0}
-                aria-label={`Открыть бота «${bot.name}»`}
-                className="cursor-pointer transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                className="cursor-pointer transition-shadow hover:shadow-md"
                 onClick={() => onOpenBot(bot, 'editor')}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onOpenBot(bot, 'editor');
-                  }
-                }}
               >
                 <CardHeader className="pb-3">
                   <div className="flex min-w-0 items-start justify-between gap-2">
@@ -287,7 +309,19 @@ export default function Dashboard({
                         <Bot className="h-5 w-5" />
                       </div>
                       <div className="min-w-0">
-                        <CardTitle className="truncate text-base">{bot.name}</CardTitle>
+                        <CardTitle className="truncate text-base">
+                          <button
+                            type="button"
+                            aria-label={`Открыть бот «${bot.name}»`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenBot(bot, 'editor');
+                            }}
+                            className="w-full truncate rounded-sm text-left underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                          >
+                            {bot.name}
+                          </button>
+                        </CardTitle>
                         <CardDescription className="truncate">
                           {bot.description || 'Без описания'}
                         </CardDescription>
@@ -401,13 +435,29 @@ export default function Dashboard({
           <DialogHeader>
             <DialogTitle>Переименовать бота</DialogTitle>
           </DialogHeader>
-          <Input value={renameName} onChange={(e) => setRenameName(e.target.value)} />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRenameTarget(null)}>
-              Отмена
-            </Button>
-            <Button onClick={renameBot}>Сохранить</Button>
-          </DialogFooter>
+          {/* IMP-FE21-10: Enter сохраняет */}
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              renameBot();
+            }}
+          >
+            <Input
+              autoFocus
+              value={renameName}
+              onChange={(e) => setRenameName(e.target.value)}
+              aria-label="Новое имя бота"
+            />
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setRenameTarget(null)}>
+                Отмена
+              </Button>
+              <Button type="submit" disabled={renameBusy || !renameName.trim()}>
+                {renameBusy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />} Сохранить
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 

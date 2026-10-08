@@ -1,5 +1,6 @@
 'use client';
 
+import type { ComponentProps } from 'react';
 import { CircleHelp, ClipboardList, MousePointerClick, Plus, Settings2, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { ConditionOp, FlowButton, FlowNode, FlowNodeData } from '@/lib/flow-types';
 import { CONDITION_OP_LABELS, NODE_META } from '@/lib/flow-types';
@@ -21,6 +22,53 @@ import { cn } from '@/lib/utils';
 
 function randomId() {
   return Math.random().toString(36).slice(2, 8);
+}
+
+// IMP-FE21-20: лимит и счётчик длины текстовых полей блоков
+const MAX_TEXT_LEN = 4000;
+
+function CharCounter({ length }: { length: number }) {
+  const nearLimit = length > MAX_TEXT_LEN * 0.9;
+  return (
+    <p
+      aria-live="polite"
+      className={cn(
+        'text-[11px] tabular-nums',
+        nearLimit ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+      )}
+    >
+      {length}/{MAX_TEXT_LEN}
+    </p>
+  );
+}
+
+/** Текстовое поле блока с лимитом 4000 и счётчиком (IMP-FE21-20) */
+function BoundedTextarea(props: ComponentProps<typeof Textarea>) {
+  const { value, ...rest } = props;
+  const len = typeof value === 'string' ? value.length : 0;
+  return (
+    <div className="space-y-1">
+      <Textarea {...rest} value={value} maxLength={MAX_TEXT_LEN} />
+      {len > 0 && <CharCounter length={len} />}
+    </div>
+  );
+}
+
+/** IMP-FE21-13: «Пауза, секунд» — жёсткий кламп 0..3, только цифры */
+const clampSeconds = (raw: string, fallback: number): number => {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(3, Math.max(0, n));
+};
+
+/** IMP-FE21-13: мягкая live-валидация JSON-тела (не блокирует сохранение) */
+function isLikelyJson(value: string): boolean {
+  try {
+    JSON.parse(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export default function NodeInspector({
@@ -86,7 +134,7 @@ export default function NodeInspector({
               <Label htmlFor="insp-text" className="text-xs font-medium">
                 {node.type === 'question' ? 'Текст вопроса' : 'Текст сообщения'}
               </Label>
-              <Textarea
+              <BoundedTextarea
                 id="insp-text"
                 rows={4}
                 placeholder="Что напечатать пользователю? Можно использовать {{переменная}}"
@@ -246,7 +294,7 @@ export default function NodeInspector({
             <>
               <div className="space-y-2">
                 <Label htmlFor="insp-btn-text" className="text-xs font-medium">Текст меню</Label>
-                <Textarea
+                <BoundedTextarea
                   id="insp-btn-text"
                   rows={2}
                   placeholder="Выберите вариант:"
@@ -383,7 +431,7 @@ export default function NodeInspector({
             <>
               <div className="space-y-2">
                 <Label htmlFor="insp-prompt" className="text-xs font-medium">Инструкция для ИИ (роль бота)</Label>
-                <Textarea
+                <BoundedTextarea
                   id="insp-prompt"
                   rows={4}
                   placeholder="Ты — вежливый бот техподдержки. Отвечай кратко и по делу…"
@@ -393,7 +441,7 @@ export default function NodeInspector({
               </div>
               <div className="space-y-2">
                 <Label htmlFor="insp-knowledge" className="text-xs font-medium">База знаний</Label>
-                <Textarea
+                <BoundedTextarea
                   id="insp-knowledge"
                   rows={6}
                   placeholder={'Часы работы: 9:00–18:00\nДоставка: 2–5 дней\nВозврат: 14 дней'}
@@ -474,6 +522,11 @@ export default function NodeInspector({
                     value={d.body ?? ''}
                     onChange={(e) => onChange({ body: e.target.value })}
                   />
+                  {(d.body ?? '').trim().length > 0 && !isLikelyJson((d.body ?? '').trim()) && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                      Некорректный JSON — будет сохранён как есть
+                    </p>
+                  )}
                 </div>
               )}
               <p className="text-[11px] text-muted-foreground">
@@ -487,12 +540,24 @@ export default function NodeInspector({
               <Label htmlFor="insp-sec" className="text-xs font-medium">Пауза, секунд (до 3)</Label>
               <Input
                 id="insp-sec"
-                type="number"
-                min={0}
-                max={3}
+                type="text"
+                inputMode="numeric"
+                maxLength={1}
+                aria-describedby="insp-sec-hint"
                 value={d.seconds ?? 1}
-                onChange={(e) => onChange({ seconds: Number(e.target.value) })}
+                onChange={(e) => {
+                  const next = clampSeconds(e.target.value, d.seconds ?? 1);
+                  if (next !== (d.seconds ?? 1)) onChange({ seconds: next });
+                }}
+                onBlur={(e) => {
+                  // Кламп на blur: если значение не менялось — ничего не трогаем (лишний «unsaved» не ставим)
+                  const next = clampSeconds(e.target.value, d.seconds ?? 1);
+                  if (next !== (d.seconds ?? 1)) onChange({ seconds: next });
+                }}
               />
+              <p id="insp-sec-hint" className="text-[11px] text-muted-foreground">
+                От 0 до 3 секунд — целое число.
+              </p>
             </div>
           )}
 

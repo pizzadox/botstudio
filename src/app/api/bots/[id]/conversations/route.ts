@@ -4,9 +4,13 @@ import { getSessionUser } from '@/lib/auth';
 
 type Params = { params: Promise<{ id: string }> };
 
+/** Cap для ?take — защита от «выкачаем всю таблицу» (IMP-BE21-21) */
+const MAX_TAKE = 500;
+
 /** Список диалогов бота (инбокс оператора).
  *  Select только нужных скаляров — БЕЗ тяжёлого поля state (JSON состояния
- *  движка): инбокс его не читает, а на 100 диалогов это заметный оверхед. */
+ *  движка): инбокс его не читает, а на 100 диалогов это заметный оверхед.
+ *  ?take=N (дефолт 100, максимум 500) — фронт может запросить больше истории. */
 export async function GET(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const user = await getSessionUser(req);
@@ -17,10 +21,14 @@ export async function GET(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Бот не найден' }, { status: 404 });
   }
 
+  const takeParam = Number(req.nextUrl.searchParams.get('take') ?? '');
+  const take =
+    Number.isFinite(takeParam) && takeParam > 0 ? Math.min(Math.floor(takeParam), MAX_TAKE) : 100;
+
   const conversations = await db.conversation.findMany({
     where: { botId: bot.id },
     orderBy: { updatedAt: 'desc' },
-    take: 100,
+    take,
     select: {
       id: true,
       channelId: true,

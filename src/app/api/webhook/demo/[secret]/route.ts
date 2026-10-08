@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { processInbound } from '@/lib/webhook';
 import { getFlowCached } from '@/lib/flow-cache';
+import { clientIp, rateLimit } from '@/lib/rate-limit';
 import crypto from 'crypto';
 
 /** Cap для ?take — защита от «выкачаем всю таблицу» */
@@ -33,6 +34,13 @@ function lastMenuButtons(botId: string, botUpdatedAt: Date, botFlow: string, mes
 
 type Params = { params: Promise<{ secret: string }> };
 
+/** GET-ответы демо-эндпоинта никогда не кэшируются (IMP-BE21-11) */
+function noStoreJson(body: unknown, status = 200) {
+  const res = NextResponse.json(body, { status });
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
+}
+
 /**
  * Публичный API демо-чата (веб-виджет для сайта).
  * POST { text, conversationId? } → { conversationId, messages }
@@ -45,12 +53,23 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Канал не найден' }, { status: 404 });
   }
 
+  // IMP-BE21-10: защита демо-эндпоинта — 20 сообщений с одного ip в минуту
+  if (!rateLimit(`demo:${clientIp(req)}`, 20, 60_000)) {
+    return NextResponse.json({ error: 'Слишком много сообщений' }, { status: 429 });
+  }
+
   try {
     const body = await req.json();
     const text = String(body.text ?? '').trim().slice(0, 2000);
     if (!text) return NextResponse.json({ error: 'Пустое сообщение' }, { status: 400 });
 
     const conversationId = body.conversationId ? String(body.conversationId) : undefined;
+
+    // IMP-BE21-10: не больше 10 сообщений в один диалог в минуту (антиспам в виджете)
+    if (conversationId && !rateLimit(`democonv:${conversationId}`, 10, 60_000)) {
+      return NextResponse.json({ error: 'Слишком часто, подождите минуту' }, { status: 429 });
+    }
+
     // Стабильный id посетителя (localStorage виджета): один гость = одно обращение,
     // даже если localStorage с conversationId был потерян
     const visitorId = body.visitorId ? String(body.visitorId).slice(0, 64) : undefined;
@@ -107,16 +126,16 @@ export async function GET(req: NextRequest, { params }: Params) {
   const { secret } = await params;
   const channel = await db.channel.findUnique({ where: { secret }, include: { bot: true } });
   if (!channel || channel.type !== 'web') {
-    return NextResponse.json({ error: 'Канал не найден' }, { status: 404 });
+    return noStoreJson({ error: 'Канал не найден' }, 404);
   }
 
   const conversationId = req.nextUrl.searchParams.get('conversationId');
-  if (!conversationId) return NextResponse.json({ messages: [] });
+  if (!conversationId) return noStoreJson({ messages: [] });
 
   const conversation = await db.conversation.findFirst({
     where: { id: conversationId, botId: channel.botId, source: 'web' },
   });
-  if (!conversation) return NextResponse.json({ messages: [] });
+  if (!conversation) return noStoreJson({ messages: [] });
 
   const messages = (
     await db.message.findMany({
@@ -133,7 +152,8 @@ export async function GET(req: NextRequest, { params }: Params) {
     messages
   );
 
-  return NextResponse.json({
+  // IMP-BE21-11: публичный polling-ответ — no-store, чтобы прокси не кэшировали
+  return noStoreJson({
     messages: messages.map((m) => ({
       id: m.id,
       role: m.role,

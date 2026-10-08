@@ -1,0 +1,780 @@
+     1→import ZAI from 'z-ai-web-dev-sdk';
+     2→import { db } from '@/lib/db';
+     3→import { createOrder, geocodeVerify } from '@/lib/orders';
+     4→import type {
+     5→  ConditionOp,
+     6→  EngineMessage,
+     7→  EngineResult,
+     8→  EngineState,
+     9→  Flow,
+    10→  FlowNode,
+    11→} from '@/lib/flow-types';
+    12→
+    13→const MAX_STEPS = 30;
+    14→const MEMORY_TAIL = 12;
+    15→
+    16→// ─── ZAI-синглтон ────────────────────────────────────────────────────────────────
+    17→// ZAI.create() устанавливает соединение — раньше оно создавалось заново на каждый
+    18→// ИИ-вызов. Держим один общий промис на процесс (globalThis — переживает HMR);
+    19→// при ошибке создания сбрасываем, чтобы следующая попытка была честной.
+    20→const zaiGlobals = globalThis as unknown as {
+    21→  __zaiPromise?: Promise<Awaited<ReturnType<typeof ZAI.create>>>;
+    22→};
+    23→function getZai(): Promise<Awaited<ReturnType<typeof ZAI.create>>> {
+    24→  zaiGlobals.__zaiPromise ??= ZAI.create().catch((err) => {
+    25→    zaiGlobals.__zaiPromise = undefined; // разрешить повторную попытку
+    26→    throw err;
+    27→  });
+    28→  return zaiGlobals.__zaiPromise;
+    29→}
+    30→
+    31→/**
+    32→ * Контекст движка: данные диалога, нужные для действий уровня приложения
+    33→ * (создание заявки с привязкой к клиенту).
+    34→ */
+    35→export interface EngineContext {
+    36→  botId?: string;
+    37→  conversationId?: string;
+    38→  externalUserId?: string | null;
+    39→}
+    40→
+    41→/** Кнопка/команда возврата в главное меню — доступна пользователю всегда */
+    42→export function isMainMenuCommand(text: string): boolean {
+    43→  return /^(🏠\s*)?в главное меню[.!]?\s*$|^(🏠\s*)?главное меню[.!]?\s*$/i.test(text.trim());
+    44→}
+    45→
+    46→/** «Пропустить» — принять ответ без проверки валидации */
+    47→export function isSkipWord(text: string): boolean {
+    48→  return /^(пропустить|пропускаю|skip)[.!]?\s*$/i.test(text.trim());
+    49→}
+    50→
+    51→/**
+    52→ * Валидация телефона РФ: 10–11 цифр (можно с +7/8, скобками, дефисами).
+    53→ * Возвращает true, если телефон похож на настоящий.
+    54→ */
+    55→export function isValidPhone(input: string): boolean {
+    56→  const digits = input.replace(/\D/g, '');
+    57→  if (digits.length === 11 && (digits[0] === '7' || digits[0] === '8')) return true;
+    58→  if (digits.length === 10) return true;
+    59→  return false;
+    60→}
+    61→
+    62→/**
+    63→ * Проверка ответа на вопрос по data.validate.
+    64→ * Возвращает текст ошибки для переспрашивания или null, если ответ корректен.
+    65→ * «пропустить» обрабатывается вызывающим кодом.
+    66→ */
+    67→export async function validateAnswer(
+    68→  data: FlowNode['data'],
+    69→  input: string,
+    70→  vars: Record<string, string>
+    71→): Promise<string | null> {
+    72→  if (data.validate === 'phone') {
+    73→    if (isValidPhone(input)) return null;
+    74→    return (
+    75→      'Телефон выглядит некорректно 🙏 Введите номер в формате +7 900 123-45-67 (10–11 цифр) ' +
+    76→      'или напишите «пропустить».'
+    77→    );
+    78→  }
+    79→
+    80→  if (data.validate === 'address') {
+    81→    const q = input.trim();
+    82→    if (q.length < 3) {
+    83→      return 'Уточните адрес подробнее: улица и номер дома (например: улица Гоголя, 5).';
+    84→    }
+    85→    // Город шагом раньше (выбор города обслуживания)
+    86→    const city = ['city', 'kgm_city']
+    87→      .map((k) => (vars[k] ?? '').trim())
+    88→      .find((c) => c.length > 0);
+    89→
+    90→    // Строгий режим: только РФ + при известном городе проверяем, что найденный
+    91→    // объект действительно в этом городе (мусорные совпадения не проходят)
+    92→    const ok = city
+    93→      ? q.toLowerCase().includes(city.toLowerCase())
+    94→        ? await geocodeVerify(q, city)
+    95→        : await geocodeVerify(`${city}, ${q}`, city)
+    96→      : await geocodeVerify(q);
+    97→
+    98→    if (ok) return null;
+    99→    return (
+   100→      'Не нашёл такой адрес на карте 🤔 Проверьте улицу и номер дома ' +
+   101→      '(можно с корпусом: улица Гоголя, 5к2). Либо напишите «пропустить», чтобы продолжить без проверки.'
+   102→    );
+   103→  }
+   104→
+   105→  return null;
+   106→}
+   107→
+   108→/**
+   109→ * Конфигурация ИИ-ассистента на уровне бота (Bot.aiConfig + база знаний).
+   110→ * Ассистент отвечает на свободные вопросы пользователя, когда сценарий
+   111→ * не может их обработать (текст вместо кнопки, сообщение вне сценария).
+   112→ */
+   113→export interface AiAssistantConfig {
+   114→  enabled: boolean;
+   115→  /** Личность и тон ассистента */
+   116→  prompt?: string;
+   117→  /** База знаний (склеенные записи бота) */
+   118→  knowledge?: string;
+   119→  /** Показывать меню повторно после ответа ассистента */
+   120→  reaskMenu?: boolean;
+   121→}
+   122→
+   123→const ASSISTANT_SYSTEM_RULES = [
+   124→  'Ты — ИИ-ассистент внутри бота техподдержки.',
+   125→  'Отвечай на вопросы пользователя кратко, вежливо и на языке пользователя.',
+   126→  'Опирайся на базу знаний; если ответа там нет — честно скажи об этом и предложи переформулировать вопрос или позвать оператора.',
+   127→  'Не выдумывай факты, которых нет в базе знаний.',
+   128→  'Если пользователь явно просит живого человека/оператора или вопрос требует участия человека — ответь ровно одной строкой: OPERATOR_REQUEST',
+   129→].join(' ');
+   130→
+   131→// ─── Вспомогательные функции ─────────────────────────────────────────────────
+   132→
+   133→export function emptyState(): EngineState {
+   134→  return {
+   135→    currentNodeId: null,
+   136→    waiting: 'none',
+   137→    vars: {},
+   138→    history: [],
+   139→  };
+   140→}
+   141→
+   142→/** Подстановка переменных {{name}} в текст */
+   143→export function interpolate(
+   144→  text: string | undefined,
+   145→  vars: Record<string, string>,
+   146→  input?: string
+   147→): string {
+   148→  if (!text) return '';
+   149→  let out = text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, key: string) => {
+   150→    if (key === 'input' && input !== undefined) return input;
+   151→    const v = vars[key];
+   152→    return v !== undefined ? v : '';
+   153→  });
+   154→  // Приглаживаем пустые подстановки: «Завтра, » → «Завтра», «Боровичи,» → «Боровичи»
+   155→  out = out.replace(/,\s*,+/g, ', ');
+   156→  out = out.replace(/,\s*$/gm, '');
+   157→  return out;
+   158→}
+   159→
+   160→function findNode(flow: Flow, id: string): FlowNode | null {
+   161→  return flow.nodes.find((n) => n.id === id) ?? null;
+   162→}
+   163→
+   164→function findStart(flow: Flow): FlowNode | null {
+   165→  return flow.nodes.find((n) => n.type === 'start') ?? flow.nodes[0] ?? null;
+   166→}
+   167→
+   168→function nextNode(flow: Flow, nodeId: string, handle?: string | null): FlowNode | null {
+   169→  const edge = flow.edges.find(
+   170→    (e) => e.source === nodeId && (handle ? (e.sourceHandle ?? '') === handle : true)
+   171→  );
+   172→  return edge ? findNode(flow, edge.target) : null;
+   173→}
+   174→
+   175→function findMenuNode(flow: Flow, lastMenuId?: string): FlowNode | null {
+   176→  if (lastMenuId) {
+   177→    const n = findNode(flow, lastMenuId);
+   178→    if (n?.type === 'buttons') return n;
+   179→  }
+   180→  return flow.nodes.find((n) => n.type === 'buttons') ?? null;
+   181→}
+   182→
+   183→/**
+   184→ * Главное меню сценария: первый узел «Кнопки» на пути от старта
+   185→ * (BFS), иначе — первый узел «Кнопки» в сценарии. Используется,
+   186→ * чтобы вернуть пользователя в меню (например, после закрытия обращения).
+   187→ */
+   188→export function findMainMenu(flow: Flow): FlowNode | null {
+   189→  const start = findStart(flow);
+   190→  if (start) {
+   191→    const visited = new Set<string>([start.id]);
+   192→    const queue: string[] = [start.id];
+   193→    while (queue.length) {
+   194→      const id = queue.shift() as string;
+   195→      const node = findNode(flow, id);
+   196→      if (!node) continue;
+   197→      if (node.type === 'buttons') return node;
+   198→      for (const e of flow.edges) {
+   199→        if (e.source === id && !visited.has(e.target)) {
+   200→          visited.add(e.target);
+   201→          queue.push(e.target);
+   202→        }
+   203→      }
+   204→    }
+   205→  }
+   206→  return flow.nodes.find((n) => n.type === 'buttons') ?? null;
+   207→}
+   208→
+   209→/**
+   210→ * Команда старта сценария (/start, «старт», «начать») — детерминированный вход
+   211→ * в сценарий, минуя ИИ-ассистента (мессенджеры шлют /start при первом открытии бота).
+   212→ */
+   213→function isStartCommand(text: string): boolean {
+   214→  return /^\/(start|старт|начать)$|^(старт|начать)\s*$/i.test(text.trim());
+   215→}
+   216→
+   217→function evalCondition(
+   218→  cond: FlowNode['data']['condition'],
+   219→  vars: Record<string, string>
+   220→): boolean {
+   221→  if (!cond) return false;
+   222→  const leftRaw = (cond.left ?? '').trim();
+   223→  const left = leftRaw.includes('{{')
+   224→    ? interpolate(leftRaw, vars)
+   225→    : (vars[leftRaw] ?? leftRaw);
+   226→  const rightRaw = cond.right ?? '';
+   227→  const right = rightRaw.includes('{{') ? interpolate(rightRaw, vars) : rightRaw;
+   228→  const op: ConditionOp = cond.op ?? 'eq';
+   229→  switch (op) {
+   230→    case 'eq':
+   231→      return left.trim().toLowerCase() === right.trim().toLowerCase();
+   232→    case 'neq':
+   233→      return left.trim().toLowerCase() !== right.trim().toLowerCase();
+   234→    case 'contains':
+   235→      return left.toLowerCase().includes(right.toLowerCase());
+   236→    case 'not_contains':
+   237→      return !left.toLowerCase().includes(right.toLowerCase());
+   238→    case 'gt':
+   239→      return parseFloat(left) > parseFloat(right);
+   240→    case 'lt':
+   241→      return parseFloat(left) < parseFloat(right);
+   242→    case 'empty':
+   243→      return left.trim() === '';
+   244→    case 'not_empty':
+   245→      return left.trim() !== '';
+   246→    default:
+   247→      return false;
+   248→  }
+   249→}
+   250→
+   251→// ─── ИИ-навык: ответ нейросети с памятью диалога ─────────────────────────────
+   252→
+   253→interface AiAskData {
+   254→  prompt?: string;
+   255→  knowledge?: string;
+   256→  useMemory?: boolean;
+   257→}
+   258→
+   259→async function runAI(
+   260→  data: AiAskData,
+   261→  state: EngineState,
+   262→  lastInput: string,
+   263→  extraSystem?: string
+   264→): Promise<string> {
+   265→  const zai = await getZai();
+   266→
+   267→  const sysParts: string[] = [];
+   268→  sysParts.push(
+   269→    data.prompt?.trim() ||
+   270→      'Ты — вежливый бот техподдержки. Отвечай кратко, по делу и на языке пользователя.'
+   271→  );
+   272→  if (extraSystem?.trim()) {
+   273→    sysParts.push(extraSystem.trim());
+   274→  }
+   275→  if (data.knowledge?.trim()) {
+   276→    sysParts.push(`База знаний компании:\n${data.knowledge.trim()}`);
+   277→  }
+   278→  const varLines = Object.entries(state.vars)
+   279→    .filter(([k]) => !k.startsWith('__'))
+   280→    .map(([k, v]) => `${k}: ${v}`);
+   281→  if (varLines.length) {
+   282→    sysParts.push(`Известные данные о пользователе:\n${varLines.join('\n')}`);
+   283→  }
+   284→
+   285→  const messages: { role: 'assistant' | 'user'; content: string }[] = [
+   286→    { role: 'assistant', content: sysParts.join('\n\n') },
+   287→  ];
+   288→
+   289→  if (data.useMemory !== false) {
+   290→    for (const h of state.history.slice(-MEMORY_TAIL)) {
+   291→      messages.push({
+   292→        role: h.role === 'user' ? 'user' : 'assistant',
+   293→        content: h.text,
+   294→      });
+   295→    }
+   296→  }
+   297→  if (lastInput) {
+   298→    messages.push({ role: 'user', content: lastInput });
+   299→  } else if (messages.length === 1) {
+   300→    messages.push({ role: 'user', content: 'Привет' });
+   301→  }
+   302→
+   303→  const completion = await zai.chat.completions.create({
+   304→    messages,
+   305→    thinking: { type: 'disabled' },
+   306→  });
+   307→  const content = completion.choices[0]?.message?.content;
+   308→  return content && content.trim().length > 0
+   309→    ? content
+   310→    : 'Извините, я не смог сформулировать ответ. Попробуйте перефразировать вопрос.';
+   311→}
+   312→
+   313→/** Ответ ИИ-ассистента на свободный вопрос (используется и режимом «Свободный чат») */
+   314→export async function askAssistant(
+   315→  assistant: AiAssistantConfig,
+   316→  state: EngineState,
+   317→  userText: string
+   318→): Promise<string | null> {
+   319→  try {
+   320→    const raw = await runAI(
+   321→      { prompt: assistant.prompt, knowledge: assistant.knowledge, useMemory: true },
+   322→      state,
+   323→      userText,
+   324→      ASSISTANT_SYSTEM_RULES
+   325→    );
+   326→    return raw && raw.trim().length > 0 ? raw : null;
+   327→  } catch (err) {
+   328→    console.error('[flow-engine] askAssistant error:', err);
+   329→    return null;
+   330→  }
+   331→}
+   332→
+   333→// ─── Оркестратор: главный цикл выполнения сценария ───────────────────────────
+   334→
+   335→export async function runEngine(
+   336→  flow: Flow,
+   337→  input: string | null,
+   338→  prevState: EngineState | null,
+   339→  assistant?: AiAssistantConfig,
+   340→  ctx?: EngineContext
+   341→): Promise<EngineResult> {
+   342→  const state: EngineState = prevState
+   343→    ? {
+   344→        currentNodeId: prevState.currentNodeId ?? null,
+   345→        waiting: prevState.waiting ?? 'none',
+   346→        vars: { ...prevState.vars },
+   347→        history: [...(prevState.history ?? [])].slice(-MEMORY_TAIL * 2),
+   348→      }
+   349→    : emptyState();
+   350→
+   351→  const messages: EngineMessage[] = [];
+   352→  let needsOperator = state.vars['__operator'] === 'true';
+   353→  let lastInput = input ?? '';
+   354→  let current: FlowNode | null = null;
+   355→
+   356→  const assistantEnabled = assistant?.enabled === true;
+   357→
+   358→  /**
+   359→   * Ответ ИИ-ассистента на свободный вопрос (вне сценария).
+   360→   * После ответа возвращает пользователя в меню, чтобы навигация
+   361→   * по сценарию продолжала работать.
+   362→   */
+   363→  const assistantFallback = async (userText: string, menuNode?: FlowNode): Promise<void> => {
+   364→    let answer: string | null = null;
+   365→    try {
+   366→      const raw = await runAI(
+   367→        { prompt: assistant?.prompt, knowledge: assistant?.knowledge, useMemory: true },
+   368→        state,
+   369→        userText,
+   370→        ASSISTANT_SYSTEM_RULES
+   371→      );
+   372→      answer = raw && raw.trim().length > 0 ? raw : null;
+   373→    } catch (err) {
+   374→      console.error('[flow-engine] AI assistant error:', err);
+   375→    }
+   376→
+   377→    // ИИ недоступен — вежливо сообщаем, пользователь может повторить вопрос
+   378→    if (!answer) {
+   379→      const errText =
+   380→        'Извините, сервис ИИ временно недоступен. Попробуйте задать вопрос ещё раз через минуту.';
+   381→      messages.push({ text: errText, nodeId: 'assistant' });
+   382→      state.history.push({ role: 'bot', text: errText });
+   383→      state.waiting = 'none';
+   384→      state.currentNodeId = null;
+   385→      return;
+   386→    }
+   387→
+   388→    // Пользователь просит живого оператора — передаём диалог
+   389→    if (answer.toUpperCase().includes('OPERATOR_REQUEST')) {
+   390→      state.vars['__operator'] = 'true';
+   391→      needsOperator = true;
+   392→      const text = 'Соединяю вас с живым оператором, оставайтесь на линии 🙌';
+   393→      messages.push({ text, nodeId: 'assistant' });
+   394→      state.history.push({ role: 'bot', text });
+   395→      state.waiting = 'none';
+   396→      state.currentNodeId = null;
+   397→      return;
+   398→    }
+   399→
+   400→    messages.push({ text: answer, nodeId: 'assistant' });
+   401→    state.history.push({ role: 'bot', text: answer });
+   402→
+   403→    // Возвращаем меню, чтобы можно было продолжить навигацию по сценарию
+   404→    const menu = menuNode ?? findMenuNode(flow, state.vars['__last_menu']);
+   405→    if (menu) {
+   406→      if (assistant?.reaskMenu !== false) {
+   407→        const menuText = interpolate(menu.data.text, state.vars) || 'Выберите вариант:';
+   408→        messages.push({
+   409→          text: menuText,
+   410→          nodeId: menu.id,
+   411→          buttons: menu.data.buttons ?? [],
+   412→        });
+   413→        state.history.push({ role: 'bot', text: menuText });
+   414→      }
+   415→      state.waiting = 'buttons';
+   416→      state.currentNodeId = menu.id;
+   417→    } else {
+   418→      state.waiting = 'none';
+   419→      state.currentNodeId = null;
+   420→    }
+   421→  };
+   422→
+   423→  // 1. Возобновление: если движок ждал ввода/кнопки
+   424→  if (input && state.waiting !== 'none' && state.currentNodeId) {
+   425→    const node = findNode(flow, state.currentNodeId);
+   426→    if (node?.type === 'question') {
+   427→      // Постоянная кнопка «🏠 Главное меню» — работает и вместо ответа на вопрос
+   428→      if (isMainMenuCommand(input)) {
+   429→        state.history.push({ role: 'user', text: input });
+   430→        state.waiting = 'none';
+   431→        lastInput = '';
+   432→        current = findStart(flow);
+   433→        if (current && current.type === 'start') {
+   434→          current = nextNode(flow, current.id);
+   435→        }
+   436→      } else if (isSkipWord(input) && node.data.validate) {
+   437→        // «пропустить» — принимаем ответ без проверки (пустая переменная)
+   438→        const v = node.data.variable?.trim() || 'answer';
+   439→        if (!state.vars[v]) state.vars[v] = '';
+   440→        state.history.push({ role: 'user', text: input });
+   441→        state.waiting = 'none';
+   442→        lastInput = '';
+   443→        current = nextNode(flow, node.id);
+   444→      } else {
+   445→        // Автопроверка ответа (телефон/адрес): при ошибке переспрашиваем
+   446→        const err = await validateAnswer(node.data, input, state.vars);
+   447→        if (err) {
+   448→          state.history.push({ role: 'user', text: input });
+   449→          state.history.push({ role: 'bot', text: err });
+   450→          messages.push({ text: err, nodeId: node.id });
+   451→          state.waiting = 'input';
+   452→          state.currentNodeId = node.id;
+   453→          return { messages, state, needsOperator };
+   454→        }
+   455→        const v = node.data.variable?.trim() || 'answer';
+   456→        state.vars[v] = input;
+   457→        state.history.push({ role: 'user', text: input });
+   458→        state.waiting = 'none';
+   459→        lastInput = '';
+   460→        current = nextNode(flow, node.id);
+   461→      }
+   462→    } else if (node?.type === 'buttons') {
+   463→      state.history.push({ role: 'user', text: input });
+   464→      const btn = (node.data.buttons ?? []).find(
+   465→        (b) => b.text.trim().toLowerCase() === input.trim().toLowerCase()
+   466→      );
+   467→      state.waiting = 'none';
+   468→      lastInput = '';
+   469→      if (btn) {
+   470→        // Выбор из меню можно сохранить в переменную (напр. объём контейнера)
+   471→        if (node.data.saveSelection) {
+   472→          state.vars[node.data.saveSelection] = btn.text;
+   473→        }
+   474→        current = nextNode(flow, node.id, btn.id);
+   475→      } else if (isMainMenuCommand(input) || isStartCommand(input)) {
+   476→        // «🏠 Главное меню» или /start в любом месте диалога — начать заново
+   477→        current = findStart(flow);
+   478→        if (current && current.type === 'start') {
+   479→          current = nextNode(flow, current.id);
+   480→        }
+   481→      } else if (assistantEnabled) {
+   482→        // Свободный текст вместо кнопки — отвечает ИИ-ассистент,
+   483→        // затем пользователю снова показывается это же меню
+   484→        await assistantFallback(input, node);
+   485→        return { messages, state, needsOperator };
+   486→      } else {
+   487→        // Нет совпадения — переспрашиваем
+   488→        const text = interpolate(node.data.text, state.vars) || 'Выберите вариант:';
+   489→        messages.push({ text, nodeId: node.id, buttons: node.data.buttons ?? [] });
+   490→        state.waiting = 'buttons';
+   491→        state.currentNodeId = node.id;
+   492→        state.history.push({ role: 'bot', text });
+   493→        return { messages, state, needsOperator };
+   494→      }
+   495→    } else {
+   496→      state.waiting = 'none';
+   497→      current = findStart(flow);
+   498→    }
+   499→  }
+   500→
+   501→  // 2. Старт нового диалога (или продолжение после ожидания)
+   502→  if (!current) {
+   503→    if (state.waiting !== 'none') {
+   504→      // Ждём ввода, но его не пришло — ничего не делаем
+   505→      return { messages, state, needsOperator };
+   506→    }
+   507→    if (input) {
+   508→      state.history.push({ role: 'user', text: input });
+   509→    }
+   510→    // Диалог уже передан оператору — бот молчит, пишет только человек-оператор
+   511→    if (needsOperator) {
+   512→      return { messages, state, needsOperator };
+   513→    }
+   514→    // ИИ-ассистент: свободный вопрос пользователя (в т.ч. первое сообщение);
+   515→    // /start всегда запускает сценарий с приветствия — детерминированный вход
+   516→    if (assistantEnabled && input && !isStartCommand(input)) {
+   517→      await assistantFallback(input);
+   518→      return { messages, state, needsOperator };
+   519→    }
+   520→    current = findStart(flow);
+   521→    if (current && current.type === 'start') {
+   522→      current = nextNode(flow, current.id);
+   523→    }
+   524→  }
+   525→
+   526→  // 3. Главный цикл traversal'а
+   527→  let steps = 0;
+   528→  while (current && steps < MAX_STEPS) {
+   529→    steps++;
+   530→    const node = current;
+   531→    switch (node.type) {
+   532→      case 'start': {
+   533→        current = nextNode(flow, node.id);
+   534→        break;
+   535→      }
+   536→      case 'message': {
+   537→        // Узел с флагом «Создать заявку»: номер попадает в {{order.number}}
+   538→        if (node.data.createOrder && ctx?.botId) {
+   539→          try {
+   540→            const cfg = node.data.createOrder;
+   541→            // Значение переменной; «{{city}}, {{street}}» — подстановка шаблона
+   542→            const pick = (v?: string) => {
+   543→              if (!v || !v.trim()) return '';
+   544→              if (v.includes('{{')) return interpolate(v, state.vars).trim();
+   545→              return (state.vars[v.trim()] ?? '').trim();
+   546→            };
+   547→            const order = await createOrder({
+   548→              botId: ctx.botId,
+   549→              conversationId: ctx.conversationId,
+   550→              externalUserId: ctx.externalUserId ?? null,
+   551→              type: cfg.type ?? 'waste',
+   552→              clientName: pick(cfg.nameVar) || null,
+   553→              phone: pick(cfg.phoneVar) || null,
+   554→              city: pick(cfg.cityVar) || null,
+   555→              address: pick(cfg.addressVar) || null,
+   556→              size: pick(cfg.sizeVar) || null,
+   557→              wishDate: pick(cfg.dateVar) || null,
+   558→              comment: cfg.comment ? interpolate(cfg.comment, state.vars) : null,
+   559→            });
+   560→            state.vars['order.number'] = String(order.number);
+   561→            state.vars['order.id'] = order.id;
+   562→            state.vars['order.type'] = order.type;
+   563→            console.log(`[flow-engine] заявка №${order.number} создана (${order.type})`);
+   564→          } catch (err) {
+   565→            console.error('[flow-engine] createOrder error:', err);
+   566→            state.vars['order.number'] = '—';
+   567→          }
+   568→        }
+   569→        const text = interpolate(node.data.text, state.vars, lastInput || undefined);
+   570→        if (text.trim()) {
+   571→          messages.push({ text, nodeId: node.id });
+   572→          state.history.push({ role: 'bot', text });
+   573→        }
+   574→        lastInput = '';
+   575→        current = nextNode(flow, node.id);
+   576→        break;
+   577→      }
+   578→      case 'question': {
+   579→        const text = interpolate(node.data.text, state.vars, lastInput || undefined);
+   580→        if (text.trim()) {
+   581→          messages.push({ text, nodeId: node.id });
+   582→          state.history.push({ role: 'bot', text });
+   583→        }
+   584→        state.waiting = 'input';
+   585→        state.currentNodeId = node.id;
+   586→        current = null;
+   587→        break;
+   588→      }
+   589→      case 'buttons': {
+   590→        const text = interpolate(node.data.text, state.vars, lastInput || undefined);
+   591→        if (text.trim()) {
+   592→          messages.push({
+   593→            text,
+   594→            nodeId: node.id,
+   595→            buttons: node.data.buttons ?? [],
+   596→          });
+   597→          state.history.push({ role: 'bot', text });
+   598→        }
+   599→        // Запоминаем последнее меню — ассистент вернёт к нему после ответа
+   600→        state.vars['__last_menu'] = node.id;
+   601→        state.waiting = 'buttons';
+   602→        state.currentNodeId = node.id;
+   603→        current = null;
+   604→        break;
+   605→      }
+   606→      case 'condition': {
+   607→        const ok = evalCondition(node.data.condition, state.vars);
+   608→        current = nextNode(flow, node.id, ok ? 'yes' : 'no');
+   609→        break;
+   610→      }
+   611→      case 'ai': {
+   612→        try {
+   613→          // AI-узел дополняется общей базой знаний ассистента бота
+   614→          const d = { ...node.data };
+   615→          if (assistantEnabled && d.useBotKnowledge !== false && assistant?.knowledge?.trim()) {
+   616→            d.knowledge = d.knowledge?.trim()
+   617→              ? `${d.knowledge.trim()}\n\n${assistant.knowledge.trim()}`
+   618→              : assistant.knowledge;
+   619→          }
+   620→          const raw = await runAI(d, state, lastInput);
+   621→          const text = interpolate(raw, state.vars);
+   622→          messages.push({ text, nodeId: node.id });
+   623→          state.history.push({ role: 'bot', text });
+   624→        } catch (err) {
+   625→          console.error('[flow-engine] AI node error:', err);
+   626→          const fallback =
+   627→            'Извините, сервис ИИ временно недоступен. Попробуйте ещё раз через минуту.';
+   628→          messages.push({ text: fallback, nodeId: node.id });
+   629→          state.history.push({ role: 'bot', text: fallback });
+   630→        }
+   631→        lastInput = '';
+   632→        current = nextNode(flow, node.id);
+   633→        break;
+   634→      }
+   635→      case 'http': {
+   636→        const url = interpolate(node.data.url, state.vars, lastInput || undefined);
+   637→        if (url.trim()) {
+   638→          try {
+   639→            const method = (node.data.method || 'GET').toUpperCase();
+   640→            const init: RequestInit = { method };
+   641→            if (method !== 'GET' && node.data.body) {
+   642→              init.body = interpolate(node.data.body, state.vars, lastInput || undefined);
+   643→              init.headers = { 'Content-Type': 'application/json' };
+   644→            }
+   645→            const res = await fetch(url, { ...init, signal: AbortSignal.timeout(10000) });
+   646→            state.vars['__http_status'] = String(res.status);
+   647→          } catch {
+   648→            state.vars['__http_status'] = 'error';
+   649→          }
+   650→        }
+   651→        lastInput = '';
+   652→        current = nextNode(flow, node.id);
+   653→        break;
+   654→      }
+   655→      case 'delay': {
+   656→        const sec = Math.min(Math.max(node.data.seconds ?? 1, 0), 3);
+   657→        if (sec > 0) await new Promise((r) => setTimeout(r, sec * 1000));
+   658→        current = nextNode(flow, node.id);
+   659→        break;
+   660→      }
+   661→      case 'handoff': {
+   662→        state.vars['__operator'] = 'true';
+   663→        needsOperator = true;
+   664→        const text =
+   665→          interpolate(node.data.text, state.vars, lastInput || undefined) ||
+   666→          'Соединяю вас с живым оператором, оставайтесь на линии 🙌';
+   667→        if (text.trim()) {
+   668→          messages.push({ text, nodeId: node.id });
+   669→          state.history.push({ role: 'bot', text });
+   670→        }
+   671→        lastInput = '';
+   672→        current = nextNode(flow, node.id);
+   673→        break;
+   674→      }
+   675→      case 'end':
+   676→      default: {
+   677→        state.waiting = 'none';
+   678→        state.currentNodeId = null;
+   679→        current = null;
+   680→        break;
+   681→      }
+   682→    }
+   683→  }
+   684→
+   685→  if (steps >= MAX_STEPS) {
+   686→    state.waiting = 'none';
+   687→    state.currentNodeId = null;
+   688→  }
+   689→
+   690→  return { messages, state, needsOperator };
+   691→}
+   692→
+   693→// ─── Шаблон сценария по умолчанию для нового бота ────────────────────────────
+   694→
+   695→export function defaultFlow(): Flow {
+   696→  const nodes: FlowNode[] = [
+   697→    {
+   698→      id: 'n_start',
+   699→      type: 'start',
+   700→      position: { x: 420, y: 0 },
+   701→      data: { label: 'Старт' },
+   702→    },
+   703→    {
+   704→      id: 'n_greet',
+   705→      type: 'message',
+   706→      position: { x: 380, y: 110 },
+   707→      data: { label: 'Приветствие', text: 'Здравствуйте! 👋 Я бот техподдержки. Чем могу помочь?' },
+   708→    },
+   709→    {
+   710→      id: 'n_menu',
+   711→      type: 'buttons',
+   712→      position: { x: 380, y: 240 },
+   713→      data: {
+   714→        label: 'Главное меню',
+   715→        text: 'Выберите, что вас интересует:',
+   716→        buttons: [
+   717→          { id: 'b1', text: '❓ Частый вопрос' },
+   718→          { id: 'b2', text: '👤 Оператор' },
+   719→        ],
+   720→      },
+   721→    },
+   722→    {
+   723→      id: 'n_ai',
+   724→      type: 'ai',
+   725→      position: { x: 120, y: 400 },
+   726→      data: {
+   727→        label: 'ИИ-поддержка',
+   728→        prompt:
+   729→          'Ты — дружелюбный бот техподдержки компании. Отвечай кратко, вежливо и по делу. Если вопрос выходит за рамки базы знаний — предложи связаться с оператором.',
+   730→        knowledge:
+   731→          'Часы работы поддержки: пн–пт, 9:00–18:00 МСК.\nВозврат средств — в течение 14 дней с момента покупки.\nСрок доставки — 2–5 рабочих дней.\nEmail поддержки: support@example.com',
+   732→        useMemory: true,
+   733→      },
+   734→    },
+   735→    {
+   736→      id: 'n_more',
+   737→      type: 'buttons',
+   738→      position: { x: 120, y: 560 },
+   739→      data: {
+   740→        label: 'Ещё помощь?',
+   741→        text: 'Могу ли я ещё чем-то помочь?',
+   742→        buttons: [
+   743→          { id: 'b1', text: 'Да, ещё вопрос' },
+   744→          { id: 'b2', text: 'Нет, спасибо' },
+   745→        ],
+   746→      },
+   747→    },
+   748→    {
+   749→      id: 'n_bye',
+   750→      type: 'message',
+   751→      position: { x: 420, y: 720 },
+   752→      data: { label: 'Прощание', text: 'Спасибо за обращение! Хорошего дня 😊' },
+   753→    },
+   754→    {
+   755→      id: 'n_handoff',
+   756→      type: 'handoff',
+   757→      position: { x: 680, y: 400 },
+   758→      data: { label: 'Передача оператору', text: 'Передаю диалог живому оператору…' },
+   759→    },
+   760→    {
+   761→      id: 'n_end',
+   762→      type: 'end',
+   763→      position: { x: 420, y: 840 },
+   764→      data: { label: 'Конец' },
+   765→    },
+   766→  ];
+   767→  const edges = [
+   768→    { id: 'e1', source: 'n_start', target: 'n_greet' },
+   769→    { id: 'e2', source: 'n_greet', target: 'n_menu' },
+   770→    { id: 'e3', source: 'n_menu', target: 'n_ai', sourceHandle: 'b1' },
+   771→    { id: 'e4', source: 'n_menu', target: 'n_handoff', sourceHandle: 'b2' },
+   772→    { id: 'e5', source: 'n_ai', target: 'n_more' },
+   773→    { id: 'e6', source: 'n_more', target: 'n_menu', sourceHandle: 'b1' },
+   774→    { id: 'e7', source: 'n_more', target: 'n_bye', sourceHandle: 'b2' },
+   775→    { id: 'e8', source: 'n_handoff', target: 'n_end' },
+   776→    { id: 'e9', source: 'n_bye', target: 'n_end' },
+   777→  ];
+   778→  return { nodes, edges };
+   779→}
+   780→

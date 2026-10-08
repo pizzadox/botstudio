@@ -300,10 +300,27 @@ async function runAI(
     messages.push({ role: 'user', content: 'Привет' });
   }
 
-  const completion = await zai.chat.completions.create({
-    messages,
-    thinking: { type: 'disabled' },
-  });
+  // IMP-BE21-02: SDK не принимает signal — таймаут через Promise.race (45 с).
+  // На таймауте/ошибке выбрасываем исключение — существующие catch показывают
+  // fallback-текст (AI-узел сценария, свободный чат, assistantFallback).
+  let aiTimer: ReturnType<typeof setTimeout> | undefined;
+  let completion: Awaited<ReturnType<typeof zai.chat.completions.create>>;
+  try {
+    completion = await Promise.race([
+      zai.chat.completions.create({
+        messages,
+        thinking: { type: 'disabled' },
+      }),
+      new Promise<never>((_, reject) => {
+        aiTimer = setTimeout(() => reject(new Error('AI timeout: ответ ИИ не получен за 45 с')), 45_000);
+        // таймер не должен удерживать процесс при завершении
+        if (typeof aiTimer.unref === 'function') aiTimer.unref();
+      }),
+    ]);
+  } finally {
+    // очищаем таймер, чтобы не течь (иначе гонка «ответ пришёл последним» держит handle)
+    if (aiTimer) clearTimeout(aiTimer);
+  }
   const content = completion.choices[0]?.message?.content;
   return content && content.trim().length > 0
     ? content

@@ -201,11 +201,23 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
 
   let conversation: Conversation | null = null;
 
-  // 1. Демо-чат передаёт прямой ID диалога
+  // 1. Демо-чат передаёт прямой ID диалога.
+  // ГВАРД (IMP-BE21-05): продолжить по conversationId можно ТОЛЬКО диалог
+  // веб-канала (демо-виджет сайта). Чужой/подделанный conversationId
+  // (MAX/Telegram/симулятор) НЕ инжектится — запрос обрабатывается дальше
+  // как будто ID не передавали: гость попадёт в свой веб-диалог по
+  // externalUserId или получит новый диалог. Так публичный виджет не может
+  // писать в чужие диалоги мессенджеров или в тест-чат из симулятора.
   if (msg.conversationId) {
-    conversation = await db.conversation.findFirst({
+    const direct = await db.conversation.findFirst({
       where: { id: msg.conversationId, botId: channel.botId },
+      include: { channel: { select: { type: true } } },
     });
+    // channel может отсутствовать (SetNull после удаления канала) — тогда
+    // доверяем source: веб-диалоги всегда создаются с source='web'
+    if (direct && (direct.channel?.type ?? direct.source) === 'web') {
+      conversation = direct;
+    }
   }
 
   // 2. Мессенджеры: ищем диалог человека (user_id стабильнее, чем chat_id)
@@ -355,20 +367,20 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
     const messages: OutboundMessage[] = [];
     let needsOperator = conv.needsOperator;
 
-    /** Записать исходящие сообщения бота в БД */
+    /** Записать исходящие сообщения бота в БД одним createMany (IMP-BE21-14;
+     *  id созданных записей нигде не используются — только текст в replies) */
     const persistBotMessages = async (orderId?: string | null) => {
-      for (const m of messages) {
-        await db.message.create({
-          data: {
-            conversationId: conv.id,
-            role: 'bot',
-            text: m.text,
-            nodeId: '__bot',
-            orderId: orderId ?? null,
-          },
-        });
-        replies.push(m.text);
-      }
+      if (messages.length === 0) return;
+      await db.message.createMany({
+        data: messages.map((m) => ({
+          conversationId: conv.id,
+          role: 'bot',
+          text: m.text,
+          nodeId: '__bot',
+          orderId: orderId ?? null,
+        })),
+      });
+      for (const m of messages) replies.push(m.text);
     };
 
     /** Сохранить состояние и вернуть результат без запуска движка */

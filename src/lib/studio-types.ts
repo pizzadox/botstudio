@@ -41,9 +41,16 @@ export interface ChannelItem {
   botId: string;
   type: 'telegram' | 'whatsapp' | 'max' | 'web';
   title: string;
-  token: string | null;
+  /** @deprecated с волны 21 сервер отдаёт только tokenMasked — поле не заполняется */
+  token?: string | null;
+  /** Маскированный токен для отображения (например «demo…x9A») */
+  tokenMasked?: string | null;
+  /** Есть ли сохранённый токен (реальное значение не покидает сервер) */
+  hasToken?: boolean;
   phone: string | null;
   secret: string;
+  /** Готовый URL вебхука (собирается на сервере из secret) */
+  webhookUrl?: string;
   active: boolean;
   lastStatus: string | null;
   createdAt: string;

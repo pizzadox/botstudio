@@ -91,11 +91,16 @@ function cacheGeo(key: string, p: Promise<GeoHit>): Promise<GeoHit> {
   const forget = () => {
     if (geoCache.get(key) === p) geoCache.delete(key);
   };
+  const forgetLater = (): void => {
+    const t = setTimeout(forget, GEO_TTL_FAIL);
+    // таймер «забыть неудачный геокодинг» не должен удерживать процесс (IMP-BE21-25)
+    if (typeof t.unref === 'function') t.unref();
+  };
   void p.then(
     (hit) => {
-      if (!hit) setTimeout(forget, GEO_TTL_FAIL);
+      if (!hit) forgetLater();
     },
-    () => setTimeout(forget, GEO_TTL_FAIL)
+    forgetLater
   );
   return p;
 }
@@ -225,11 +230,13 @@ function geocodeRetryLater(orderId: string, address: string): void {
   const key = `${orderId}:${address.toLowerCase()}`;
   if (geoRetryKeys.has(key)) return; // повтор уже запланирован
   geoRetryKeys.add(key);
-  setTimeout(() => {
+  const t = setTimeout(() => {
     geoRetryKeys.delete(key);
     geoCache.delete(address.trim().toLowerCase());
     geocodeInBackground(orderId, address);
   }, 90 * 1000);
+  // IMP-BE21-25: отложенный ретрай не должен удерживать процесс при завершении
+  if (typeof t.unref === 'function') t.unref();
 }
 
 /**

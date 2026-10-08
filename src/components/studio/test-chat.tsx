@@ -41,6 +41,8 @@ export default function TestChat({
   const convRef = useRef<string | null>(null);
   const seenIdsRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
+  // IMP-FE21-08: поколение выполнения run() — инвалидируется при новом старте/сбросе/закрытии
+  const runIdRef = useRef(0);
   const storageKey = `botstudio_test_conv_${botId}`;
 
   const scrollToBottom = () => {
@@ -51,6 +53,8 @@ export default function TestChat({
 
   const run = useCallback(
     async (input: string | null) => {
+      // IMP-FE21-08: инкремент поколения инвалидирует все предыдущие выполнения
+      const myRunId = ++runIdRef.current;
       setTyping(true);
       try {
         const res = await api<SimulateResponse>(`/api/bots/${botId}/simulate`, {
@@ -61,6 +65,8 @@ export default function TestChat({
             conversationId: convRef.current,
           }),
         });
+        // Ответ устаревшего поколения (чат закрыли/сбросили) — ничего не сетим
+        if (myRunId !== runIdRef.current) return;
         stateRef.current = res.state;
         if (res.conversationId) {
           convRef.current = res.conversationId;
@@ -74,15 +80,21 @@ export default function TestChat({
         for (const m of res.messages) {
           setItems((prev) => [...prev, { role: 'bot', text: m.text, buttons: m.buttons }]);
           await new Promise((r) => setTimeout(r, 250));
+          // 250мс-анимация между репликами тоже подчиняется поколению
+          if (myRunId !== runIdRef.current) return;
         }
       } catch {
+        if (myRunId !== runIdRef.current) return;
         setItems((prev) => [
           ...prev,
           { role: 'bot', text: '⚠️ Ошибка выполнения сценария. Попробуйте ещё раз.' },
         ]);
       } finally {
-        setTyping(false);
-        scrollToBottom();
+        // typing сбрасывает только актуальное поколение — иначе погасим индикатор новой генерации
+        if (myRunId === runIdRef.current) {
+          setTyping(false);
+          scrollToBottom();
+        }
       }
     },
     [botId]
@@ -138,6 +150,8 @@ export default function TestChat({
 
     return () => {
       cancelled = true;
+      // IMP-FE21-08: закрытие чата (размонтирование) инвалидирует выполняющийся run()
+      runIdRef.current++;
     };
   }, [botId]);
 
@@ -171,10 +185,34 @@ export default function TestChat({
 
   useEffect(() => {
     if (!conversationId) return;
+    // IMP-FE21-07: пауза поллинга на document.hidden (паттерн волны 20):
+    // скрытая вкладка — интервал снят, возврат — немедленный poll + рестарт
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const startTimer = () => {
+      if (timer === null && !document.hidden) timer = setInterval(() => void poll(), 2500);
+    };
+    const stopTimer = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopTimer();
+      } else {
+        void poll();
+        startTimer();
+      }
+    };
     // Помечаем уже существующие сообщения диалога как показанные
-    poll();
-    const t = setInterval(poll, 2500);
-    return () => clearInterval(t);
+    void poll();
+    startTimer();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stopTimer();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [conversationId, poll]);
 
   const reset = () => {
@@ -270,7 +308,7 @@ export default function TestChat({
                 'max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
                 m.role === 'user'
                   ? 'rounded-br-md bg-primary text-primary-foreground'
-                  : 'rounded-bl-md bg-muted'
+                  : 'rounded-br-md border bg-card'
               )}
             >
               {m.operator && (
@@ -284,7 +322,7 @@ export default function TestChat({
         ))}
         {typing && (
           <div className="flex justify-start">
-            <div className="flex items-center gap-1 rounded-2xl rounded-bl-md bg-muted px-3 py-2.5">
+            <div className="flex items-center gap-1 rounded-2xl rounded-br-md border bg-card px-3 py-2.5">
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:0ms]" />
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />

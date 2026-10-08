@@ -49,6 +49,10 @@ import { cn } from '@/lib/utils';
 const DEFAULT_PROMPT =
   'Ты — дружелюбный ИИ-ассистент техподдержки. Отвечай кратко, вежливо и по делу, на языке пользователя. Опирайся на базу знаний; если ответа нет — честно скажи об этом и предложи позвать оператора.';
 
+// IMP-FE21-20: лимиты длинных полей + счётчики снизу справа
+const PROMPT_MAX = 4000;
+const KB_CONTENT_MAX = 20000;
+
 interface ChatItem {
   id: string;
   role: 'user' | 'bot';
@@ -325,6 +329,7 @@ export default function AiAssistantView({
                     <Textarea
                       id="ai-prompt"
                       rows={4}
+                      maxLength={PROMPT_MAX}
                       placeholder={DEFAULT_PROMPT}
                       value={cfg.prompt}
                       onChange={(e) => setCfg((c) => ({ ...c, prompt: e.target.value }))}
@@ -333,14 +338,27 @@ export default function AiAssistantView({
                       <p className="text-[11px] text-muted-foreground">
                         Инструкция для нейросети: кто вы, как отвечать, чего избегать.
                       </p>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-[11px] text-muted-foreground"
-                        onClick={() => setCfg((c) => ({ ...c, prompt: DEFAULT_PROMPT }))}
-                      >
-                        <RotateCcw className="h-3 w-3" /> Шаблон
-                      </Button>
+                      <div className="ml-auto flex items-center gap-2">
+                        {/* IMP-FE21-20: счётчик символов; >90% — предупреждение */}
+                        <span
+                          className={cn(
+                            'text-[11px] tabular-nums',
+                            cfg.prompt.length > PROMPT_MAX * 0.9
+                              ? 'text-amber-600 dark:text-amber-400'
+                              : 'text-muted-foreground'
+                          )}
+                        >
+                          {cfg.prompt.length} / {PROMPT_MAX}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-[11px] text-muted-foreground"
+                          onClick={() => setCfg((c) => ({ ...c, prompt: DEFAULT_PROMPT }))}
+                        >
+                          <RotateCcw className="h-3 w-3" /> Шаблон
+                        </Button>
+                      </div>
                     </div>
                   </div>
 
@@ -430,12 +448,20 @@ export default function AiAssistantView({
               )}
 
               {editing && (
-                <div className="space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-4">
+                // IMP-FE21-10: форма записи БЗ — Enter сохраняет, autoFocus на заголовке
+                <form
+                  className="space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-4"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    saveItem();
+                  }}
+                >
                   <div className="flex items-center justify-between gap-2">
                     <Label className="text-sm font-medium">
                       {editing.id ? 'Изменить запись' : 'Новая запись'}
                     </Label>
                     <Button
+                      type="button"
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7"
@@ -446,6 +472,7 @@ export default function AiAssistantView({
                     </Button>
                   </div>
                   <Input
+                    autoFocus
                     placeholder="Заголовок: например «График работы»"
                     aria-label="Заголовок записи"
                     value={editing.title}
@@ -453,21 +480,32 @@ export default function AiAssistantView({
                   />
                   <Textarea
                     rows={4}
+                    maxLength={KB_CONTENT_MAX}
                     placeholder="Содержимое: пн–пт с 9:00 до 18:00 МСК…"
                     aria-label="Содержимое записи"
                     value={editing.content}
                     onChange={(e) => setEditing({ ...editing, content: e.target.value })}
                   />
+                  <p
+                    className={cn(
+                      'text-right text-[11px] tabular-nums',
+                      editing.content.length > KB_CONTENT_MAX * 0.9
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-muted-foreground'
+                    )}
+                  >
+                    {editing.content.length} / {KB_CONTENT_MAX}
+                  </p>
                   <div className="flex gap-2">
-                    <Button size="sm" onClick={saveItem} disabled={kbBusy}>
+                    <Button size="sm" type="submit" disabled={kbBusy}>
                       {kbBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                       Сохранить
                     </Button>
-                    <Button size="sm" variant="outline" onClick={() => setEditing(null)}>
+                    <Button size="sm" type="button" variant="outline" onClick={() => setEditing(null)}>
                       Отмена
                     </Button>
                   </div>
-                </div>
+                </form>
               )}
 
               {knowledge.length > 0 && (

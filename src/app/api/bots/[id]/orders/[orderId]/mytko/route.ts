@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { mytkoSyncOrder, parseMytkoConfig, getFreshToken, getAreaCodesCached } from '@/lib/mytko';
+import { mytkoSyncOrder, parseMytkoConfig, getFreshToken, getAreaCodesCached, serializeMytkoConfig } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
 
@@ -57,7 +57,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (fresh && fresh !== cfg.token) {
       cfg.token = fresh;
       cfg.tokenIssuedAt = new Date().toISOString();
-      await db.bot.update({ where: { id: bot.id }, data: { mytkoConfig: JSON.stringify(cfg) } });
+      // serializeMytkoConfig: пароль шифруется (enc:v1:), а не пишется plaintext'ом (волна 21)
+      await db.bot.update({ where: { id: bot.id }, data: { mytkoConfig: serializeMytkoConfig(cfg) } });
     }
   }
 

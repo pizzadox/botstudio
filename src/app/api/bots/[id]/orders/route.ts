@@ -6,7 +6,10 @@ import { parseMytkoConfig } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string }> };
 
-/** Список заявок бота — карта, активные, архив */
+/** Cap для ?take — защита от «выкачаем всю таблицу» (IMP-BE21-21) */
+const MAX_TAKE = 500;
+
+/** Список заявок бота — карта, активные, архив. ?take=N (дефолт 500, cap 500). */
 export async function GET(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const user = await getSessionUser(req);
@@ -18,8 +21,11 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
 
   // Список заявок: select всех скаляров (нужны для карты/карточек/поиска) +
-  // только нужные поля диалога; take 500 — растущий список не «тянем» целиком.
+  // только нужные поля диалога; ?take (дефолт 500) — растущий список не «тянем» целиком.
   // Порядок прежний: createdAt desc (новые сверху).
+  const takeParam = Number(req.nextUrl.searchParams.get('take') ?? '');
+  const take =
+    Number.isFinite(takeParam) && takeParam > 0 ? Math.min(Math.floor(takeParam), MAX_TAKE) : 500;
   const [ordersRaw, cfg] = await Promise.all([
     db.order.findMany({
       where: { botId: id },
@@ -53,7 +59,7 @@ export async function GET(req: NextRequest, { params }: Params) {
         _count: { select: { messages: true } },
       },
       orderBy: { createdAt: 'desc' },
-      take: 500,
+      take,
     }),
     Promise.resolve(parseMytkoConfig(bot.mytkoConfig)),
   ]);

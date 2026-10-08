@@ -85,16 +85,26 @@ export async function POST(req: NextRequest, { params }: Params) {
     buttons.push({ id: '__nav_orders', text: BTN_MY_ORDERS });
   }
 
-  await db.message.create({
-    data: { conversationId: conversation.id, role: 'bot', text: closedText, nodeId: '__bot' },
-  });
-  await deliverTextToConversation(conversation.id, closedText).catch(() => {});
-
+  // Сообщаем клиенту в мессенджере, что обращение закрыто, и возвращаем меню.
+  // IMP-BE21-24: внутри пары «сообщение в БД + доставка наружу» запросы
+  // независимы — идёт параллельно; пары между собой последовательно,
+  // чтобы «Обращение закрыто» всегда было в чате раньше меню.
+  const closePair = Promise.all([
+    db.message.create({
+      data: { conversationId: conversation.id, role: 'bot', text: closedText, nodeId: '__bot' },
+    }),
+    deliverTextToConversation(conversation.id, closedText).catch(() => {}),
+  ]);
   if (menu && menuText) {
-    await db.message.create({
-      data: { conversationId: conversation.id, role: 'bot', text: menuText, nodeId: '__bot' },
-    });
-    await deliverTextToConversation(conversation.id, menuText, buttons).catch(() => {});
+    await closePair;
+    await Promise.all([
+      db.message.create({
+        data: { conversationId: conversation.id, role: 'bot', text: menuText, nodeId: '__bot' },
+      }),
+      deliverTextToConversation(conversation.id, menuText, buttons).catch(() => {}),
+    ]);
+  } else {
+    await closePair;
   }
 
   return NextResponse.json({ ok: true });

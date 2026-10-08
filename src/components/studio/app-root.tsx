@@ -70,6 +70,28 @@ export type NotificationTarget = {
 /** Разделы, для которых нужен выбранный бот (в палитре — disabled без него) */
 const BOT_VIEWS: ViewKey[] = ['editor', 'ai', 'channels', 'inbox', 'orders'];
 
+// IMP-FE21-06: оболочка переживает reload — view и текущий бот в localStorage
+const VIEW_LS_KEY = 'bstudio.view';
+const BOT_LS_KEY = 'bstudio.botId';
+const ALL_VIEWS: ViewKey[] = ['dashboard', 'editor', 'ai', 'channels', 'inbox', 'orders'];
+
+function readStoredValue(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function clearPersistedShell() {
+  try {
+    window.localStorage.removeItem(VIEW_LS_KEY);
+    window.localStorage.removeItem(BOT_LS_KEY);
+  } catch {
+    // localStorage недоступен — не критично
+  }
+}
+
 const PALETTE_VIEWS: { key: ViewKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: 'Дашборд', icon: LayoutDashboard },
   { key: 'editor', label: 'Конструктор', icon: Workflow },
@@ -81,9 +103,12 @@ const PALETTE_VIEWS: { key: ViewKey; label: string; icon: typeof LayoutDashboard
 
 /**
  * Палитра команд (Ctrl/Cmd+K, cmdk): переход по разделам, переключение
- * текущего бота, тумблер темы и выход. Список ботов грузится лениво — при
- * первом открытии.
+ * текущего бота, тумблер темы и выход. Список ботов грузится при первом
+ * открытии и перезапрашивается, если данным больше BOTS_STALE_MS (IMP-FE21-05):
+ * прежний список остаётся виден, пока едут свежие данные.
  */
+const BOTS_STALE_MS = 30_000;
+
 function CommandPalette({
   open,
   onOpenChange,
@@ -103,13 +128,27 @@ function CommandPalette({
 }) {
   const { resolvedTheme, setTheme } = useTheme();
   const [bots, setBots] = useState<BotListItem[] | null>(null);
+  const fetchedAtRef = useRef(0);
 
   useEffect(() => {
-    if (!open || bots !== null) return;
-    api<{ bots: BotListItem[] }>('/api/bots')
-      .then((d) => setBots(d.bots))
-      .catch(() => setBots([]));
-  }, [open, bots]);
+    if (!open) return;
+    let cancelled = false;
+    void (async () => {
+      if (Date.now() - fetchedAtRef.current < BOTS_STALE_MS) return;
+      try {
+        const d = await api<{ bots: BotListItem[] }>('/api/bots');
+        if (cancelled) return;
+        setBots(d.bots);
+        fetchedAtRef.current = Date.now();
+      } catch {
+        // при сбое оставляем прежний список (или пустой при первом открытии)
+        if (!cancelled) setBots((prev) => prev ?? []);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   /** Выполнить действие и закрыть палитру */
   const run = (action: () => void) => {
@@ -204,6 +243,9 @@ function NotificationsWatcher({
   const { toast } = useToast();
   const sinceRef = useRef<string>(new Date().toISOString());
   const shownRef = useRef<Set<string>>(new Set());
+  // IMP-FE21-24: подряд идущие сбои поллинга; с 3-го — один тост «нет связи»
+  const failStreakRef = useRef(0);
+  const offlineShownRef = useRef(false);
 
   useEffect(() => {
     let stopped = false;
@@ -213,6 +255,9 @@ function NotificationsWatcher({
           `/api/notifications?since=${encodeURIComponent(sinceRef.current)}`
         );
         if (stopped) return;
+        // Успешный ответ — связь восстановилась, сбрасываем счётчик и флаг тоста
+        failStreakRef.current = 0;
+        offlineShownRef.current = false;
         sinceRef.current = d.now ?? new Date().toISOString();
         onTotals(d.totals);
 
@@ -270,7 +315,18 @@ function NotificationsWatcher({
           });
         }
       } catch {
-        /* polling errors ignored */
+        // IMP-FE21-24: молча глотать сбои плохо — при 3 неудачах подряд
+        // показываем ОДИН тост (не спамим: флаг offlineShown), при успехе — сброс.
+        failStreakRef.current += 1;
+        if (failStreakRef.current >= 3 && !offlineShownRef.current) {
+          offlineShownRef.current = true;
+          toast({
+            title: 'Нет связи — обновления приостановлены',
+            description: 'Проверьте интернет. Уведомления возобновятся автоматически.',
+            variant: 'destructive',
+            duration: 8000,
+          });
+        }
       }
     };
     poll();
@@ -357,20 +413,88 @@ export default function AppRoot() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     api<{ user: SessionUser }>('/api/auth/me')
-      .then((d) => setUser(d.user))
-      .catch(() => setUser(null))
-      .finally(() => setLoading(false));
+      .then(async (d) => {
+        if (cancelled) return;
+        setUser(d.user);
+
+        // IMP-FE21-06: восстановление оболочки после reload.
+        // Атомарно: ботозависимую view ставим только вместе с найденным ботом.
+        const storedView = readStoredValue(VIEW_LS_KEY);
+        const storedBotId = readStoredValue(BOT_LS_KEY);
+        const viewValid =
+          storedView !== null && (ALL_VIEWS as string[]).includes(storedView);
+
+        if (storedBotId) {
+          try {
+            // ОДИН запрос списка ботов — ищем сохранённый id
+            const bd = await api<{ bots: BotListItem[] }>('/api/bots');
+            if (cancelled) return;
+            const bot = bd.bots.find((b) => b.id === storedBotId);
+            if (bot) {
+              setCurrentBot(bot);
+              setView(
+                viewValid && storedView !== 'dashboard'
+                  ? (storedView as ViewKey)
+                  : 'dashboard'
+              );
+              return;
+            }
+          } catch {
+            /* сеть/сессия — считаем бота не восстановленным */
+          }
+          if (cancelled) return;
+          // Бот не найден (удалён?) — бот не выбран, view возвращаем на дашборд;
+          // persist-эффекты ниже запишут актуальные значения заново
+          clearPersistedShell();
+          setView('dashboard');
+        } else if (viewValid) {
+          // Без бота можно открыть только дашборд
+          setView(BOT_VIEWS.includes(storedView as ViewKey) ? 'dashboard' : (storedView as ViewKey));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setUser(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
 
     // Если какой-то запрос вернул 401 (истёк токен и т.п.) — показываем вход
     const onUnauthorized = () => {
       setUser(null);
       setCurrentBot(null);
       setView('dashboard');
+      clearPersistedShell();
     };
     window.addEventListener('bstudio:unauthorized', onUnauthorized);
-    return () => window.removeEventListener('bstudio:unauthorized', onUnauthorized);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('bstudio:unauthorized', onUnauthorized);
+    };
   }, []);
+
+  // IMP-FE21-06: сохраняем view и бота только у авторизованных
+  useEffect(() => {
+    if (!user) return;
+    try {
+      window.localStorage.setItem(VIEW_LS_KEY, view);
+    } catch {
+      /* ignore */
+    }
+  }, [view, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const botId = currentBot?.id;
+    if (!botId) return;
+    try {
+      window.localStorage.setItem(BOT_LS_KEY, botId);
+    } catch {
+      /* ignore */
+    }
+  }, [currentBot?.id, user]);
 
   const openBot = useCallback(
     (bot: BotListItem, target: ViewKey = 'editor') => {
@@ -388,6 +512,7 @@ export default function AppRoot() {
   const logout = useCallback(async () => {
     await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
     clearAuthToken();
+    clearPersistedShell(); // IMP-FE21-06: view/бот не должны «переживать» выход
     setUser(null);
     setCurrentBot(null);
     setView('dashboard');
@@ -497,8 +622,8 @@ export default function AppRoot() {
       )}
       {(view !== 'dashboard' && !currentBot) && (
         <section className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-            <Bot className="h-7 w-7" aria-hidden="true" />
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <Bot className="h-6 w-6" aria-hidden="true" />
           </div>
           <div className="max-w-sm space-y-1">
             <h2 className="font-medium">Бот не выбран</h2>

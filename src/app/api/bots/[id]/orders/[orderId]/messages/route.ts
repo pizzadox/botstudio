@@ -40,7 +40,10 @@ export async function GET(req: NextRequest, { params }: Params) {
     })
   ).reverse();
 
-  return NextResponse.json({ messages });
+  // IMP-BE21-11: чат по заявке — никогда не кэшируется
+  const res = NextResponse.json({ messages });
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
 }
 
 /** Ответ оператора в чате заявки (доставляется клиенту в мессенджер) */

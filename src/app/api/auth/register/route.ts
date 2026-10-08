@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { createSession, hashPassword, SESSION_COOKIE, sessionCookieOptions } from '@/lib/auth';
+import { clientIp, rateLimit } from '@/lib/rate-limit';
 
 export async function POST(req: NextRequest) {
   try {
@@ -8,6 +9,14 @@ export async function POST(req: NextRequest) {
     const username = String(body.username ?? '').trim().toLowerCase();
     const password = String(body.password ?? '');
     const name = String(body.name ?? '').trim() || null;
+
+    // IMP-BE21-04: не больше 5 регистраций с одного ip за 15 минут
+    if (!rateLimit(`reg:${clientIp(req)}`, 5, 15 * 60_000)) {
+      return NextResponse.json(
+        { error: 'Слишком много попыток, попробуйте позже' },
+        { status: 429 }
+      );
+    }
 
     if (username.length < 3) {
       return NextResponse.json({ error: 'Логин должен быть не короче 3 символов' }, { status: 400 });
@@ -27,17 +36,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Этот логин уже занят' }, { status: 409 });
     }
 
-    const user = await db.user.create({
-      data: { username, password: await hashPassword(password), name },
-    });
+    try {
+      const user = await db.user.create({
+        data: { username, password: await hashPassword(password), name },
+      });
 
-    const session = await createSession(user.id);
-    const res = NextResponse.json({
-      user: { id: user.id, username: user.username, name: user.name },
-      token: session.id,
-    });
-    res.cookies.set(SESSION_COOKIE, session.id, sessionCookieOptions(session.expiresAt));
-    return res;
+      const session = await createSession(user.id);
+      const res = NextResponse.json({
+        user: { id: user.id, username: user.username, name: user.name },
+        token: session.id,
+      });
+      res.cookies.set(SESSION_COOKIE, session.id, sessionCookieOptions(session.expiresAt));
+      return res;
+    } catch (e) {
+      // IMP-BE21-07: гонка unique-констрейнта на username → 409 вместо 500
+      if (e && typeof e === 'object' && 'code' in e && (e as { code?: string }).code === 'P2002') {
+        return NextResponse.json({ error: 'Логин занят' }, { status: 409 });
+      }
+      throw e;
+    }
   } catch (err) {
     console.error('[auth/register]', err);
     return NextResponse.json({ error: 'Не удалось создать аккаунт' }, { status: 500 });

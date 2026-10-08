@@ -1,0 +1,695 @@
+     1→'use client';
+     2→
+     3→import { useCallback, useEffect, useRef, useState } from 'react';
+     4→import {
+     5→  BookOpen,
+     6→  Bot,
+     7→  BrainCircuit,
+     8→  ChevronLeft,
+     9→  Loader2,
+    10→  Pencil,
+    11→  Plus,
+    12→  RotateCcw,
+    13→  Save,
+    14→  Send,
+    15→  Sparkles,
+    16→  Trash2,
+    17→  X,
+    18→} from 'lucide-react';
+    19→import { api } from '@/lib/client-api';
+    20→import type { AiConfig, KnowledgeItemDto } from '@/lib/studio-types';
+    21→import type { EngineState } from '@/lib/flow-types';
+    22→import { Badge } from '@/components/ui/badge';
+    23→import {
+    24→  AlertDialog,
+    25→  AlertDialogAction,
+    26→  AlertDialogCancel,
+    27→  AlertDialogContent,
+    28→  AlertDialogDescription,
+    29→  AlertDialogFooter,
+    30→  AlertDialogHeader,
+    31→  AlertDialogTitle,
+    32→} from '@/components/ui/alert-dialog';
+    33→import { Button } from '@/components/ui/button';
+    34→import {
+    35→  Card,
+    36→  CardContent,
+    37→  CardDescription,
+    38→  CardHeader,
+    39→  CardTitle,
+    40→} from '@/components/ui/card';
+    41→import { Input } from '@/components/ui/input';
+    42→import { Label } from '@/components/ui/label';
+    43→import { Skeleton } from '@/components/ui/skeleton';
+    44→import { Switch } from '@/components/ui/switch';
+    45→import { Textarea } from '@/components/ui/textarea';
+    46→import { useToast } from '@/hooks/use-toast';
+    47→import { cn } from '@/lib/utils';
+    48→
+    49→const DEFAULT_PROMPT =
+    50→  'Ты — дружелюбный ИИ-ассистент техподдержки. Отвечай кратко, вежливо и по делу, на языке пользователя. Опирайся на базу знаний; если ответа нет — честно скажи об этом и предложи позвать оператора.';
+    51→
+    52→interface ChatItem {
+    53→  id: string;
+    54→  role: 'user' | 'bot';
+    55→  text: string;
+    56→  buttons?: { id: string; text: string }[];
+    57→}
+    58→
+    59→export default function AiAssistantView({
+    60→  bot,
+    61→  onBack,
+    62→  onOpenInbox,
+    63→}: {
+    64→  bot: { id: string; name: string; status: string };
+    65→  onBack: () => void;
+    66→  onOpenInbox: () => void;
+    67→}) {
+    68→  const { toast } = useToast();
+    69→
+    70→  // ── Настройки ассистента ──
+    71→  const [cfg, setCfg] = useState<AiConfig>({ enabled: false, prompt: '', reaskMenu: true });
+    72→  const [savedCfg, setSavedCfg] = useState<AiConfig>({ enabled: false, prompt: '', reaskMenu: true });
+    73→  const [loaded, setLoaded] = useState(false);
+    74→  const [savingCfg, setSavingCfg] = useState(false);
+    75→
+    76→  // ── База знаний ──
+    77→  const [knowledge, setKnowledge] = useState<KnowledgeItemDto[]>([]);
+    78→  const [editing, setEditing] = useState<{ id: string | null; title: string; content: string } | null>(null);
+    79→  const [kbBusy, setKbBusy] = useState(false);
+    80→  // Подтверждение удаления (AlertDialog): state-target + open={!!target}
+    81→  const [deleteTarget, setDeleteTarget] = useState<KnowledgeItemDto | null>(null);
+    82→
+    83→  // ── Тест-чат ──
+    84→  const [chat, setChat] = useState<ChatItem[]>([]);
+    85→  const [chatState, setChatState] = useState<EngineState | null>(null);
+    86→  const [input, setInput] = useState('');
+    87→  const [sending, setSending] = useState(false);
+    88→  const [handedOff, setHandedOff] = useState<string | null>(null);
+    89→  const scrollRef = useRef<HTMLDivElement>(null);
+    90→
+    91→  const dirty = JSON.stringify(cfg) !== JSON.stringify(savedCfg);
+    92→
+    93→  const load = useCallback(async () => {
+    94→    try {
+    95→      const d = await api<{ aiConfig: AiConfig; knowledge: KnowledgeItemDto[] }>(
+    96→        `/api/bots/${bot.id}/ai`
+    97→      );
+    98→      const c: AiConfig = {
+    99→        enabled: d.aiConfig.enabled === true,
+   100→        prompt: d.aiConfig.prompt ?? '',
+   101→        reaskMenu: d.aiConfig.reaskMenu !== false,
+   102→      };
+   103→      setCfg(c);
+   104→      setSavedCfg(c);
+   105→      setKnowledge(d.knowledge);
+   106→    } catch {
+   107→      toast({ title: 'Не удалось загрузить настройки ассистента', variant: 'destructive' });
+   108→    } finally {
+   109→      setLoaded(true);
+   110→    }
+   111→  }, [bot.id, toast]);
+   112→
+   113→  useEffect(() => {
+   114→    load();
+   115→  }, [load]);
+   116→
+   117→  useEffect(() => {
+   118→    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+   119→  }, [chat, sending]);
+   120→
+   121→  const saveCfg = async () => {
+   122→    setSavingCfg(true);
+   123→    try {
+   124→      const d = await api<{ aiConfig: AiConfig }>(`/api/bots/${bot.id}/ai`, {
+   125→        method: 'PUT',
+   126→        body: JSON.stringify(cfg),
+   127→      });
+   128→      const c: AiConfig = {
+   129→        enabled: d.aiConfig.enabled === true,
+   130→        prompt: d.aiConfig.prompt ?? '',
+   131→        reaskMenu: d.aiConfig.reaskMenu !== false,
+   132→      };
+   133→      setSavedCfg(c);
+   134→      setCfg(c);
+   135→      toast({
+   136→        title: c.enabled ? 'ИИ-ассистент включён' : 'Настройки сохранены',
+   137→        description: c.enabled
+   138→          ? 'Бот отвечает на свободные вопросы во всех каналах.'
+   139→          : 'Ассистент работает только по сценарию.',
+   140→      });
+   141→    } catch {
+   142→      toast({ title: 'Ошибка сохранения', variant: 'destructive' });
+   143→    } finally {
+   144→      setSavingCfg(false);
+   145→    }
+   146→  };
+   147→
+   148→  // ── База знаний: CRUD ──
+   149→  const saveItem = async () => {
+   150→    if (!editing) return;
+   151→    if (!editing.title.trim() || !editing.content.trim()) {
+   152→      toast({ title: 'Укажите заголовок и содержимое', variant: 'destructive' });
+   153→      return;
+   154→    }
+   155→    setKbBusy(true);
+   156→    try {
+   157→      if (editing.id) {
+   158→        const d = await api<{ item: KnowledgeItemDto }>(`/api/knowledge/${editing.id}`, {
+   159→          method: 'PUT',
+   160→          body: JSON.stringify({ title: editing.title, content: editing.content }),
+   161→        });
+   162→        setKnowledge((prev) => prev.map((k) => (k.id === d.item.id ? d.item : k)));
+   163→      } else {
+   164→        const d = await api<{ item: KnowledgeItemDto }>(`/api/bots/${bot.id}/knowledge`, {
+   165→          method: 'POST',
+   166→          body: JSON.stringify({ title: editing.title, content: editing.content }),
+   167→        });
+   168→        setKnowledge((prev) => [...prev, d.item]);
+   169→      }
+   170→      setEditing(null);
+   171→    } catch {
+   172→      toast({ title: 'Не удалось сохранить запись', variant: 'destructive' });
+   173→    } finally {
+   174→      setKbBusy(false);
+   175→    }
+   176→  };
+   177→
+   178→  const deleteItem = async (id: string) => {
+   179→    setKbBusy(true);
+   180→    try {
+   181→      await api(`/api/knowledge/${id}`, { method: 'DELETE' });
+   182→      setKnowledge((prev) => prev.filter((k) => k.id !== id));
+   183→      if (editing?.id === id) setEditing(null);
+   184→    } catch {
+   185→      toast({ title: 'Не удалось удалить запись', variant: 'destructive' });
+   186→    } finally {
+   187→      setKbBusy(false);
+   188→    }
+   189→  };
+   190→
+   191→  // ── Тест-чат ──
+   192→  const send = async (text: string) => {
+   193→    const t = text.trim();
+   194→    if (!t || sending) return;
+   195→    setSending(true);
+   196→    setInput('');
+   197→    setChat((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', text: t }]);
+   198→    try {
+   199→      const d = await api<{
+   200→        messages: { text: string; nodeId: string; buttons?: { id: string; text: string }[] }[];
+   201→        state: EngineState;
+   202→        needsOperator: boolean;
+   203→        conversationId?: string;
+   204→      }>(`/api/bots/${bot.id}/simulate`, {
+   205→        method: 'POST',
+   206→        body: JSON.stringify({ input: t, state: chatState, conversationId: handedOff ?? undefined }),
+   207→      });
+   208→      setChatState(d.state);
+   209→      setChat((prev) => [
+   210→        ...prev,
+   211→        ...d.messages.map((m, i) => ({
+   212→          id: `b-${Date.now()}-${i}`,
+   213→          role: 'bot' as const,
+   214→          text: m.text,
+   215→          buttons: m.buttons,
+   216→        })),
+   217→      ]);
+   218→      if (d.needsOperator) setHandedOff(d.conversationId ?? 'operator');
+   219→    } catch {
+   220→      setChat((prev) => [
+   221→        ...prev,
+   222→        { id: `e-${Date.now()}`, role: 'bot', text: 'Ошибка: не удалось получить ответ. Попробуйте ещё раз.' },
+   223→      ]);
+   224→    } finally {
+   225→      setSending(false);
+   226→    }
+   227→  };
+   228→
+   229→  const resetChat = () => {
+   230→    setChat([]);
+   231→    setChatState(null);
+   232→    setHandedOff(null);
+   233→    setInput('');
+   234→  };
+   235→
+   236→  const kbSuggestions = knowledge.slice(0, 3).map((k) => k.title);
+   237→
+   238→  if (!loaded) {
+   239→    return (
+   240→      <div
+   241→        className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4 sm:p-6 lg:p-8"
+   242→        role="status"
+   243→        aria-label="Загрузка настроек ассистента"
+   244→      >
+   245→        <div className="flex items-center gap-3">
+   246→          <Skeleton className="h-8 w-8 rounded-lg" />
+   247→          <div className="min-w-0 flex-1 space-y-2">
+   248→            <Skeleton className="h-7 w-56" />
+   249→            <Skeleton className="h-4 w-80 max-w-full" />
+   250→          </div>
+   251→        </div>
+   252→        <div className="grid gap-6 xl:grid-cols-5">
+   253→          <div className="space-y-6 xl:col-span-3">
+   254→            <Skeleton className="h-64 rounded-xl" />
+   255→            <Skeleton className="h-72 rounded-xl" />
+   256→          </div>
+   257→          <Skeleton className="h-[480px] rounded-xl xl:col-span-2" />
+   258→        </div>
+   259→      </div>
+   260→    );
+   261→  }
+   262→
+   263→  return (
+   264→    <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4 sm:p-6 lg:p-8">
+   265→      {/* Заголовок */}
+   266→      <div className="flex flex-wrap items-center justify-between gap-4">
+   267→        <div className="flex items-center gap-3">
+   268→          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">
+   269→            <ChevronLeft className="h-4 w-4" />
+   270→          </Button>
+   271→          <div className="min-w-0">
+   272→            <h1 className="flex items-center gap-2 text-lg font-bold tracking-tight sm:text-2xl">
+   273→              <Sparkles className="h-6 w-6 shrink-0 text-primary" aria-hidden /> ИИ-ассистент
+   274→            </h1>
+   275→            <p className="truncate text-sm text-muted-foreground">
+   276→              Нейросеть отвечает на свободные вопросы клиентов бота «{bot.name}»
+   277→            </p>
+   278→          </div>
+   279→        </div>
+   280→        {bot.status !== 'published' && (
+   281→          <Badge
+   282→            variant="outline"
+   283→            className="border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300"
+   284→          >
+   285→            Бот не опубликован — ассистент работает только в тестах
+   286→          </Badge>
+   287→        )}
+   288→      </div>
+   289→
+   290→      <div className="grid gap-6 xl:grid-cols-5">
+   291→        {/* Левая колонка: настройки + база знаний */}
+   292→        <div className="space-y-6 xl:col-span-3">
+   293→          {/* Настройки */}
+   294→          <Card>
+   295→            <CardHeader className="pb-3">
+   296→              <CardTitle className="flex items-center gap-2 text-lg">
+   297→                <BrainCircuit className="h-5 w-5 shrink-0 text-primary" aria-hidden /> Настройки ассистента
+   298→              </CardTitle>
+   299→              <CardDescription>
+   300→                Когда сценарию нечего ответить (свободный текст вместо кнопки, вопрос вне сценария),
+   301→                на вопрос отвечает ИИ с учётом базы знаний и истории диалога.
+   302→              </CardDescription>
+   303→            </CardHeader>
+   304→            <CardContent className="space-y-4">
+   305→              <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+   306→                <div className="min-w-0">
+   307→                  <Label htmlFor="ai-enabled" className="text-sm font-medium">
+   308→                    Включить ИИ-ассистента
+   309→                  </Label>
+   310→                  <p className="text-[11px] text-muted-foreground">
+   311→                    Клиент может задать любой вопрос — бот ответит нейросетью
+   312→                  </p>
+   313→                </div>
+   314→                <Switch
+   315→                  id="ai-enabled"
+   316→                  checked={cfg.enabled}
+   317→                  onCheckedChange={(v) => setCfg((c) => ({ ...c, enabled: v }))}
+   318→                />
+   319→              </div>
+   320→
+   321→              {cfg.enabled && (
+   322→                <>
+   323→                  <div className="space-y-1.5">
+   324→                    <Label htmlFor="ai-prompt">Личность и тон ассистента</Label>
+   325→                    <Textarea
+   326→                      id="ai-prompt"
+   327→                      rows={4}
+   328→                      placeholder={DEFAULT_PROMPT}
+   329→                      value={cfg.prompt}
+   330→                      onChange={(e) => setCfg((c) => ({ ...c, prompt: e.target.value }))}
+   331→                    />
+   332→                    <div className="flex flex-wrap items-center justify-between gap-2">
+   333→                      <p className="text-[11px] text-muted-foreground">
+   334→                        Инструкция для нейросети: кто вы, как отвечать, чего избегать.
+   335→                      </p>
+   336→                      <Button
+   337→                        variant="ghost"
+   338→                        size="sm"
+   339→                        className="h-7 text-[11px] text-muted-foreground"
+   340→                        onClick={() => setCfg((c) => ({ ...c, prompt: DEFAULT_PROMPT }))}
+   341→                      >
+   342→                        <RotateCcw className="h-3 w-3" /> Шаблон
+   343→                      </Button>
+   344→                    </div>
+   345→                  </div>
+   346→
+   347→                  <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+   348→                    <div className="min-w-0">
+   349→                      <Label htmlFor="ai-reask" className="text-sm font-medium">
+   350→                        Показывать меню после ответа
+   351→                      </Label>
+   352→                      <p className="text-[11px] text-muted-foreground">
+   353→                        После ответа ИИ пользователь снова видит кнопки сценария
+   354→                      </p>
+   355→                    </div>
+   356→                    <Switch
+   357→                      id="ai-reask"
+   358→                      checked={cfg.reaskMenu}
+   359→                      onCheckedChange={(v) => setCfg((c) => ({ ...c, reaskMenu: v }))}
+   360→                    />
+   361→                  </div>
+   362→
+   363→                  <div className="rounded-lg border bg-muted/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+   364→                    <b className="text-foreground">Как это работает:</b> вопрос клиента не попадает
+   365→                    на кнопку сценария → ассистент отвечает по базе знаний → клиент возвращается в
+   366→                    меню. Просит живого человека → диалог уходит оператору. В блоках «ИИ-ответ»
+   367→                    конструктора тоже используется эта база знаний.
+   368→                  </div>
+   369→                </>
+   370→              )}
+   371→
+   372→              <div className="flex flex-wrap items-center gap-3">
+   373→                <Button onClick={saveCfg} disabled={savingCfg || !dirty}>
+   374→                  {savingCfg ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+   375→                  Сохранить настройки
+   376→                </Button>
+   377→                {dirty && (
+   378→                  <span className="text-xs text-amber-600 dark:text-amber-400">
+   379→                    Есть несохранённые изменения
+   380→                  </span>
+   381→                )}
+   382→              </div>
+   383→            </CardContent>
+   384→          </Card>
+   385→
+   386→          {/* База знаний */}
+   387→          <Card>
+   388→            <CardHeader className="pb-3">
+   389→              <div className="flex items-center justify-between gap-2">
+   390→                <div className="min-w-0">
+   391→                  <CardTitle className="flex items-center gap-2 text-lg">
+   392→                    <BookOpen className="h-5 w-5 shrink-0 text-primary" aria-hidden /> База знаний
+   393→                  </CardTitle>
+   394→                  <CardDescription>
+   395→                    Факты о компании: графики, цены, доставка, возвраты, контакты…
+   396→                  </CardDescription>
+   397→                </div>
+   398→                <Button
+   399→                  size="sm"
+   400→                  variant="outline"
+   401→                  onClick={() => setEditing({ id: null, title: '', content: '' })}
+   402→                  disabled={kbBusy}
+   403→                >
+   404→                  <Plus className="h-4 w-4" /> Добавить
+   405→                </Button>
+   406→              </div>
+   407→            </CardHeader>
+   408→            <CardContent className="space-y-3">
+   409→              {knowledge.length === 0 && !editing && (
+   410→                <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed p-6 text-center">
+   411→                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+   412→                    <BookOpen className="h-6 w-6" aria-hidden />
+   413→                  </div>
+   414→                  <div>
+   415→                    <p className="text-sm font-medium text-foreground">Записей пока нет</p>
+   416→                    <p className="mt-1 max-w-[320px] text-sm text-muted-foreground">
+   417→                      Добавьте ответы на частые вопросы — ассистент будет опираться на них при
+   418→                      ответах.
+   419→                    </p>
+   420→                  </div>
+   421→                  <Button
+   422→                    size="sm"
+   423→                    variant="outline"
+   424→                    disabled={kbBusy}
+   425→                    onClick={() => setEditing({ id: null, title: '', content: '' })}
+   426→                  >
+   427→                    <Plus className="h-4 w-4" /> Добавить запись
+   428→                  </Button>
+   429→                </div>
+   430→              )}
+   431→
+   432→              {editing && (
+   433→                <div className="space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-4">
+   434→                  <div className="flex items-center justify-between gap-2">
+   435→                    <Label className="text-sm font-medium">
+   436→                      {editing.id ? 'Изменить запись' : 'Новая запись'}
+   437→                    </Label>
+   438→                    <Button
+   439→                      variant="ghost"
+   440→                      size="icon"
+   441→                      className="h-7 w-7"
+   442→                      onClick={() => setEditing(null)}
+   443→                      aria-label="Отменить редактирование"
+   444→                    >
+   445→                      <X className="h-4 w-4" />
+   446→                    </Button>
+   447→                  </div>
+   448→                  <Input
+   449→                    placeholder="Заголовок: например «График работы»"
+   450→                    aria-label="Заголовок записи"
+   451→                    value={editing.title}
+   452→                    onChange={(e) => setEditing({ ...editing, title: e.target.value })}
+   453→                  />
+   454→                  <Textarea
+   455→                    rows={4}
+   456→                    placeholder="Содержимое: пн–пт с 9:00 до 18:00 МСК…"
+   457→                    aria-label="Содержимое записи"
+   458→                    value={editing.content}
+   459→                    onChange={(e) => setEditing({ ...editing, content: e.target.value })}
+   460→                  />
+   461→                  <div className="flex gap-2">
+   462→                    <Button size="sm" onClick={saveItem} disabled={kbBusy}>
+   463→                      {kbBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+   464→                      Сохранить
+   465→                    </Button>
+   466→                    <Button size="sm" variant="outline" onClick={() => setEditing(null)}>
+   467→                      Отмена
+   468→                    </Button>
+   469→                  </div>
+   470→                </div>
+   471→              )}
+   472→
+   473→              {knowledge.length > 0 && (
+   474→                <div
+   475→                  className="max-h-96 overflow-y-auto rounded-lg border"
+   476→                  role="list"
+   477→                  aria-label="Записи базы знаний"
+   478→                >
+   479→                  <div className="divide-y">
+   480→                    {knowledge.map((k) => (
+   481→                      <div
+   482→                        key={k.id}
+   483→                        role="listitem"
+   484→                        className={cn(
+   485→                          'group flex items-start justify-between gap-2 p-3',
+   486→                          editing?.id === k.id && 'hidden'
+   487→                        )}
+   488→                      >
+   489→                        <div className="min-w-0">
+   490→                          <div className="truncate text-sm font-medium">{k.title}</div>
+   491→                          <p className="mt-0.5 line-clamp-2 whitespace-pre-line text-xs text-muted-foreground">
+   492→                            {k.content}
+   493→                          </p>
+   494→                        </div>
+   495→                        <div className="flex shrink-0 gap-1 opacity-70 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+   496→                          <Button
+   497→                            variant="ghost"
+   498→                            size="icon"
+   499→                            className="h-8 w-8"
+   500→                            aria-label={`Изменить запись «${k.title}»`}
+   501→                            onClick={() =>
+   502→                              setEditing({ id: k.id, title: k.title, content: k.content })
+   503→                            }
+   504→                          >
+   505→                            <Pencil className="h-3.5 w-3.5" />
+   506→                          </Button>
+   507→                          <Button
+   508→                            variant="ghost"
+   509→                            size="icon"
+   510→                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+   511→                            aria-label={`Удалить запись «${k.title}»`}
+   512→                            onClick={() => setDeleteTarget(k)}
+   513→                          >
+   514→                            <Trash2 className="h-3.5 w-3.5" />
+   515→                          </Button>
+   516→                        </div>
+   517→                      </div>
+   518→                    ))}
+   519→                  </div>
+   520→                </div>
+   521→              )}
+   522→            </CardContent>
+   523→          </Card>
+   524→        </div>
+   525→
+   526→        {/* Правая колонка: тест-чат */}
+   527→        <Card className="xl:col-span-2">
+   528→          <CardHeader className="pb-3">
+   529→            <div className="flex items-center justify-between gap-2">
+   530→              <div className="min-w-0">
+   531→                <CardTitle className="flex items-center gap-2 text-lg">
+   532→                  <Bot className="h-5 w-5 shrink-0 text-primary" aria-hidden /> Проверить ассистента
+   533→                </CardTitle>
+   534→                <CardDescription>
+   535→                  {cfg.enabled
+   536→                    ? 'Задайте вопрос — ответит нейросеть'
+   537→                    : 'Включите ассистента, чтобы проверять ответы нейросети'}
+   538→                </CardDescription>
+   539→              </div>
+   540→              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={resetChat} aria-label="Сбросить чат">
+   541→                <RotateCcw className="h-4 w-4" />
+   542→              </Button>
+   543→            </div>
+   544→          </CardHeader>
+   545→          <CardContent className="space-y-3">
+   546→            <div
+   547→              ref={scrollRef}
+   548→              aria-live="polite"
+   549→              aria-label="История сообщений тестового чата"
+   550→              className="h-80 min-h-0 space-y-2 overflow-y-auto rounded-lg border bg-muted/40 p-3"
+   551→            >
+   552→              {chat.length === 0 && (
+   553→                <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+   554→                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+   555→                    <Sparkles className="h-6 w-6" aria-hidden />
+   556→                  </div>
+   557→                  <div>
+   558→                    <p className="text-sm font-medium text-foreground">Начните диалог</p>
+   559→                    <p className="mt-1 text-sm text-muted-foreground">
+   560→                      Напишите вопрос, как это сделает клиент
+   561→                    </p>
+   562→                  </div>
+   563→                  {cfg.enabled && kbSuggestions.length > 0 && (
+   564→                    <div className="flex max-w-[90%] flex-wrap justify-center gap-1.5">
+   565→                      {kbSuggestions.map((s) => (
+   566→                        <button
+   567→                          key={s}
+   568→                          onClick={() => send(s)}
+   569→                          disabled={sending}
+   570→                          className="max-w-full truncate rounded-full border border-primary/30 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
+   571→                        >
+   572→                          {s}
+   573→                        </button>
+   574→                      ))}
+   575→                    </div>
+   576→                  )}
+   577→                </div>
+   578→              )}
+   579→              {chat.map((m) => (
+   580→                <div
+   581→                  key={m.id}
+   582→                  className={cn('flex min-w-0', m.role === 'user' ? 'justify-end' : 'justify-start')}
+   583→                >
+   584→                  <div
+   585→                    className={cn(
+   586→                      'max-w-[85%] whitespace-pre-line rounded-2xl px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
+   587→                      m.role === 'user'
+   588→                        ? 'rounded-br-md bg-primary text-primary-foreground'
+   589→                        : 'rounded-bl-md bg-muted'
+   590→                    )}
+   591→                  >
+   592→                    {m.text}
+   593→                  </div>
+   594→                </div>
+   595→              ))}
+   596→              {(() => {
+   597→                const lastBot = [...chat].reverse().find((m) => m.role === 'bot');
+   598→                const buttons = lastBot?.buttons ?? [];
+   599→                if (buttons.length === 0) return null;
+   600→                return (
+   601→                  <div className="flex flex-wrap gap-2 pt-1">
+   602→                    {buttons.map((b) => (
+   603→                      <button
+   604→                        key={b.id}
+   605→                        onClick={() => send(b.text)}
+   606→                        disabled={sending}
+   607→                        className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
+   608→                      >
+   609→                        {b.text}
+   610→                      </button>
+   611→                    ))}
+   612→                  </div>
+   613→                );
+   614→              })()}
+   615→              {sending && (
+   616→                <div className="flex justify-start">
+   617→                  <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-md bg-muted px-3.5 py-2">
+   618→                    <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+   619→                    <span className="text-xs text-muted-foreground">ИИ печатает…</span>
+   620→                  </div>
+   621→                </div>
+   622→              )}
+   623→            </div>
+   624→
+   625→            {handedOff && (
+   626→              <div className="flex items-center justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 p-2.5 text-xs text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
+   627→                <span>Диалог передан оператору</span>
+   628→                <div className="flex gap-1.5">
+   629→                  {onOpenInbox && (
+   630→                    <Button size="sm" variant="outline" className="h-7" onClick={onOpenInbox}>
+   631→                      Открыть
+   632→                    </Button>
+   633→                  )}
+   634→                  <Button size="sm" variant="ghost" className="h-7" onClick={resetChat}>
+   635→                    Сбросить
+   636→                  </Button>
+   637→                </div>
+   638→              </div>
+   639→            )}
+   640→
+   641→            <form
+   642→              className="flex items-center gap-2"
+   643→              onSubmit={(e) => {
+   644→                e.preventDefault();
+   645→                send(input);
+   646→              }}
+   647→            >
+   648→              <Input
+   649→                value={input}
+   650→                onChange={(e) => setInput(e.target.value)}
+   651→                placeholder={cfg.enabled ? 'Ваш вопрос…' : 'Ассистент выключен — сценарий будет отвечать по сценарию'}
+   652→                disabled={sending}
+   653→                aria-label="Ваш вопрос ассистенту"
+   654→              />
+   655→              <Button type="submit" size="icon" disabled={sending || !input.trim()} aria-label="Отправить">
+   656→                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+   657→              </Button>
+   658→            </form>
+   659→            <p className="text-[11px] text-muted-foreground">
+   660→              Тест идёт по реальному сценарию бота: меню, ветвления и передача оператору работают
+   661→              как в живом боте.
+   662→            </p>
+   663→          </CardContent>
+   664→        </Card>
+   665→      </div>
+   666→
+   667→      {/* Подтверждение удаления записи базы знаний — безвозвратно */}
+   668→      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+   669→        <AlertDialogContent>
+   670→          <AlertDialogHeader>
+   671→            <AlertDialogTitle>Удалить запись?</AlertDialogTitle>
+   672→            <AlertDialogDescription>
+   673→              Запись «{deleteTarget?.title}» будет удалена из базы знаний безвозвратно. ИИ больше
+   674→              не сможет опираться на неё при ответах. Это действие нельзя отменить.
+   675→            </AlertDialogDescription>
+   676→          </AlertDialogHeader>
+   677→          <AlertDialogFooter>
+   678→            <AlertDialogCancel>Отмена</AlertDialogCancel>
+   679→            <AlertDialogAction
+   680→              className="bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60"
+   681→              onClick={() => {
+   682→                const target = deleteTarget;
+   683→                setDeleteTarget(null);
+   684→                if (target) deleteItem(target.id);
+   685→              }}
+   686→            >
+   687→              Удалить безвозвратно
+   688→            </AlertDialogAction>
+   689→          </AlertDialogFooter>
+   690→        </AlertDialogContent>
+   691→      </AlertDialog>
+   692→    </div>
+   693→  );
+   694→}
+   695→

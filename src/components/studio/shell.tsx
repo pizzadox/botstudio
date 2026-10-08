@@ -8,6 +8,7 @@ import {
   LogOut,
   MapPin,
   Moon,
+  MoreVertical,
   Search,
   Sun,
   Workflow,
@@ -16,6 +17,16 @@ import {
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import type { SessionUser, ViewKey } from '@/lib/studio-types';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
@@ -61,6 +72,64 @@ function ThemeToggle({ className }: { className?: string }) {
       <Moon className="h-4 w-4 dark:hidden" aria-hidden="true" />
       <Sun className="hidden h-4 w-4 dark:block" aria-hidden="true" />
     </button>
+  );
+}
+
+/**
+ * Мобильное «Ещё»-меню (IMP-FE21-02): тумблер темы, палитра команд и выход —
+ * раньше на мобиле были недоступны (в хедере физически не было слота).
+ * Заменяет прежнюю кнопку «Выйти» — количество кнопок в хедере не выросло.
+ */
+function MobileMoreMenu({
+  onOpenPalette,
+  onLogout,
+}: {
+  onOpenPalette?: () => void;
+  onLogout: () => void;
+}) {
+  const { resolvedTheme, setTheme } = useTheme();
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Ещё"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <MoreVertical className="h-4 w-4" aria-hidden="true" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        {/* resolvedTheme читается только внутри контента меню — Radix рендерит
+            его в портал в момент открытия (после гидратации), поэтому, как и у
+            десктоп-тумблера, mounted-гвард не нужен. */}
+        <DropdownMenuRadioGroup
+          value={resolvedTheme}
+          onValueChange={(v) => setTheme(v as 'light' | 'dark')}
+        >
+          <DropdownMenuRadioItem value="light">
+            <Sun className="h-4 w-4" aria-hidden="true" /> Светлая тема
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="dark">
+            <Moon className="h-4 w-4" aria-hidden="true" /> Тёмная тема
+          </DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        {onOpenPalette && (
+          <DropdownMenuItem onSelect={() => onOpenPalette()}>
+            <Search aria-hidden="true" />
+            <span className="flex-1">Палитра команд</span>
+            <DropdownMenuShortcut aria-hidden="true">Ctrl K</DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onSelect={onLogout}>
+          <LogOut aria-hidden="true" />
+          Выйти
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -121,18 +190,8 @@ export default function Shell({
               </Tooltip>
             ))}
             <div aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  aria-label="Выйти"
-                  onClick={onLogout}
-                  className="flex h-10 w-10 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <LogOut className="h-4 w-4" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Выйти из студии</TooltipContent>
-            </Tooltip>
+            {/* «Ещё»-меню вместо отдельной кнопки «Выйти» — тема/палитра/выход (IMP-FE21-02) */}
+            <MobileMoreMenu onOpenPalette={onOpenPalette} onLogout={onLogout} />
           </nav>
         </header>
 
@@ -225,9 +284,9 @@ export default function Shell({
                   <div className="truncate text-sm font-medium">{user.name ?? user.username}</div>
                   <div className="truncate text-xs text-muted-foreground">@{user.username}</div>
                 </div>
-                {/* Тумблер темы — размер соседа (h-8 w-8). В мобильный хедер НЕ
-                    добавляем: на 390px занято 7 кнопок (проверено в Task 19-d),
-                    свободно только 23px — тема доступна из палитры команд. */}
+                {/* Тумблер темы — размер соседа (h-8 w-8), десктоп. В мобильный хедер
+                    кнопка не добавляется (на 390px нет слота) — тема доступна из
+                    «Ещё»-меню и палитры команд (IMP-FE21-02). */}
                 <ThemeToggle className="h-8 w-8" />
                 <Tooltip>
                   <TooltipTrigger asChild>

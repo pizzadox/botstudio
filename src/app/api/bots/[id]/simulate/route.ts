@@ -36,8 +36,32 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     const body = await req.json();
     const input: string | null = body.input ? String(body.input).slice(0, 2000) : null;
-    const state: EngineState | null = body.state ?? null;
     const conversationId: string | null = body.conversationId ?? null;
+
+    // ── Валидация состояния (IMP-BE21-06) ──
+    // Клиент возвращает state туда-обратно: слишком большой state — ошибка 400,
+    // кривой — нормализация, а не 500 и не раздувание БД/промпта.
+    let state: EngineState | null = body.state ?? null;
+    if (state !== null) {
+      if (typeof state !== 'object' || Array.isArray(state)) {
+        state = null; // мусор вместо состояния — начинаем с чистого
+      } else if (JSON.stringify(state).length > 32768) {
+        return NextResponse.json({ error: 'Состояние слишком большое' }, { status: 400 });
+      } else {
+        // история — не более 50 последних записей (движок использует хвост)
+        if (state.history !== undefined) {
+          state.history = Array.isArray(state.history) ? state.history.slice(-50) : [];
+        }
+        // vars — только плоский объект ≤ 4096 байт
+        if (state.vars !== undefined) {
+          if (state.vars === null || typeof state.vars !== 'object' || Array.isArray(state.vars)) {
+            state.vars = {};
+          } else if (JSON.stringify(state.vars).length > 4096) {
+            return NextResponse.json({ error: 'Состояние слишком большое' }, { status: 400 });
+          }
+        }
+      }
+    }
 
     // Распарсенный сценарий кэшируется по botId+updatedAt (см. flow-cache.ts)
     const flow: Flow = getFlowCached(bot.id, bot.updatedAt, bot.flow);
@@ -72,12 +96,19 @@ export async function POST(req: NextRequest, { params }: Params) {
       });
 
       const messages: SimulateMessage[] = [];
-      for (const m of result.messages) {
-        const saved = await db.message.create({
-          data: { conversationId: conversation.id, role: 'bot', text: m.text, nodeId: m.nodeId ?? null },
+      // createMany одним запросом (IMP-BE21-06): id созданных записей клиенту
+      // не нужен — тест-чат рендерит только text/buttons, ids не использует
+      if (result.messages.length > 0) {
+        await db.message.createMany({
+          data: result.messages.map((m) => ({
+            conversationId: conversation.id,
+            role: 'bot',
+            text: m.text,
+            nodeId: m.nodeId ?? null,
+          })),
         });
-        messages.push({ ...m, id: saved.id });
       }
+      for (const m of result.messages) messages.push({ ...m });
 
       await db.conversation.update({
         where: { id: conversation.id },
@@ -113,9 +144,14 @@ export async function POST(req: NextRequest, { params }: Params) {
           needsOperator: true,
         },
       });
-      for (const h of result.state.history) {
-        await db.message.create({
-          data: { conversationId: conversation.id, role: h.role, text: h.text },
+      // История диалога — одним createMany (id записей не используются)
+      if (result.state.history.length > 0) {
+        await db.message.createMany({
+          data: result.state.history.map((h) => ({
+            conversationId: conversation.id,
+            role: h.role,
+            text: h.text,
+          })),
         });
       }
       return NextResponse.json({
