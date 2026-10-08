@@ -73,6 +73,26 @@ export interface FlowNodeData {
     /** Статичный комментарий (может содержать {{переменные}}) */
     comment?: string;
   };
+  /**
+   * IMP-23-BE-04: зарегистрировать жалобу перед показом сообщения
+   * (номер → {{complaint.number}}). Может соседствовать с createOrder —
+   * в этом случае создаются и заявка, и жалоба.
+   */
+  createComplaint?: {
+    /** Фиксированный тип, если не задан typeVar */
+    type?: 'no_pickup' | 'damaged' | 'overflow' | 'other';
+    /**
+     * Переменная с типом проблемы (например, из меню кнопок c saveSelection).
+     * Значение мапится по ключевым словам:
+     *  «вывез|вывоз» → no_pickup, «поврежд|сломан|разбит» → damaged,
+     *  «переполн» → overflow, иначе other.
+     */
+    typeVar?: string;
+    /** Переменная с описанием (пусто — берётся текст узла) */
+    descriptionVar?: string;
+    /** Переменная с датой/временем происшествия (свободный текст) */
+    whenVar?: string;
+  };
 }
 
 export interface FlowNode {

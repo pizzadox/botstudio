@@ -560,6 +560,27 @@ export default function ChannelsView({
             aria-label="Код для вставки на сайт"
             className="font-mono text-[11px] leading-relaxed text-muted-foreground"
           />
+          {/* IMP-23-TAB-05: пошаговая инструкция подключения виджета */}
+          <ol className="list-decimal space-y-1.5 rounded-lg border bg-muted/40 p-3 pl-8 text-xs leading-relaxed text-muted-foreground">
+            <li>
+              Бот должен быть <span className="font-medium text-foreground">опубликован</span> —
+              иначе посетитель увидит «Не опубликован».
+            </li>
+            <li>
+              Вставьте сниппет перед <code className="rounded bg-muted px-1">&lt;/body&gt;</code> на
+              всех страницах сайта.
+            </li>
+            <li>
+              Каждый посетитель получает свой диалог — переписка видна во вкладке «Инбокс».
+            </li>
+            <li>
+              Кнопка «Демо-чат» в этой карточке открывает тот же чат для проверки.
+            </li>
+          </ol>
+          <p className="text-[11px] leading-snug text-muted-foreground">
+            На десктопе чат открывается в окне 400×560 в углу сайта, на мобильных — почти на весь
+            экран.
+          </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCodeChannel(null)}>
               Закрыть

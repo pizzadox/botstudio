@@ -10,6 +10,8 @@ import {
   Loader2,
   LogOut,
   MapPin,
+  MapPinned,
+  MessageCircleWarning,
   Moon,
   Plug,
   Sparkles,
@@ -19,7 +21,7 @@ import {
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { api, clearAuthToken } from '@/lib/client-api';
-import type { SessionUser, BotListItem, ViewKey } from '@/lib/studio-types';
+import type { NotificationDto, SessionUser, BotListItem, ViewKey } from '@/lib/studio-types';
 import { useToast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
@@ -49,27 +51,12 @@ import AiAssistantView from './ai-assistant-view';
 import ChannelsView from './channels-view';
 import InboxView from './inbox-view';
 import OrdersView from './orders-view';
+import ComplaintsView from './complaints-view';
+import AreasView from './areas-view';
 
-interface NotificationsResponse {
-  /** Серверное время ответа — курсор следующего опроса (не часы браузера!) */
-  now: string;
-  newOrders: {
-    id: string;
-    number: number;
-    type: string;
-    address: string | null;
-    botId: string;
-    botName: string;
-  }[];
-  newChats: {
-    id: string;
-    contact: string | null;
-    source: string;
-    botId: string;
-    botName: string;
-  }[];
-  totals: { newOrders: number; openConvs: number };
-}
+// IMP-23-TAB-01: форма ответа /api/notifications живёт в studio-types
+// (NotificationDto) — полю complaints верит бейдж вкладки «Обращения».
+type NotificationsResponse = NotificationDto;
 
 /** Куда ведёт клик по уведомлению */
 export type NotificationTarget = {
@@ -81,12 +68,22 @@ export type NotificationTarget = {
 };
 
 /** Разделы, для которых нужен выбранный бот (в палитре — disabled без него) */
-const BOT_VIEWS: ViewKey[] = ['editor', 'ai', 'channels', 'inbox', 'orders'];
+// IMP-23-TAB-02: + обращения и реестр КП
+const BOT_VIEWS: ViewKey[] = ['editor', 'ai', 'channels', 'inbox', 'orders', 'complaints', 'areas'];
 
 // IMP-FE21-06: оболочка переживает reload — view и текущий бот в localStorage
 const VIEW_LS_KEY = 'bstudio.view';
 const BOT_LS_KEY = 'bstudio.botId';
-const ALL_VIEWS: ViewKey[] = ['dashboard', 'editor', 'ai', 'channels', 'inbox', 'orders'];
+const ALL_VIEWS: ViewKey[] = [
+  'dashboard',
+  'editor',
+  'ai',
+  'channels',
+  'inbox',
+  'orders',
+  'complaints',
+  'areas',
+];
 
 function readStoredValue(key: string): string | null {
   try {
@@ -112,6 +109,9 @@ const PALETTE_VIEWS: { key: ViewKey; label: string; icon: typeof LayoutDashboard
   { key: 'channels', label: 'Каналы', icon: Plug },
   { key: 'inbox', label: 'Входящие', icon: Inbox },
   { key: 'orders', label: 'Заявки', icon: MapPin },
+  // IMP-23-TAB-02: новые разделы в палитре команд
+  { key: 'complaints', label: 'Обращения', icon: MessageCircleWarning },
+  { key: 'areas', label: 'Реестр КП', icon: MapPinned },
 ];
 
 /**
@@ -423,7 +423,7 @@ function NotificationsWatcher({
   onTotals,
   onOpenTarget,
 }: {
-  onTotals: (t: { newOrders: number; openConvs: number }) => void;
+  onTotals: (t: { newOrders: number; openConvs: number; complaints: number }) => void;
   onOpenTarget: (t: NotificationTarget) => void;
 }) {
   const { toast } = useToast();
@@ -445,7 +445,12 @@ function NotificationsWatcher({
         failStreakRef.current = 0;
         offlineShownRef.current = false;
         sinceRef.current = d.now ?? new Date().toISOString();
-        onTotals(d.totals);
+        // IMP-23-TAB-02: жалобы в бейдж «Обращения»; бэк без поля → 0
+        onTotals({
+          newOrders: d.totals.newOrders,
+          openConvs: d.totals.openConvs,
+          complaints: d.complaints ?? 0,
+        });
 
         const freshOrders = d.newOrders.filter((o) => !shownRef.current.has(`order:${o.id}`));
         const freshChats = d.newChats.filter((c) => !shownRef.current.has(`chat:${c.id}`));
@@ -554,7 +559,8 @@ export default function AppRoot() {
   const [view, setView] = useState<ViewKey>('dashboard');
   const [currentBot, setCurrentBot] = useState<BotListItem | null>(null);
   const [botsVersion, setBotsVersion] = useState(0);
-  const [badges, setBadges] = useState({ newOrders: 0, openConvs: 0 });
+  // IMP-23-TAB-02: + complaints для бейджа «Обращения»
+  const [badges, setBadges] = useState({ newOrders: 0, openConvs: 0, complaints: 0 });
   // Фокус из уведомления: открыть раздел и подсветить нужную заявку/диалог
   const [orderFocus, setOrderFocus] = useState<string | null>(null);
   const [chatFocus, setChatFocus] = useState<string | null>(null);
@@ -565,7 +571,7 @@ export default function AppRoot() {
 
   const refreshBots = useCallback(() => setBotsVersion((v) => v + 1), []);
   const onTotals = useCallback(
-    (t: { newOrders: number; openConvs: number }) => setBadges(t),
+    (t: { newOrders: number; openConvs: number; complaints: number }) => setBadges(t),
     []
   );
 
@@ -754,7 +760,7 @@ export default function AppRoot() {
       view={view}
       onViewChange={setView}
       currentBot={currentBot}
-      badges={{ inbox: badges.openConvs, orders: badges.newOrders }}
+      badges={{ inbox: badges.openConvs, orders: badges.newOrders, complaints: badges.complaints }}
       onOpenPalette={() => setPaletteOpen(true)}
       onOpenProfile={() => setProfileOpen(true)}
       onLogout={logout}
@@ -823,6 +829,17 @@ export default function AppRoot() {
           focusOrderId={orderFocus}
           onFocusConsumed={() => setOrderFocus(null)}
         />
+      )}
+      {/* IMP-23-TAB-02: вкладки «Обращения» и «Реестр КП» — по образцу InboxView */}
+      {view === 'complaints' && currentBot && (
+        <ComplaintsView
+          key={currentBot.id}
+          botId={currentBot.id}
+          onBack={() => setView('dashboard')}
+        />
+      )}
+      {view === 'areas' && currentBot && (
+        <AreasView key={currentBot.id} botId={currentBot.id} onBack={() => setView('dashboard')} />
       )}
       {(view !== 'dashboard' && !currentBot) && (
         <section className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">

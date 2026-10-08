@@ -113,12 +113,22 @@ async function nominatimThrottle(): Promise<void> {
   lastNominatimAt = Date.now();
 }
 
-async function nominatimSearch(q: string, countrycodes?: string) {
+async function nominatimSearch(
+  q: string,
+  countrycodes?: string,
+  opts?: { viewbox?: string; bounded?: boolean }
+) {
   const url = new URL('https://nominatim.openstreetmap.org/search');
   url.searchParams.set('format', 'jsonv2');
   url.searchParams.set('limit', '1');
   url.searchParams.set('accept-language', 'ru');
   if (countrycodes) url.searchParams.set('countrycodes', countrycodes);
+  // IMP-23-BE-06: локальный первый проход — прямоугольник Новгородской области
+  // (29.6,57.9 — 35.6,59.3), bounded=1 — искать ТОЛЬКО внутри рамки
+  if (opts?.viewbox) {
+    url.searchParams.set('viewbox', opts.viewbox);
+    if (opts.bounded) url.searchParams.set('bounded', '1');
+  }
   url.searchParams.set('q', q);
   const res = await fetch(url.toString(), {
     headers: { 'User-Agent': 'BotStudio/1.0 (bot support orders)' },
@@ -134,24 +144,40 @@ async function nominatimSearch(q: string, countrycodes?: string) {
   return null;
 }
 
+/** IMP-23-BE-06: рамка Новгородской области (левый-верхний, правый-нижний углы) */
+const NOVGOROD_VIEWBOX = '29.6,59.3,35.6,57.9';
+
 export async function geocodeAddress(
-  address: string
+  address: string,
+  opts?: { force?: boolean }
 ): Promise<{ lat: number; lng: number } | null> {
   const q = address.trim();
   if (!q) return null;
 
   const cacheKey = q.toLowerCase();
-  const cached = geoCache.get(cacheKey);
-  if (cached) {
-    const hit = await cached;
-    return hit ? { lat: hit.lat, lng: hit.lng } : null;
+  // IMP-23-BE-06: force=true — игнорировать кэш (и успех, и неудачу):
+  // «перепроверить адрес» оператором обязано сходить в сервис заново.
+  // Новый результат всё равно записывается в кэш.
+  if (!opts?.force) {
+    const cached = geoCache.get(cacheKey);
+    if (cached) {
+      const hit = await cached;
+      return hit ? { lat: hit.lat, lng: hit.lng } : null;
+    }
   }
 
   const promise = (async (): Promise<GeoHit> => {
     try {
-      // 1) приоритет — адреса в России; 2) fallback — весь мир
+      // IMP-23-BE-06: 1) сначала — Новгородская область (viewbox bounded);
+      // 2) приоритет — адреса в России (countrycodes=ru — боты обслуживают РФ-адреса);
+      // 3) fallback — весь мир. Двухшаговая структура сохранена: локальный проход,
+      // затем прежняя цепочка.
       await nominatimThrottle();
-      let hit = await nominatimSearch(q, 'ru,ua,kz,by');
+      let hit = await nominatimSearch(q, 'ru', { viewbox: NOVGOROD_VIEWBOX, bounded: true });
+      if (!hit) {
+        await nominatimThrottle();
+        hit = await nominatimSearch(q, 'ru,ua,kz,by');
+      }
       if (!hit) {
         await nominatimThrottle();
         hit = await nominatimSearch(q);
@@ -165,6 +191,27 @@ export async function geocodeAddress(
   cacheGeo(cacheKey, promise);
   const hit = await promise;
   return hit ? { lat: hit.lat, lng: hit.lng } : null;
+}
+
+/**
+ * IMP-23-BE-06: сборка запроса для геокодинга ЗАЯВКИ — город обязательно
+ * участвует в поиске (голая улица без города находится в неправильном регионе
+ * или не находится вовсе — источник неверной точки заявки №7).
+ * Если адрес уже начинается с города (в т.ч. «г. X» / «город X» —
+ * регистр не важен) — город не дублируем.
+ */
+export function geocodeOrderAddress(
+  city: string | null | undefined,
+  address: string | null | undefined
+): string {
+  const c = (city ?? '').trim();
+  const a = (address ?? '').trim();
+  if (!c || !a) return a || c;
+  const cl = c.toLowerCase();
+  const al = a.toLowerCase();
+  if (al.startsWith(cl)) return a;
+  if (al.startsWith(`г. ${cl}`) || al.startsWith(`г.${cl}`) || al.startsWith(`город ${cl}`)) return a;
+  return `${c}, ${a}`;
 }
 
 /**
@@ -204,9 +251,9 @@ export async function geocodeVerify(
 }
 
 /** Фоновая привязка координат к заявке (повторный попытка после сбоя) */
-function geocodeInBackground(orderId: string, address: string | null): void {
-  if (!address || !address.trim()) return;
-  void geocodeAddress(address)
+function geocodeInBackground(orderId: string, query: string | null): void {
+  if (!query || !query.trim()) return;
+  void geocodeAddress(query)
     .then((geo) => {
       if (geo) {
         db.order
@@ -226,14 +273,14 @@ function geocodeInBackground(orderId: string, address: string | null): void {
  * Через 90 секунд сбрасываем кэш неудачи и пробуем снова.
  */
 const geoRetryKeys = new Set<string>();
-function geocodeRetryLater(orderId: string, address: string): void {
-  const key = `${orderId}:${address.toLowerCase()}`;
+function geocodeRetryLater(orderId: string, query: string): void {
+  const key = `${orderId}:${query.toLowerCase()}`;
   if (geoRetryKeys.has(key)) return; // повтор уже запланирован
   geoRetryKeys.add(key);
   const t = setTimeout(() => {
     geoRetryKeys.delete(key);
-    geoCache.delete(address.trim().toLowerCase());
-    geocodeInBackground(orderId, address);
+    geoCache.delete(query.trim().toLowerCase());
+    geocodeInBackground(orderId, query);
   }, 90 * 1000);
   // IMP-BE21-25: отложенный ретрай не должен удерживать процесс при завершении
   if (typeof t.unref === 'function') t.unref();
@@ -280,7 +327,18 @@ export async function reverseGeocode(
       };
       const a = json.address ?? {};
       const street = [a.road, a.house_number].filter(Boolean).join(', ');
-      const city = a.city ?? a.town ?? a.village ?? a.municipality ?? null;
+      // IMP-23-BE-07: город берём по цепочке city → town → village → municipality
+      // и ЧИСТИМ префикс «городской/муниципальный округ» у ЛЮБОГО источника —
+      // живые данные Nominatim для Великого Новгорода отдают мусорный префикс
+      // именно в a.city («городской округ Великий Новгород»).
+      const rawCity =
+        (a.city ?? '').trim() ||
+        (a.town ?? '').trim() ||
+        (a.village ?? '').trim() ||
+        (a.municipality ?? '').trim();
+      const city = rawCity
+        ? rawCity.replace(/^(городской|муниципальный) округ\s*/i, '').trim() || null
+        : null;
       const address = street || json.name || a.suburb || null;
       return address ? { address, city } : null;
     } catch {
@@ -320,10 +378,12 @@ export async function createOrder(input: CreateOrderInput) {
 
   // Координаты — сразу при создании (метка появляется на карте моментально):
   // геокодим до вставки, кэш делает результат детерминированным.
+  // IMP-23-BE-06: в запрос всегда подставляется город (geocodeOrderAddress) —
+  // голая улица без города давала неверную точку (заявка №7).
   let lat = input.lat ?? null;
   let lng = input.lng ?? null;
   let geoSource = input.geoSource ?? null;
-  const fullAddress = address;
+  const fullAddress = geocodeOrderAddress(city, address);
   let needsGeoRetry = false;
   if (lat == null && lng == null && fullAddress) {
     try {

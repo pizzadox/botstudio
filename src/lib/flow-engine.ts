@@ -160,6 +160,78 @@ export function interpolate(
   return out;
 }
 
+// ─── Жалобы (IMP-23-BE-04) ───────────────────────────────────────────────────
+
+const COMPLAINT_TYPES = new Set(['no_pickup', 'damaged', 'overflow', 'other']);
+
+/** Ключевые слова типа жалобы: порядок важен (первое совпадение wins) */
+const COMPLAINT_TYPE_PATTERNS: [RegExp, ComplaintType][] = [
+  [/вывез|вывоз/, 'no_pickup'],
+  [/поврежд|сломан|разбит/, 'damaged'],
+  [/переполн/, 'overflow'],
+];
+
+type ComplaintType = 'no_pickup' | 'damaged' | 'overflow' | 'other';
+
+/** Свободный текст (текст кнопки/ответ) → каноничный тип жалобы */
+function mapComplaintType(raw: string): ComplaintType {
+  const s = (raw ?? '').toLowerCase();
+  for (const [re, type] of COMPLAINT_TYPE_PATTERNS) {
+    if (re.test(s)) return type;
+  }
+  return 'other';
+}
+
+/** whenVar — свободный текст («вчера утром»); дата не парсится → null */
+function parseComplaintWhen(raw: string): Date | null {
+  const v = (raw ?? '').trim();
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Создание жалобы из сценария: number = max+1 по боту (ретрай на гонку
+ * unique(botId, number) — как у заявок). Ошибки НЕ роняют движок (try/catch
+ * в месте вызова).
+ */
+async function createScenarioComplaint(input: {
+  botId: string;
+  conversationId?: string | null;
+  type: string;
+  description: string;
+  happenedAt?: Date | null;
+  contact?: string | null;
+}) {
+  const agg = await db.complaint.aggregate({
+    where: { botId: input.botId },
+    _max: { number: true },
+  });
+  const base = (agg._max.number ?? 0) + 1;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await db.complaint.create({
+        data: {
+          botId: input.botId,
+          conversationId: input.conversationId ?? null,
+          number: base + attempt,
+          type: COMPLAINT_TYPES.has(input.type) ? input.type : 'other',
+          status: 'new',
+          description: input.description.trim().slice(0, 2000),
+          happenedAt: input.happenedAt ?? null,
+          contact: input.contact ?? null,
+          source: 'scenario',
+        },
+      });
+    } catch (e) {
+      const code = e && typeof e === 'object' && 'code' in e ? (e as { code?: string }).code : undefined;
+      if (code === 'P2002' && attempt < 2) continue;
+      throw e;
+    }
+  }
+  throw new Error('complaint_number_race');
+}
+
 const VAR_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
 
 /** BE22-11: подстановка {{var}} в URL http-узла — значения проходят
@@ -626,16 +698,17 @@ export async function runEngine(
         break;
       }
       case 'message': {
+        // IMP-23-BE-04: выбор переменной вынесен — общий для createOrder и createComplaint
+        // Значение переменной; «{{city}}, {{street}}» — подстановка шаблона
+        const pick = (v?: string) => {
+          if (!v || !v.trim()) return '';
+          if (v.includes('{{')) return interpolate(v, state.vars).trim();
+          return (state.vars[v.trim()] ?? '').trim();
+        };
         // Узел с флагом «Создать заявку»: номер попадает в {{order.number}}
         if (node.data.createOrder && ctx?.botId) {
           try {
             const cfg = node.data.createOrder;
-            // Значение переменной; «{{city}}, {{street}}» — подстановка шаблона
-            const pick = (v?: string) => {
-              if (!v || !v.trim()) return '';
-              if (v.includes('{{')) return interpolate(v, state.vars).trim();
-              return (state.vars[v.trim()] ?? '').trim();
-            };
             const order = await createOrder({
               botId: ctx.botId,
               conversationId: ctx.conversationId,
@@ -656,6 +729,49 @@ export async function runEngine(
           } catch (err) {
             console.error('[flow-engine] createOrder error:', err);
             state.vars['order.number'] = '—';
+          }
+        }
+        // IMP-23-BE-04: параллельная ветка «Зарегистрировать жалобу» —
+        // соседство с createOrder допустимо (создаются оба). Номер → {{complaint.number}}.
+        if (node.data.createComplaint && ctx?.botId) {
+          try {
+            const cc = node.data.createComplaint;
+            // Описание: переменная descriptionVar; пусто — текст узла (с {{переменными}})
+            let description = cc.descriptionVar ? pick(cc.descriptionVar) : '';
+            if (!description.trim()) {
+              description = interpolate(node.data.text, state.vars, lastInput || undefined);
+            }
+            // Тип: фиксированный cfg.type; typeVar — маппинг по ключевым словам
+            let type = cc.type && COMPLAINT_TYPES.has(cc.type) ? cc.type : 'other';
+            if (cc.typeVar?.trim()) {
+              const rawType = pick(cc.typeVar);
+              if (rawType) type = mapComplaintType(rawType);
+            }
+            // Контакт — из диалога (webhook пишет contact при наличии)
+            const conversation = ctx.conversationId
+              ? await db.conversation.findUnique({
+                  where: { id: ctx.conversationId },
+                  select: { contact: true },
+                })
+              : null;
+            const complaint = await createScenarioComplaint({
+              botId: ctx.botId,
+              conversationId: ctx.conversationId,
+              type,
+              description,
+              happenedAt: parseComplaintWhen(pick(cc.whenVar)),
+              contact: conversation?.contact ?? null,
+            });
+            state.vars['complaint.number'] = String(complaint.number);
+            state.vars['complaint.id'] = complaint.id;
+            state.vars['complaint.type'] = complaint.type;
+            console.log(`[flow-engine] жалоба №${complaint.number} создана (${complaint.type})`);
+          } catch (err) {
+            // Ошибка создания жалобы не должна ломать сценарий — сообщение уходит как обычно
+            console.error('[flow-engine] createComplaint error:', err);
+            // IMP-23-REV-3 (reviewer MINOR-3): fallback как у createOrder — иначе
+            // {{complaint.number}} в тексте узла интерполируется в пустую строку
+            state.vars['complaint.number'] = '—';
           }
         }
         const text = interpolate(node.data.text, state.vars, lastInput || undefined);

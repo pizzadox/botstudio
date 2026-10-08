@@ -81,7 +81,40 @@ export interface ChatMessage {
   createdAt: string;
 }
 
-export type ViewKey = 'dashboard' | 'editor' | 'ai' | 'channels' | 'inbox' | 'orders';
+// IMP-23-TAB-01: вкладки «Обращения» и «Реестр КП» (волна 23)
+export type ViewKey =
+  | 'dashboard'
+  | 'editor'
+  | 'ai'
+  | 'channels'
+  | 'inbox'
+  | 'orders'
+  | 'complaints'
+  | 'areas';
+
+/** Ответ /api/notifications (фоновый поллинг в app-root) */
+export interface NotificationDto {
+  /** Серверное время ответа — курсор следующего опроса (не часы браузера!) */
+  now: string;
+  newOrders: {
+    id: string;
+    number: number;
+    type: string;
+    address: string | null;
+    botId: string;
+    botName: string;
+  }[];
+  newChats: {
+    id: string;
+    contact: string | null;
+    source: string;
+    botId: string;
+    botName: string;
+  }[];
+  totals: { newOrders: number; openConvs: number };
+  /** IMP-23-TAB-01: новые жалобы для бейджа вкладки «Обращения» (с волны 23) */
+  complaints?: number;
+}
 
 export interface AiConfig {
   enabled: boolean;
@@ -215,3 +248,90 @@ export const SOURCE_COLORS: Record<string, string> = {
   web: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
   simulator: 'bg-slate-200 text-slate-700 dark:bg-slate-500/15 dark:text-slate-300',
 };
+
+// ─── Обращения (жалобы клиентов) — волна 23 ────────────────────────────────
+
+export interface ComplaintDto {
+  id: string;
+  number: number;
+  type: string;
+  status: string;
+  description: string;
+  /** Когда произошёл инцидент (указал клиент/оператор); null — не указано */
+  happenedAt: string | null;
+  contact: string | null;
+  /** scenario — собрала ветка жалоб в боте, manual — оператор добавил вручную */
+  source: 'scenario' | 'manual';
+  createdAt: string;
+  /** Диалог, из которого пришла жалоба (для кнопки «Открыть диалог») */
+  conversationId: string | null;
+}
+
+export interface ComplaintCounts {
+  total: number;
+  new: number;
+  inReview: number;
+  resolved: number;
+}
+
+export const COMPLAINT_TYPE_LABELS: Record<string, string> = {
+  no_pickup: 'Не вывезли',
+  damaged: 'Повреждён контейнер',
+  overflow: 'Площадка переполнена',
+  other: 'Другое',
+};
+
+export const COMPLAINT_STATUS_LABELS: Record<string, string> = {
+  new: 'Новая',
+  in_review: 'В работе',
+  resolved: 'Решена',
+};
+
+export const COMPLAINT_SOURCE_LABELS: Record<string, string> = {
+  scenario: 'Из бота',
+  manual: 'Вручную',
+};
+
+/** Цвета бейджей статуса — по образцу ORDER_STATUS_BADGES */
+export const COMPLAINT_STATUS_BADGES: Record<string, string> = {
+  new: 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/30',
+  in_review: 'bg-sky-100 text-sky-800 border-sky-200 dark:bg-sky-500/15 dark:text-sky-300 dark:border-sky-500/30',
+  resolved:
+    'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30',
+};
+
+/** Цвета бейджей источника — по образцу SOURCE_COLORS */
+export const COMPLAINT_SOURCE_BADGES: Record<string, string> = {
+  scenario: 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300',
+  manual: 'bg-slate-200 text-slate-700 dark:bg-slate-500/15 dark:text-slate-300',
+};
+
+/** Ключ в ComplaintCounts для статуса жалобы (status 'in_review' → counts.inReview) */
+export function complaintCountKey(status: string): Exclude<keyof ComplaintCounts, 'total'> {
+  if (status === 'resolved') return 'resolved';
+  if (status === 'in_review') return 'inReview';
+  return 'new';
+}
+
+// ─── Реестр КП (MyTKO) — волна 23 ──────────────────────────────────────────
+
+export interface AreaItem {
+  /** Код КП из личного кабинета MyTKO */
+  lkCode: string;
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+}
+
+export interface AreasResponse {
+  items: AreaItem[];
+  /** Найдено под текущий фильтр (для пагинации) */
+  total: number;
+  page: number;
+  pages: number;
+  take: number;
+  /** Когда реестр загружался из MyTKO; null — ещё ни разу (нужен синк) */
+  areasSyncedAt: string | null;
+  /** Всего площадок в реестре (без фильтра) */
+  areasCount: number;
+}

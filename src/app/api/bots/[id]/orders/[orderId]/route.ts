@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { geocodeAddress, reverseGeocode } from '@/lib/orders';
+import { geocodeAddress, geocodeOrderAddress, reverseGeocode } from '@/lib/orders';
+import { composeAddress } from '@/lib/cities'; // IMP-23-BE-06: чистая сборка адреса
 import { parseMytkoConfig } from '@/lib/mytko';
 import { checkStatusTransition } from '@/lib/order-status';
 
@@ -129,6 +130,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
     // Точку поставили/сдвинули вручную — адрес подтягиваем под точку
     // (обратный геокодинг). Если сервис не ответил — адрес не трогаем.
+    // IMP-23-BE-06/07: rev.city больше не содержит мусорный префикс
+    // «городской округ …» (чистка в reverseGeocode); адрес собирается
+    // composeAddress из ЧИСТОГО города.
     const manualPoint =
       (typeof data.lat === 'number' || typeof data.lng === 'number') &&
       data.geoSource === 'manual' &&
@@ -140,17 +144,26 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       );
       if (rev?.address) {
         // Полный адрес: город (если распознался) + улица/дом
-        data.address = rev.city ? `${rev.city}, ${rev.address}` : rev.address;
+        data.address = composeAddress(rev.city, rev.address) || rev.address;
         if (rev.city) data.city = rev.city;
       }
     }
 
     // Перегеокодировать адрес по требованию оператора.
     // Ручная точка не теряется: если адрес не нашёлся — прежние координаты остаются.
+    // IMP-23-BE-06: запрос собирается с городом (geocodeOrderAddress) и force:true —
+    // «перепроверить» обязано игнорировать кэш (и успех, и неудачу).
     let geoResult: { ok: boolean; lat?: number; lng?: number } | undefined;
     if (body.geocode === true) {
       const addr = (typeof data.address === 'string' ? data.address : order.address) ?? '';
-      const geo = await geocodeAddress(addr);
+      // Город: если оператор в этом же запросе поменял город — берём новый,
+      // иначе прежний город заявки
+      const cityForGeo =
+        typeof data.city === 'string' && data.city ? data.city : order.city;
+      // IMP-23-REV-2 (reviewer MINOR-2): без адреса НЕ геокодим голое имя города
+      // (регресс к «тихая точка в центре города») — прежний no-op контракт восстановлен
+      const query = addr ? geocodeOrderAddress(cityForGeo, addr) : null;
+      const geo = query ? await geocodeAddress(query, { force: true }) : null;
       if (geo) {
         data.lat = geo.lat;
         data.lng = geo.lng;

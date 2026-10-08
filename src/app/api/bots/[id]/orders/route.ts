@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { createOrder, geocodeAddress } from '@/lib/orders';
+import { createOrder, geocodeAddress, geocodeOrderAddress } from '@/lib/orders'; // IMP-23-BE-06
 import { parseMytkoConfig } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string }> };
@@ -84,12 +84,15 @@ export async function POST(req: NextRequest, { params }: Params) {
   try {
     const body = await req.json();
     const address = String(body.address ?? '').trim().slice(0, 300) || null;
+    const city = String(body.city ?? '').trim().slice(0, 120) || null; // IMP-23-BE-06
 
     let lat = typeof body.lat === 'number' && Number.isFinite(body.lat) ? body.lat : null;
     let lng = typeof body.lng === 'number' && Number.isFinite(body.lng) ? body.lng : null;
     let geoSource: string | null = lat != null && lng != null ? 'manual' : null;
     if (lat == null && lng == null && address) {
-      const geo = await geocodeAddress(address);
+      // IMP-23-BE-06: форма оператора собирает адрес через composeAddress на фронте,
+      // но страховка на бэкенде: город подставляется, если его нет в адресе
+      const geo = await geocodeAddress(geocodeOrderAddress(city, address));
       if (geo) {
         lat = geo.lat;
         lng = geo.lng;
@@ -102,7 +105,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       type: ['waste', 'kgm', 'other'].includes(body.type) ? body.type : 'other',
       clientName: String(body.clientName ?? '').trim().slice(0, 120) || null,
       phone: String(body.phone ?? '').trim().slice(0, 40) || null,
-      city: String(body.city ?? '').trim().slice(0, 120) || null,
+      city,
       address,
       size: String(body.size ?? '').trim().slice(0, 200) || null,
       wishDate: String(body.wishDate ?? '').trim().slice(0, 120) || null,

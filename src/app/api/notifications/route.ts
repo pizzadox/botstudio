@@ -21,7 +21,8 @@ export async function GET(req: NextRequest) {
       now: new Date().toISOString(),
       newOrders: [],
       newChats: [],
-      totals: { newOrders: 0, openConvs: 0 },
+      totals: { newOrders: 0, openConvs: 0, complaints: 0 }, // IMP-23-BE-03
+      complaints: 0, // IMP-23-BE-03: счётчик новых жалоб (фронт читает optional)
     });
   }
   // IMP-BE21-19: Map вместо линейного find на каждое уведомление
@@ -33,7 +34,7 @@ export async function GET(req: NextRequest) {
   // (курсор-время ответа меньше времени их создания).
   const now = new Date().toISOString();
 
-  const [newOrders, newChats, totalNewOrders, totalOpenConvs] = await Promise.all([
+  const [newOrders, newChats, totalNewOrders, totalOpenConvs, totalNewComplaints] = await Promise.all([
     db.order.findMany({
       where: { botId: { in: botIds }, createdAt: { gt: validSince } },
       orderBy: { createdAt: 'desc' },
@@ -48,6 +49,8 @@ export async function GET(req: NextRequest) {
     }),
     db.order.count({ where: { botId: { in: botIds }, status: 'new' } }),
     db.conversation.count({ where: { botId: { in: botIds }, status: 'open' } }),
+    // IMP-23-BE-03: новые жалобы по ботам пользователя — бейдж реестра жалоб
+    db.complaint.count({ where: { botId: { in: botIds }, status: 'new' } }),
   ]);
 
   // Клиент должен использовать `now` как курсор следующего запроса. Раньше
@@ -59,7 +62,8 @@ export async function GET(req: NextRequest) {
     now,
     newOrders: newOrders.map((o) => ({ ...o, botName: botName(o.botId) })),
     newChats: newChats.map((c) => ({ ...c, botName: botName(c.botId) })),
-    totals: { newOrders: totalNewOrders, openConvs: totalOpenConvs },
+    totals: { newOrders: totalNewOrders, openConvs: totalOpenConvs, complaints: totalNewComplaints },
+    complaints: totalNewComplaints, // IMP-23-BE-03: аддитивное поле (фронт читает optional)
   });
   res.headers.set('Cache-Control', 'no-store');
   return res;

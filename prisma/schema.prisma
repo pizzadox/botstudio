@@ -46,6 +46,8 @@ model Bot {
   conversations Conversation[]
   knowledge     KnowledgeItem[]
   orders        Order[]
+  /// Жалобы клиентов (не вывезли / повреждён контейнер / переполнена площадка / другая)
+  complaints    Complaint[]
   /// Реестр КП (контейнерных площадок), загруженный из MyTKO — «все возможные КОДЫ КП»
   mytkoAreas    MytkoArea[]
 
@@ -67,6 +69,8 @@ model MytkoArea {
   updatedAt DateTime @updatedAt
 
   @@unique([botId, lkCode])
+  /// IMP-23-BE-10: сортировка/поиск реестра КП (address asc, null last)
+  @@index([botId, address])
 }
 
 model Channel {
@@ -109,6 +113,8 @@ model Conversation {
   updatedAt      DateTime  @updatedAt
   messages       Message[]
   orders         Order[]
+  /// IMP-23-BE-01: жалобы, зарегистрированные в этом диалоге (сценарием бота)
+  complaints     Complaint[]
 
   @@unique([botId, source, externalId])
   @@index([botId, source, externalUserId])
@@ -183,6 +189,36 @@ model Order {
   @@index([botId, externalUserId])
   @@index([botId, createdAt])
   @@index([conversationId])
+}
+
+/// IMP-23-BE-01: жалоба клиента (проблема с вывозом), создаётся сценарием бота
+/// (узел «Сообщение» с флагом createComplaint) или вручную оператором
+model Complaint {
+  id             String        @id @default(cuid())
+  botId          String
+  bot            Bot           @relation(fields: [botId], references: [id], onDelete: Cascade)
+  /// Человекочитаемый номер жалобы в пределах бота (№1, №2, …)
+  number         Int
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  /// no_pickup — не вывезли; damaged — повреждён контейнер;
+  /// overflow — переполнена площадка; other — другое
+  type           String        @default("other")
+  /// new → in_review → resolved (переходы между любыми — матрица свободная)
+  status         String        @default("new")
+  description    String
+  /// Когда произошло (со слов клиента; не парсится как дата — null)
+  happenedAt     DateTime?
+  /// Контакт для связи (из диалога или от оператора)
+  contact        String?
+  /// scenario — создана сценарием бота; manual — оператором из ЛК
+  source         String        @default("scenario")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([botId, number])
+  @@index([botId, status])
+  @@index([botId, conversationId])
 }
 
 /// Запись базы знаний ИИ-ассистента бота

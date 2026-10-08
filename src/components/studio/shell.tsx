@@ -7,6 +7,8 @@ import {
   LayoutDashboard,
   LogOut,
   MapPin,
+  MapPinned,
+  MessageCircleWarning,
   Moon,
   MoreVertical,
   Search,
@@ -22,6 +24,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
@@ -31,13 +34,24 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
-const NAV: { key: ViewKey; label: string; icon: typeof LayoutDashboard; hint: string }[] = [
+// IMP-23-TAB-02: вкладки «Обращения» и «Реестр КП» (после «Заявки»).
+// mobileInMore: на 390px в хедере не хватает места на 8 иконок — эти разделы
+// на мобиле живут в «Ещё»-меню (см. MobileMoreMenu).
+const NAV: {
+  key: ViewKey;
+  label: string;
+  icon: typeof LayoutDashboard;
+  hint: string;
+  mobileInMore?: boolean;
+}[] = [
   { key: 'dashboard', label: 'Дашборд', icon: LayoutDashboard, hint: 'Список ваших ботов' },
   { key: 'editor', label: 'Конструктор', icon: Workflow, hint: 'Сценарий бота на канвасе' },
   { key: 'ai', label: 'ИИ-ассистент', icon: Sparkles, hint: 'Личность ИИ и база знаний' },
   { key: 'channels', label: 'Каналы', icon: Plug, hint: 'MAX, Telegram, WhatsApp, сайт и MyTKO' },
   { key: 'inbox', label: 'Входящие', icon: Inbox, hint: 'Диалоги с клиентами и обращения' },
   { key: 'orders', label: 'Заявки', icon: MapPin, hint: 'Заявки на карте, статусы, архив' },
+  { key: 'complaints', label: 'Обращения', icon: MessageCircleWarning, hint: 'Жалобы клиентов', mobileInMore: true },
+  { key: 'areas', label: 'Реестр КП', icon: MapPinned, hint: 'Контейнерные площадки MyTKO', mobileInMore: true },
 ];
 
 /** Красный счётчик на пункте навигации */
@@ -85,11 +99,18 @@ function MobileMoreMenu({
   onOpenPalette,
   onOpenProfile,
   onLogout,
+  navItems,
+  currentView,
+  onNav,
 }: {
   onOpenPalette?: () => void;
   /** Открыть диалог «Профиль» (смена пароля) — перед «Выйти» (IMP-FE22-23) */
   onOpenProfile?: () => void;
   onLogout: () => void;
+  /** IMP-23-TAB-02: разделы, не влезающие в мобильный хедер (иконки 390px) */
+  navItems?: { key: ViewKey; label: string; icon: typeof LayoutDashboard; badge: number }[];
+  currentView?: ViewKey;
+  onNav?: (v: ViewKey) => void;
 }) {
   const { resolvedTheme, setTheme } = useTheme();
 
@@ -105,6 +126,23 @@ function MobileMoreMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-60">
+        {/* IMP-23-TAB-02: новые разделы на мобиле — в «Ещё»-меню */}
+        {navItems && navItems.length > 0 && onNav && (
+          <>
+            <DropdownMenuLabel>Разделы</DropdownMenuLabel>
+            {navItems.map((n) => (
+              <DropdownMenuItem key={n.key} onSelect={() => onNav(n.key)}>
+                <n.icon aria-hidden="true" />
+                <span className="flex-1">{n.label}</span>
+                {currentView === n.key && (
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">текущий</span>
+                )}
+                <Badge count={n.badge} />
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+          </>
+        )}
         {/* resolvedTheme читается только внутри контента меню — Radix рендерит
             его в портал в момент открытия (после гидратации), поэтому, как и у
             десктоп-тумблера, mounted-гвард не нужен. */}
@@ -160,15 +198,29 @@ export default function Shell({
   onViewChange: (v: ViewKey) => void;
   currentBot: { id: string; name: string } | null;
   onLogout: () => void;
-  badges?: { inbox?: number; orders?: number };
+  badges?: { inbox?: number; orders?: number; complaints?: number };
   /** Открыть палитру команд (Ctrl+K) — триггер в сайдбаре возле навигации */
   onOpenPalette?: () => void;
   /** Открыть диалог «Профиль» (IMP-FE22-23): кнопка-блок в сайдбаре */
   onOpenProfile?: () => void;
   children: ReactNode;
 }) {
+  // IMP-23-TAB-02: complaints — новые жалобы из /api/notifications; areas — без бейджа
   const badgeFor = (key: ViewKey): number =>
-    key === 'inbox' ? (badges?.inbox ?? 0) : key === 'orders' ? (badges?.orders ?? 0) : 0;
+    key === 'inbox'
+      ? (badges?.inbox ?? 0)
+      : key === 'orders'
+        ? (badges?.orders ?? 0)
+        : key === 'complaints'
+          ? (badges?.complaints ?? 0)
+          : 0;
+
+  const moreNavItems = NAV.filter((n) => n.mobileInMore).map((n) => ({
+    key: n.key,
+    label: n.label,
+    icon: n.icon,
+    badge: badgeFor(n.key),
+  }));
 
   return (
     <TooltipProvider delayDuration={350}>
@@ -182,7 +234,8 @@ export default function Shell({
             <span className="hidden font-bold sm:inline">BotStudio</span>
           </div>
           <nav aria-label="Разделы студии" className="flex items-center gap-0.5">
-            {NAV.map((n) => (
+            {/* На мобиле показываем только первые иконки; остальные — в «Ещё»-меню (IMP-23-TAB-02) */}
+            {NAV.filter((n) => !n.mobileInMore).map((n) => (
               <Tooltip key={n.key}>
                 <TooltipTrigger asChild>
                   <button
@@ -204,8 +257,16 @@ export default function Shell({
               </Tooltip>
             ))}
             <div aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
-            {/* «Ещё»-меню вместо отдельной кнопки «Выйти» — тема/палитра/профиль/выход (IMP-FE21-02, IMP-FE22-23) */}
-            <MobileMoreMenu onOpenPalette={onOpenPalette} onOpenProfile={onOpenProfile} onLogout={onLogout} />
+            {/* «Ещё»-меню вместо отдельной кнопки «Выйти» — тема/палитра/профиль/выход (IMP-FE21-02, IMP-FE22-23)
+                + разделы, не поместившиеся в хедер (IMP-23-TAB-02) */}
+            <MobileMoreMenu
+              onOpenPalette={onOpenPalette}
+              onOpenProfile={onOpenProfile}
+              onLogout={onLogout}
+              navItems={moreNavItems}
+              currentView={view}
+              onNav={onViewChange}
+            />
           </nav>
         </header>
 

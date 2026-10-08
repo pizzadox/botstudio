@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Map as MlMap, Marker as MlMarker } from 'maplibre-gl';
+import Supercluster from 'supercluster'; // IMP-23-MAP-02: кластеризация видимых точек
 import {
   Archive,
   Check,
@@ -106,6 +107,26 @@ function markerElClassName(o: OrderDto, selected: boolean): string {
   );
 }
 
+/** IMP-23-MAP-02: свойства точки в индексе supercluster */
+type OrderPointProps = { orderId: string; number: number; typeKey: string };
+
+/** IMP-23-MAP-02: проекция свойств фичи из getClusters (union кластер|точка) —
+ * namespace-типы supercluster через default-import недоступны, поэтому локальные */
+type ClusterishProps = {
+  cluster?: true;
+  cluster_id?: number;
+  point_count?: number;
+  orderId?: string;
+};
+
+/** IMP-23-MAP-02: классы DOM-элемента кластер-маркера — круглая primary-пилюля с числом
+ *  заявок; 'orders-cluster' — стабильный семантический хук (стили/тесты) */
+const CLUSTER_EL_CLASS = cn(
+  'orders-cluster',
+  'flex h-7 min-w-7 cursor-pointer items-center justify-center rounded-full border-2 border-white bg-primary px-1.5 text-[11px] font-bold text-primary-foreground shadow-md',
+  'transition-[box-shadow,filter] hover:shadow-xl hover:brightness-110'
+);
+
 /** «Обновлено N с назад» для чипа свежести данных */
 function fmtAgo(ts: number, now: number): string {
   const s = Math.max(0, Math.round((now - ts) / 1000));
@@ -179,6 +200,8 @@ function OrdersMap({
   onSelect,
   onPlace,
   onHighlight,
+  onFocusDone,
+  botId,
 }: {
   orders: OrderDto[];
   showCompleted: boolean;
@@ -191,6 +214,10 @@ function OrdersMap({
   onPlace: (lat: number, lng: number) => void;
   /** Выделить заявку без открытия карточки (клик по списку точек) */
   onHighlight: (id: string) => void;
+  /** IMP-23-MAP-01: очистить stale focus-состояние родителя после перелёта к точке */
+  onFocusDone?: () => void;
+  /** IMP-23-MAP-03: смена бота → первый автоподгон камеры выполняется заново (один раз) */
+  botId?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MlMap | null>(null);
@@ -203,6 +230,15 @@ function OrdersMap({
   const ordersByIdRef = useRef<Map<string, OrderDto>>(new Map());
   /** зеркальная копия selectedId — доступ из эффектов маркеров без их пересоздания */
   const selectedIdRef = useRef<string | null>(selectedId);
+  /** IMP-23-MAP-02: кластер-маркеры по cluster_id — отдельный слой DOM-пилюль */
+  const clusterMarkersRef = useRef<Map<string, MlMarker>>(new Map());
+  /** IMP-23-MAP-02: актуальный индекс для кликов по пилюлям (переживает смену данных) */
+  const clusterIndexRef = useRef<Supercluster<OrderPointProps> | null>(null);
+  /** IMP-23-MAP-03: первый автоподгон камеры — один раз, до ручного взаимодействия */
+  const autoFitDoneRef = useRef(false);
+  const userMapInputRef = useRef(false);
+  /** IMP-23-MAP-01: onFocusDone через ref — эффект перелёта не пересоздаётся из-за колбэка */
+  const focusDoneRef = useRef(onFocusDone);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [listOpen, setListOpen] = useState(false);
@@ -224,6 +260,15 @@ function OrdersMap({
           zoom: 7,
         });
         map.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
+        // IMP-23-MAP-03: ручное взаимодействие с картой отменяет автоподгон камеры
+        const markUserInput = () => {
+          userMapInputRef.current = true;
+        };
+        map.on('mousedown', markUserInput);
+        map.on('wheel', markUserInput);
+        map.on('touchstart', markUserInput);
+        map.on('dblclick', markUserInput);
+        map.on('dragstart', markUserInput);
         map.on('load', () => {
           if (!cancelled) setReady(true);
         });
@@ -249,6 +294,11 @@ function OrdersMap({
   const visible = orders.filter(
     (o) => o.lat != null && o.lng != null && (showCompleted || ACTIVE_STATUSES.includes(o.status))
   );
+  /** IMP-23-MAP-02: сериализованный ключ видимых точек — единая зависимость диффа
+   *  маркеров и кластер-индекса; поллинг с неизменёнными данными ничего не перестраивает */
+  const visibleKey = visible
+    .map((o) => `${o.id}:${o.lat}:${o.lng}:${o.status}:${o.type}:${o.number}`)
+    .join('|');
 
   /**
    * «Spiderfy» совпадающих точек: несколько заявок с одним адресом геокодятся
@@ -295,6 +345,19 @@ function OrdersMap({
       });
     }
   }, []);
+
+  // IMP-23-MAP-02: индекс supercluster по видимым заявкам (radius 64px, до z16,
+  // кластер от 3 точек). Пересобирается только при реальном изменении набора
+  // (visibleKey) — поллинг с теми же данными индекс не трогает.
+  const clusterIndex = useMemo(() => {
+    if (visible.length === 0) return null;
+    const points = visible.map((o) => ({
+      type: 'Feature' as const,
+      properties: { orderId: o.id, number: o.number, typeKey: `${o.status}|${o.type}` },
+      geometry: { type: 'Point' as const, coordinates: [o.lng as number, o.lat as number] },
+    }));
+    return new Supercluster<OrderPointProps>({ radius: 64, maxZoom: 16, minPoints: 3 }).load(points);
+  }, [visibleKey]);
 
   // ДИФФ-обновление маркеров (IMP-F10): удаляем исчезнувшие, обновляем координаты
   // и цвет существующих, добавляем только новые — поллинг больше не пересоздаёт
@@ -352,14 +415,12 @@ function OrdersMap({
       }
     }
 
-    // (e) раскладываем совпадающие точки (spiderfy, 44px) и пересчитываем на каждом move
+    // (e) раскладываем совпадающие точки (spiderfy, 44px). Пересчёт при движении —
+    // на 'moveend' в эффекте кластеров ниже (IMP-23-MAP-04: дешевле, без дрожания);
+    // там же точки, попавшие в кластеры на текущем зуме, скрываются (IMP-23-MAP-02)
     spreadMarkers();
-    map.on('move', spreadMarkers);
-    return () => {
-      map.off('move', spreadMarkers);
-    };
     // зависимость — сериализованный список видимых маркеров (БЕЗ selectedId)
-  }, [ready, visible.map((o) => `${o.id}:${o.lat}:${o.lng}:${o.status}`).join('|'), onSelect, spreadMarkers]);
+  }, [ready, visibleKey, onSelect, spreadMarkers]);
 
   // Выделение выбранной заявки — ОТДЕЛЬНЫЙ эффект: только переключаем класс
   // DOM-элемента существующих маркеров (getElement), ничего не пересоздаём
@@ -371,14 +432,170 @@ function OrdersMap({
     }
   }, [selectedId]);
 
-  // Наведение на заявку из списка/карточки: перелетаем к точке (focusTick —
-  // чтобы повторный клик по той же заявке тоже срабатывал)
+  // IMP-23-MAP-01: синхронизация колбэка очистки focus-состояния (без пересоздания
+  // эффекта перелёта)
+  useEffect(() => {
+    focusDoneRef.current = onFocusDone;
+  }, [onFocusDone]);
+
+  // IMP-23-MAP-02: рендер кластеров. На текущем зуме индекс отдаёт смесь кластеров
+  // и отдельных точек: участники кластеров скрываются (display:none — маркеры
+  // остаются в DOM и раскрываются при зумировании без пересоздания), поверх
+  // рисуются DOM-пилюли с числом заявок (дифф по cluster_id). Вызывается при смене
+  // данных и на 'moveend' — во время движения маркеры едут вместе с картой.
+  const renderClusters = useCallback(() => {
+    const map = mapRef.current;
+    const ml = mlRef.current;
+    if (!map || !ml || !ready) return;
+
+    // данных нет (пустой набор/фильтр) — снять кластеры, показать все точки
+    if (!clusterIndex) {
+      for (const m of clusterMarkersRef.current.values()) m.remove();
+      clusterMarkersRef.current.clear();
+      for (const m of markersRef.current.values()) m.getElement().style.display = '';
+      return;
+    }
+
+    const zoom = Math.round(map.getZoom());
+    const bbox = map.getBounds().toArray().flat() as [number, number, number, number];
+    const features = clusterIndex.getClusters(bbox, zoom);
+
+    const nextClusterIds = new Set<string>();
+    const individualIds = new Set<string>();
+
+    for (const f of features) {
+      // union ClusterFeature | PointFeature — работаем через общую проекцию свойств
+      const p = f.properties as ClusterishProps;
+      if (p.cluster) {
+        const cid = String(p.cluster_id);
+        const count = p.point_count ?? 0;
+        const [lng, lat] = f.geometry.coordinates as [number, number];
+        nextClusterIds.add(cid);
+        const existing = clusterMarkersRef.current.get(cid);
+        if (existing) {
+          existing.setLngLat([lng, lat]);
+          const el = existing.getElement();
+          if (el.dataset.count !== String(count)) {
+            el.dataset.count = String(count);
+            el.textContent = String(count);
+            el.title = `${count} заявок в кластере — клик раскроет точки`;
+            el.setAttribute('aria-label', `Кластер из ${count} заявок`);
+          }
+        } else {
+          const el = document.createElement('button');
+          el.type = 'button';
+          el.tabIndex = 0;
+          el.dataset.count = String(count);
+          el.className = CLUSTER_EL_CLASS;
+          el.textContent = String(count);
+          el.title = `${count} заявок в кластере — клик раскроет точки`;
+          el.setAttribute('aria-label', `Кластер из ${count} заявок`);
+          const marker = new ml.Marker({ element: el }).setLngLat([lng, lat]).addTo(map);
+          // клик читает индекс/позицию В МОМЕНТ клика (ref) — переживает смену данных
+          el.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const idx = clusterIndexRef.current;
+            const m = mapRef.current;
+            if (!idx || !m) return;
+            const { lng: clng, lat: clat } = marker.getLngLat();
+            // раскрытие кластера: зум до точки раскрытия (минимум +1, потолок 18),
+            // чтобы отдельные точки стало можно выбрать (spiderfy добьёт остаток)
+            const expansion = idx.getClusterExpansionZoom(Number(cid));
+            const target = Math.min(Math.max(expansion, m.getZoom() + 1), 18);
+            m.easeTo({ center: [clng, clat], zoom: target, duration: 600 });
+          });
+          clusterMarkersRef.current.set(cid, marker);
+        }
+      } else if (p.orderId) {
+        individualIds.add(p.orderId);
+      }
+    }
+
+    // снять исчезнувшие кластеры (иначе призраки при смене зума/данных)
+    for (const [cid, m] of clusterMarkersRef.current) {
+      if (!nextClusterIds.has(cid)) {
+        m.remove();
+        clusterMarkersRef.current.delete(cid);
+      }
+    }
+    // точки внутри кластеров — скрыть, отдельные — показать
+    for (const [id, m] of markersRef.current) {
+      m.getElement().style.display = individualIds.has(id) ? '' : 'none';
+    }
+  }, [ready, clusterIndex]);
+
+  // Актуальный индекс для кликов по пилюлям (IMP-23-MAP-02)
+  useEffect(() => {
+    clusterIndexRef.current = clusterIndex;
+  }, [clusterIndex]);
+
+  // IMP-23-MAP-04: spiderfy-пересчёт перенесён с 'move' на 'moveend' (дешевле,
+  // без дрожания); здесь же — перерисовка кластеров после пан/зум/перелётов
+  const handleMapMoveEnd = useCallback(() => {
+    spreadMarkers();
+    renderClusters();
+  }, [spreadMarkers, renderClusters]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready) return;
+    renderClusters();
+    map.on('moveend', handleMapMoveEnd);
+    return () => {
+      map.off('moveend', handleMapMoveEnd);
+    };
+  }, [ready, renderClusters, handleMapMoveEnd]);
+
+  // IMP-23-MAP-03: при смене бота автоподгон выполняется заново (один раз)
+  useEffect(() => {
+    autoFitDoneRef.current = false;
+  }, [botId]);
+
+  // IMP-23-MAP-03: первый автоподгон камеры под видимые точки — один раз и только
+  // пока пользователь не взаимодействовал с картой; дальше ручной зум не мешаем
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || autoFitDoneRef.current || userMapInputRef.current) return;
+    if (visible.length === 0) return;
+    autoFitDoneRef.current = true;
+    let minLng = Infinity;
+    let minLat = Infinity;
+    let maxLng = -Infinity;
+    let maxLat = -Infinity;
+    for (const o of visible) {
+      const lng = o.lng as number;
+      const lat = o.lat as number;
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
+    map.fitBounds(
+      [
+        [minLng, minLat],
+        [maxLng, maxLat],
+      ],
+      { padding: 60, maxZoom: 13, duration: 800 }
+    );
+  }, [ready, visibleKey]);
+
+  // Наведение на заявку из карточки/уведомлений («Показать на карте»):
+  // focusTick — чтобы повторный клик по той же заявке тоже срабатывал.
+  // IMP-23-MAP-01: зум-храповик убран — зум поднимаем ТОЛЬКО если совсем далеко
+  // (<12 → 13), иначе пан без смены зума; после перелёта очищаем stale
+  // focus-состояние родителя (once moveend), чтобы оно не жило вечно.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready || !focusOrderId) return;
-    const o = visible.find((x) => x.id === focusOrderId);
+    const o = ordersByIdRef.current.get(focusOrderId);
     if (!o || o.lat == null || o.lng == null) return;
-    map.flyTo({ center: [o.lng, o.lat], zoom: Math.max(map.getZoom(), 15), duration: 800 });
+    const z = map.getZoom();
+    map.easeTo({ center: [o.lng, o.lat], zoom: z < 12 ? 13 : z, duration: 700 });
+    const clearFocus = () => focusDoneRef.current?.();
+    map.once('moveend', clearFocus);
+    return () => {
+      map.off('moveend', clearFocus);
+    };
   }, [ready, focusOrderId, focusTick]);
 
   // Во время режима указания точки список скрываем (баннер занимает то же место)
@@ -386,13 +603,14 @@ function OrdersMap({
     if (placementOrderId) setListOpen(false);
   }, [placementOrderId]);
 
-  // Переход к точке из списка: перелёт + выделение, без открытия карточки
+  // Переход к точке из списка: пан + выделение БЕЗ смены зума (IMP-23-MAP-01:
+  // раньше flyTo дожимал зум до 15 и тот никогда не возвращался), без открытия карточки
   const jumpToListPoint = useCallback(
     (o: OrderDto) => {
       const map = mapRef.current;
       if (!map || o.lat == null || o.lng == null) return;
       onHighlight(o.id);
-      map.flyTo({ center: [o.lng, o.lat], zoom: Math.max(map.getZoom(), 15), duration: 800 });
+      map.easeTo({ center: [o.lng, o.lat], duration: 500 });
       setListOpen(false);
     },
     [onHighlight]
@@ -446,6 +664,18 @@ function OrdersMap({
         </span>
         <span className="flex items-center gap-1.5">
           <span className="h-2.5 w-2.5 rounded-full bg-slate-400" /> выполненные
+        </span>
+        <span
+          className="flex items-center gap-1.5"
+          title="Близкие заявки объединяются в кластер — клик по нему раскрывает точки"
+        >
+          <span
+            aria-hidden
+            className="inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full border border-white bg-primary px-1 text-[8px] font-bold leading-none text-primary-foreground shadow-sm"
+          >
+            N
+          </span>
+          кластер
         </span>
       </div>
       {/* Счётчик маркеров + кнопка разворачиваемого списка точек */}
@@ -2038,6 +2268,10 @@ export default function OrdersView({
     onFocusConsumed?.();
   }, [focusOrderId, onFocusConsumed]);
 
+  // IMP-23-MAP-01: очистка focus-состояния карты — OrdersMap вызывает после перелёта,
+  // чтобы focus не жил вечно (одноразовость сохраняет tick)
+  const clearMapFocus = useCallback(() => setFocus(null), []);
+
   // Закрыть карточку и перелететь к точке заявки на карте
   const showOnMap = useCallback((id: string) => {
     setDialogOpen(false);
@@ -2311,6 +2545,8 @@ export default function OrdersView({
                 selectedId={selectedId}
                 focusOrderId={focus?.id ?? null}
                 focusTick={focus?.tick ?? 0}
+                onFocusDone={clearMapFocus}
+                botId={bot.id}
                 onSelect={openOrder}
                 onPlace={placeOnMap}
                 onHighlight={setSelectedId}

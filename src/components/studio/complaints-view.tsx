@@ -1,0 +1,684 @@
+'use client';
+
+// IMP-23-TAB-03: вкладка «Обращения» — жалобы клиентов из ветки сценария бота
+// (source=scenario) и добавленные оператором вручную (source=manual).
+// Паттерны: inbox-view.tsx (список + поллинг 8 с, пауза при document.hidden,
+// memo-карточки) и channels-view.tsx (формы/диалоги). API-контракт: волна 23.
+
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  CalendarDays,
+  ChevronLeft,
+  CircleAlert,
+  Loader2,
+  MessageCircleWarning,
+  MessagesSquare,
+  Plus,
+  RotateCcw,
+  User,
+  WifiOff,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { api } from '@/lib/client-api';
+import type { ComplaintCounts, ComplaintDto } from '@/lib/studio-types';
+import {
+  COMPLAINT_SOURCE_BADGES,
+  COMPLAINT_SOURCE_LABELS,
+  COMPLAINT_STATUS_BADGES,
+  COMPLAINT_STATUS_LABELS,
+  COMPLAINT_TYPE_LABELS,
+  complaintCountKey,
+} from '@/lib/studio-types';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
+import { useToast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
+
+const TAKE = 50;
+
+type StatusFilter = 'all' | 'new' | 'in_review' | 'resolved';
+const STATUS_FILTERS: StatusFilter[] = ['all', 'new', 'in_review', 'resolved'];
+
+/** Скелетон карточки обращения */
+function ComplaintCardSkeleton() {
+  return (
+    <div className="rounded-xl border bg-card p-3 sm:p-4" aria-hidden>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Skeleton className="h-4 w-12" />
+        <Skeleton className="h-4 w-28 rounded-full" />
+        <Skeleton className="h-4 w-16 rounded-full" />
+        <Skeleton className="ml-auto h-3 w-24" />
+      </div>
+      <Skeleton className="mt-2.5 h-3.5 w-full" />
+      <Skeleton className="mt-1.5 h-3.5 w-2/3" />
+    </div>
+  );
+}
+
+/** Пустое состояние: иконка в квадрате + заголовок + пояснение (как в inbox-view) */
+function EmptyState({ icon: Icon, title, hint }: { icon: LucideIcon; title: string; hint: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <Icon className="h-6 w-6" aria-hidden />
+      </div>
+      <div className="max-w-[300px]">
+        <p className="text-sm font-medium text-foreground">{title}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{hint}</p>
+      </div>
+    </div>
+  );
+}
+
+/** Дата-время по русски (tabular-nums рендерится снаружи) */
+function fmtDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/** Когда произошло: date-input даёт 'YYYY-MM-DD' (UTC-парсинг сдвинул бы сутки) */
+function fmtDay(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (m) return `${m[3]}.${m[2]}.${m[1].slice(2)}`;
+  return new Date(iso).toLocaleDateString('ru-RU');
+}
+
+/** Длинное описание? — показываем «показать полностью» */
+function isLong(description: string): boolean {
+  return description.length > 140 || description.split('\n').length > 3;
+}
+
+interface ComplaintCardProps {
+  complaint: ComplaintDto;
+  saving: boolean;
+  onStatusChange: (complaint: ComplaintDto, status: string) => void;
+  onShowFull: (complaint: ComplaintDto) => void;
+}
+
+/**
+ * Карточка обращения (memo): при поллинге перерисовываются только изменившиеся.
+ * Статус меняется чипами (оптимистично), при conversationId — кнопка «Открыть диалог».
+ */
+const ComplaintCard = memo(function ComplaintCard({
+  complaint,
+  saving,
+  onStatusChange,
+  onShowFull,
+}: ComplaintCardProps) {
+  const openConversation = () => {
+    if (!complaint.conversationId) return;
+    // Тот же канал, что и кнопка «Открыть диалог» в карточке заявки (FE22-05):
+    // слушатель в app-root открывает инбокс с фокусом на переписке.
+    window.dispatchEvent(
+      new CustomEvent('bstudio:open-conversation', {
+        detail: { conversationId: complaint.conversationId },
+      })
+    );
+  };
+
+  return (
+    <article className="rounded-xl border bg-card p-3 sm:p-4">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <span className="text-sm font-bold tabular-nums">№{complaint.number}</span>
+        <Badge
+          variant="outline"
+          className="h-5 px-1.5 text-[10px]"
+          title="Тип обращения"
+        >
+          {COMPLAINT_TYPE_LABELS[complaint.type] ?? complaint.type}
+        </Badge>
+        <Badge
+          variant="outline"
+          className={cn('h-5 px-1.5 text-[10px]', COMPLAINT_STATUS_BADGES[complaint.status])}
+        >
+          {COMPLAINT_STATUS_LABELS[complaint.status] ?? complaint.status}
+        </Badge>
+        <span
+          className={cn(
+            'inline-flex h-5 items-center rounded-full px-1.5 text-[10px] font-medium',
+            COMPLAINT_SOURCE_BADGES[complaint.source] ?? 'bg-muted text-muted-foreground'
+          )}
+          title={complaint.source === 'scenario' ? 'Собрано ботом в диалоге' : 'Добавлено оператором'}
+        >
+          {COMPLAINT_SOURCE_LABELS[complaint.source] ?? complaint.source}
+        </span>
+        <time
+          dateTime={complaint.createdAt}
+          title="Создано"
+          className="ml-auto text-[11px] text-muted-foreground tabular-nums"
+        >
+          {fmtDateTime(complaint.createdAt)}
+        </time>
+      </div>
+
+      {complaint.description && (
+        <>
+          <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm leading-snug">
+            {complaint.description}
+          </p>
+          {isLong(complaint.description) && (
+            <button
+              type="button"
+              onClick={() => onShowFull(complaint)}
+              className="mt-1 min-h-11 rounded-md text-xs font-medium text-primary underline-offset-2 transition-colors hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
+            >
+              показать полностью
+            </button>
+          )}
+        </>
+      )}
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+        {complaint.contact && (
+          <span className="inline-flex items-center gap-1" title="Контакт клиента">
+            <User className="h-3 w-3" aria-hidden="true" /> {complaint.contact}
+          </span>
+        )}
+        {complaint.happenedAt && (
+          <span className="tabular-nums" title="Когда произошло">
+            <CalendarDays className="mr-1 inline h-3 w-3" aria-hidden="true" />
+            {fmtDay(complaint.happenedAt)}
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t pt-2.5">
+        <span className="mr-0.5 hidden text-[11px] text-muted-foreground sm:inline">Статус:</span>
+        {STATUS_FILTERS.filter((s) => s !== 'all').map((s) => (
+          <button
+            key={s}
+            type="button"
+            disabled={saving || complaint.status === s}
+            aria-pressed={complaint.status === s}
+            onClick={() => onStatusChange(complaint, s)}
+            className={cn(
+              'inline-flex min-h-11 items-center rounded-full border px-3 text-xs font-medium transition-colors sm:min-h-0 sm:py-1',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+              'disabled:pointer-events-none',
+              complaint.status === s
+                ? 'border-transparent bg-primary text-primary-foreground'
+                : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            {COMPLAINT_STATUS_LABELS[s]}
+          </button>
+        ))}
+        {complaint.conversationId && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto min-h-11 sm:min-h-0"
+            onClick={openConversation}
+          >
+            <MessagesSquare className="h-3.5 w-3.5" aria-hidden />
+            Открыть диалог
+          </Button>
+        )}
+      </div>
+    </article>
+  );
+});
+
+export default function ComplaintsView({
+  botId,
+  onBack,
+}: {
+  botId: string;
+  onBack: () => void;
+}) {
+  const { toast } = useToast();
+  const [items, setItems] = useState<ComplaintDto[]>([]);
+  const [counts, setCounts] = useState<ComplaintCounts>({ total: 0, new: 0, inReview: 0, resolved: 0 });
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  // Диалог «Добавить вручную» (чистая форма при переоткрытии)
+  const [addOpen, setAddOpen] = useState(false);
+  const [form, setForm] = useState({ type: 'no_pickup', description: '', contact: '', happenedAt: '' });
+  const [addBusy, setAddBusy] = useState(false);
+  // Диалог полного описания
+  const [fullItem, setFullItem] = useState<ComplaintDto | null>(null);
+
+  // Курсор — в ref: колбэк поллинга не должен пересоздаваться на каждый ответ
+  const nextCursorRef = useRef<string | null>(null);
+  useEffect(() => {
+    nextCursorRef.current = nextCursor;
+  }, [nextCursor]);
+
+  const load = useCallback(
+    async (cursor?: string | null) => {
+      const append = !!cursor;
+      if (!append) setError(false);
+      try {
+        const params = new URLSearchParams();
+        if (statusFilter !== 'all') params.set('status', statusFilter);
+        if (typeFilter !== 'all') params.set('type', typeFilter);
+        params.set('take', String(TAKE));
+        if (cursor) params.set('cursor', cursor);
+        const d = await api<{ items: ComplaintDto[]; nextCursor: string | null; counts: ComplaintCounts }>(
+          `/api/bots/${botId}/complaints?${params.toString()}`
+        );
+        setCounts(d.counts);
+        setNextCursor(d.nextCursor);
+        if (append) {
+          // Дедуп: между страницами список мог обновиться (поллинг)
+          setItems((prev) => {
+            const seen = new Set(prev.map((c) => c.id));
+            return [...prev, ...d.items.filter((c) => !seen.has(c.id))];
+          });
+        } else {
+          setItems(d.items);
+        }
+      } catch {
+        if (!append) setError(true);
+        /* ошибки поллинга молча — как в inbox-view */
+      } finally {
+        if (!append) setLoading(false);
+        else setLoadingMore(false);
+      }
+    },
+    [botId, statusFilter, typeFilter]
+  );
+
+  // Первая загрузка + перезагрузка при смене фильтров (loadList-паттерн inbox-view)
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Поллинг: 8 с, пауза при document.hidden
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const tick = () => void load();
+    const start = () => {
+      if (timer === null) timer = setInterval(tick, 8000);
+    };
+    const stop = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else {
+        tick();
+        start();
+      }
+    };
+    start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [load]);
+
+  const loadMore = () => {
+    if (loadingMore || !nextCursorRef.current) return;
+    setLoadingMore(true);
+    void load(nextCursorRef.current);
+  };
+
+  /** Оптимистичная смена статуса с откатом при ошибке (паттерн togglePin из inbox-view) */
+  const changeStatus = async (complaint: ComplaintDto, status: string) => {
+    if (savingId || status === complaint.status) return;
+    const prevStatus = complaint.status;
+    setItems((list) => list.map((c) => (c.id === complaint.id ? { ...c, status } : c)));
+    setCounts((cnt) => {
+      const from = complaintCountKey(prevStatus);
+      const to = complaintCountKey(status);
+      if (from === to) return cnt;
+      return { ...cnt, [from]: Math.max(0, cnt[from] - 1), [to]: cnt[to] + 1 };
+    });
+    setSavingId(complaint.id);
+    try {
+      const d = await api<{ item: ComplaintDto }>(`/api/bots/${botId}/complaints/${complaint.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+      setItems((list) => list.map((c) => (c.id === complaint.id ? d.item : c)));
+    } catch {
+      // Откат: статус и счётчики
+      setItems((list) => list.map((c) => (c.id === complaint.id ? { ...c, status: prevStatus } : c)));
+      setCounts((cnt) => {
+        const from = complaintCountKey(status);
+        const to = complaintCountKey(prevStatus);
+        if (from === to) return cnt;
+        return { ...cnt, [from]: Math.max(0, cnt[from] - 1), [to]: cnt[to] + 1 };
+      });
+      toast({ title: 'Не удалось изменить статус', variant: 'destructive' });
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const submitAdd = async () => {
+    if (addBusy) return;
+    const description = form.description.trim();
+    if (!description) return;
+    setAddBusy(true);
+    try {
+      const body: Record<string, unknown> = { type: form.type, description };
+      if (form.contact.trim()) body.contact = form.contact.trim();
+      if (form.happenedAt) body.happenedAt = form.happenedAt;
+      const d = await api<{ item: ComplaintDto }>(`/api/bots/${botId}/complaints`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      setAddOpen(false);
+      setForm({ type: 'no_pickup', description: '', contact: '', happenedAt: '' });
+      toast({ title: 'Обращение добавлено', description: `№${d.item.number}` });
+      // Новое обращение имеет статус new — если фильтр его прячет, показываем «Все»
+      if (statusFilter !== 'all' && statusFilter !== 'new') setStatusFilter('all');
+      else void load();
+    } catch (e) {
+      toast({
+        title: 'Не удалось добавить обращение',
+        description: e instanceof Error ? e.message : '',
+        variant: 'destructive',
+      });
+    } finally {
+      setAddBusy(false);
+    }
+  };
+
+  const chips: { key: StatusFilter; label: string; count: number; accent?: boolean }[] = [
+    { key: 'all', label: 'Все', count: counts.total },
+    { key: 'new', label: 'Новые', count: counts.new, accent: true },
+    { key: 'in_review', label: 'В работе', count: counts.inReview },
+    { key: 'resolved', label: 'Решены', count: counts.resolved },
+  ];
+
+  const isFiltered = statusFilter !== 'all' || typeFilter !== 'all';
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Шапка */}
+      <div className="flex items-center gap-2 border-b bg-background px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0 sm:h-9 sm:w-9"
+          onClick={onBack}
+          aria-label="Назад"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
+        <div className="min-w-0 flex-1">
+          <h1 className="flex items-center gap-2 text-lg font-bold tracking-tight sm:text-2xl">
+            <MessageCircleWarning className="h-5 w-5 shrink-0 text-primary sm:h-6 sm:w-6" aria-hidden />
+            Обращения
+          </h1>
+          <p className="truncate text-xs text-muted-foreground sm:text-sm">
+            Жалобы клиентов из бота и ручные
+          </p>
+        </div>
+        <Button className="min-h-11 shrink-0 sm:min-h-9" onClick={() => setAddOpen(true)}>
+          <Plus className="h-4 w-4" aria-hidden />
+          <span className="hidden sm:inline">Добавить вручную</span>
+          <span className="sm:hidden">Добавить</span>
+        </Button>
+      </div>
+
+      {/* Фильтры: чипы статусов (со счётчиками) + тип обращения */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b bg-background px-2.5 py-2 sm:px-4">
+        {chips.map((f) => (
+          <button
+            key={f.key}
+            type="button"
+            onClick={() => setStatusFilter(f.key)}
+            aria-pressed={statusFilter === f.key}
+            className={cn(
+              'inline-flex min-h-11 items-center rounded-full px-3 text-xs font-medium transition-colors sm:min-h-0 sm:py-1.5',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+              statusFilter === f.key
+                ? 'border border-transparent bg-primary text-primary-foreground'
+                : 'border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+          >
+            {f.label}
+            {f.count > 0 && (
+              <span
+                className={cn(
+                  'ml-1.5 inline-flex items-center rounded-full px-1.5 text-[10px] tabular-nums',
+                  f.accent && statusFilter !== f.key
+                    ? 'bg-amber-100 font-semibold text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'
+                    : cn('opacity-80', statusFilter === f.key && 'bg-white/20')
+                )}
+              >
+                {f.count}
+              </span>
+            )}
+          </button>
+        ))}
+        <div className="ml-auto">
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <SelectTrigger
+              className="h-11 w-[160px] text-xs sm:h-8 sm:w-[190px]"
+              aria-label="Тип обращения"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all" className="text-xs">
+                Все типы
+              </SelectItem>
+              {Object.entries(COMPLAINT_TYPE_LABELS).map(([k, v]) => (
+                <SelectItem key={k} value={k} className="text-xs">
+                  {v}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* Список */}
+      {loading ? (
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3 sm:p-4" role="status" aria-label="Загрузка обращений">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <ComplaintCardSkeleton key={i} />
+          ))}
+        </div>
+      ) : error ? (
+        <EmptyState
+          icon={WifiOff}
+          title="Не удалось загрузить обращения"
+          hint="Проверьте связь и попробуйте ещё раз."
+        />
+      ) : items.length === 0 ? (
+        isFiltered ? (
+          <EmptyState
+            icon={CircleAlert}
+            title="Ничего не найдено"
+            hint="Попробуйте другой статус или тип обращения."
+          />
+        ) : (
+          <EmptyState
+            icon={MessageCircleWarning}
+            title="Обращений пока нет"
+            hint="Жалобы из сценария бота появляются здесь автоматически. Также их можно добавить вручную."
+          />
+        )
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
+          <div className="mx-auto max-w-3xl space-y-2">
+            {items.map((c) => (
+              <ComplaintCard
+                key={c.id}
+                complaint={c}
+                saving={savingId === c.id}
+                onStatusChange={(complaint, status) => void changeStatus(complaint, status)}
+                onShowFull={setFullItem}
+              />
+            ))}
+            {nextCursor && (
+              <div className="flex justify-center pt-1">
+                <Button
+                  variant="outline"
+                  className="min-h-11 sm:min-h-9"
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                >
+                  {loadingMore && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+                  Показать ещё
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Повтор при ошибке первой загрузки */}
+      {error && (
+        <div className="flex justify-center pb-4">
+          <Button variant="outline" className="min-h-11 sm:min-h-9" onClick={() => void load()}>
+            <RotateCcw className="h-4 w-4" aria-hidden />
+            Повторить
+          </Button>
+        </div>
+      )}
+
+      {/* Полное описание */}
+      <Dialog open={!!fullItem} onOpenChange={(o) => !o && setFullItem(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Обращение №{fullItem?.number ?? ''}</DialogTitle>
+            <DialogDescription>
+              {fullItem ? COMPLAINT_TYPE_LABELS[fullItem.type] ?? fullItem.type : ''}
+              {fullItem?.happenedAt ? ` · ${fmtDay(fullItem.happenedAt)}` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <p className="max-h-[50vh] overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
+            {fullItem?.description}
+          </p>
+          {fullItem?.contact && (
+            <p className="text-xs text-muted-foreground">Контакт: {fullItem.contact}</p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFullItem(null)}>
+              Закрыть
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Добавить вручную */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Добавить обращение</DialogTitle>
+            <DialogDescription>
+              Жалоба, принятая по телефону или лично, появится в общем списке
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submitAdd();
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="cmp-type" className="text-xs font-medium">
+                Тип обращения
+              </Label>
+              <Select
+                value={form.type}
+                onValueChange={(v) => setForm((f) => ({ ...f, type: v }))}
+              >
+                <SelectTrigger id="cmp-type" className="min-h-11">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(COMPLAINT_TYPE_LABELS).map(([k, v]) => (
+                    <SelectItem key={k} value={k}>
+                      {v}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="cmp-desc" className="text-xs font-medium">
+                Описание
+              </Label>
+              <Textarea
+                id="cmp-desc"
+                autoFocus
+                required
+                rows={4}
+                maxLength={2000}
+                placeholder="Что произошло, где, с каким контейнером…"
+                value={form.description}
+                onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="cmp-contact" className="text-xs font-medium">
+                Контакт клиента{' '}
+                <span className="font-normal text-muted-foreground">(необязательно)</span>
+              </Label>
+              <Input
+                id="cmp-contact"
+                placeholder="телефон или имя"
+                value={form.contact}
+                onChange={(e) => setForm((f) => ({ ...f, contact: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="cmp-when" className="text-xs font-medium">
+                Когда произошло{' '}
+                <span className="font-normal text-muted-foreground">(необязательно)</span>
+              </Label>
+              <Input
+                id="cmp-when"
+                type="date"
+                value={form.happenedAt}
+                onChange={(e) => setForm((f) => ({ ...f, happenedAt: e.target.value }))}
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setAddOpen(false)} disabled={addBusy}>
+                Отмена
+              </Button>
+              <Button type="submit" disabled={addBusy || !form.description.trim()}>
+                {addBusy && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+                {addBusy ? 'Добавляю…' : 'Добавить'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

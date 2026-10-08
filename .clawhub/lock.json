@@ -20,6 +20,26 @@
       "version": "1.0.8",
       "installedAt": 1791436498035,
       "ownerHandle": "afonsoft"
+    },
+    "superpowers-systematic-debugging": {
+      "version": "1.0.0",
+      "installedAt": 1791454810485,
+      "ownerHandle": "axelhu"
+    },
+    "react-best-practices": {
+      "version": "1.0.0",
+      "installedAt": 1791454822354,
+      "ownerHandle": "wpank"
+    },
+    "@carolz1/code-review": {
+      "version": "0.1.0",
+      "installedAt": 1791454854237,
+      "ownerHandle": "carolz1"
+    },
+    "@zuoyunlai/agent-team-orchestration": {
+      "version": "1.0.0",
+      "installedAt": 1791454863551,
+      "ownerHandle": "zuoyunlai"
     }
   }
 }

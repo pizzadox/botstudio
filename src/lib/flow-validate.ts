@@ -27,6 +27,16 @@ export const MAX_NODE_TEXT = 4000;
 export const MAX_BUTTONS = 20;
 export const MAX_BUTTON_TEXT = 100;
 export const MAX_HTTP_URL = 500;
+/** IMP-23-BE-04: максимум длины имени переменной в createComplaint */
+export const MAX_VAR_NAME = 100;
+
+/** IMP-23-BE-04: whitelist типов жалобы — сверено с Complaint.type (schema.prisma) */
+const COMPLAINT_TYPES: ReadonlySet<string> = new Set<string>([
+  'no_pickup',
+  'damaged',
+  'overflow',
+  'other',
+]);
 
 /** Whitelist типов узлов — сверено с FlowNodeType (src/lib/flow-types.ts) */
 const NODE_TYPES: ReadonlySet<string> = new Set<string>([
@@ -145,6 +155,30 @@ export function normalizeFlow(raw: unknown): FlowValidateResult {
     if (data.url !== undefined && data.url !== null) {
       if (typeof data.url !== 'string' || data.url.length > MAX_HTTP_URL) {
         return fail(`Узел «${nodeId}»: data.url — строка до ${MAX_HTTP_URL} символов`);
+      }
+    }
+
+    // IMP-23-BE-04: структурная валидация createComplaint (message-узел).
+    // Само поле опционально; если задано — объект с известными строковыми полями.
+    if (data.createComplaint !== undefined && data.createComplaint !== null) {
+      if (typeof data.createComplaint !== 'object' || Array.isArray(data.createComplaint)) {
+        return fail(`Узел «${nodeId}»: data.createComplaint должен быть объектом`);
+      }
+      const cc = data.createComplaint as Record<string, unknown>;
+      if (
+        cc.type !== undefined &&
+        cc.type !== null &&
+        !COMPLAINT_TYPES.has(String(cc.type))
+      ) {
+        return fail(
+          `Узел «${nodeId}»: data.createComplaint.type — один из no_pickup/damaged/overflow/other`
+        );
+      }
+      for (const key of ['typeVar', 'descriptionVar', 'whenVar'] as const) {
+        const v = cc[key];
+        if (v !== undefined && v !== null && (typeof v !== 'string' || v.length > MAX_VAR_NAME)) {
+          return fail(`Узел «${nodeId}»: data.createComplaint.${key} — строка до ${MAX_VAR_NAME} символов`);
+        }
       }
     }
   }

@@ -63,3 +63,4 @@ download/backup-*
 
 # github token for push script
 .env.local
+tool-results/
