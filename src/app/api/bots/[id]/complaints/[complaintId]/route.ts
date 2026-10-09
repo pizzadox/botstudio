@@ -39,6 +39,8 @@ function complaintDto(c: {
   lng: number | null;
   areaLkCode: string | null;
   areaAddress: string | null;
+  // IMP-25-14: заявка, оформленная по жалобе (эскалация)
+  orderId: string | null;
   source: string;
   createdAt: Date;
   conversationId: string | null;
@@ -56,13 +58,29 @@ function complaintDto(c: {
     lng: c.lng,
     areaLkCode: c.areaLkCode,
     areaAddress: c.areaAddress,
+    orderId: c.orderId, // IMP-25-14
     source: c.source,
     createdAt: c.createdAt.toISOString(),
     conversationId: c.conversationId,
   };
 }
 
-/** Обновление жалобы: status, description, address (+геокодинг), areaLkCode */
+/** Карточка жалобы (IMP-25-14): одиночный GET — тот же DTO, что PATCH/список */
+export async function GET(req: NextRequest, { params }: Params) {
+  const { id, complaintId } = await params;
+  const loaded = await loadOwnedComplaint(req, id, complaintId);
+  if ('error' in loaded) {
+    return NextResponse.json(
+      { error: loaded.error === 'unauthorized' ? 'Требуется авторизация' : 'Жалоба не найдена' },
+      { status: loaded.error === 'unauthorized' ? 401 : 404 }
+    );
+  }
+  const res = NextResponse.json({ item: complaintDto(loaded.complaint) });
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
+}
+
+/** Обновление жалобы: status, description, address (+гео-контроль), areaLkCode, orderId */
 export async function PATCH(req: NextRequest, { params }: Params) {
   const { id, complaintId } = await params;
   const loaded = await loadOwnedComplaint(req, id, complaintId);
@@ -99,9 +117,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       data.description = description;
     }
 
-    // IMP-24-BE-15: адрес инцидента (непустой ≤ 300). Если у жалобы нет координат —
-    // пробуем геокодинг; ошибка/таймаут Nominatim НЕ блокирует запись (адрес
-    // сохраняется без точки, оператор поставит её на карте).
+    // IMP-24-BE-15: адрес инцидента (непустой ≤ 300). Геокодинг решается ниже,
+    // единым блоком гео-контроля (IMP-25-09) — с учётом ручной точки и geocode:true.
+    let addressChanged = false;
     if (typeof body.address === 'string') {
       const address = body.address.trim().slice(0, 300);
       if (!address) {
@@ -110,20 +128,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
           { status: 400 }
         );
       }
+      addressChanged = address !== loaded.complaint.address;
       data.address = address;
-      const hasCoords =
-        loaded.complaint.lat != null && loaded.complaint.lng != null;
-      if (!hasCoords) {
-        try {
-          const geo = await geocodeAddress(address);
-          if (geo) {
-            data.lat = geo.lat;
-            data.lng = geo.lng;
-          }
-        } catch {
-          // геокодинг недоступен — пишем только адрес
-        }
-      }
     }
 
     // IMP-24-BE-15: привязка к КП реестра — код обязан существовать у бота,
@@ -143,9 +149,74 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       }
     }
 
+    // IMP-25-14: эскалация «жалоба → заявка» — orderId заявки ЭТОГО бота;
+    // null/'' — отвязать. Заявка чужого бота/несуществующая → 400.
+    if (body.orderId !== undefined) {
+      const oid = typeof body.orderId === 'string' ? body.orderId.trim() : '';
+      if (oid) {
+        const order = await db.order.findFirst({ where: { id: oid, botId: id }, select: { id: true } });
+        if (!order) {
+          return NextResponse.json({ error: 'Заявка не найдена' }, { status: 400 });
+        }
+        data.orderId = order.id;
+      } else {
+        data.orderId = null;
+      }
+    }
+
+    // IMP-25-09 (REV-8): ручная точка оператора — lat/lng с проверкой диапазона;
+    // null — снять точку (как у заявок). geoSource у жалобы НЕТ — не пишем.
+    const latValid =
+      body.lat === undefined ||
+      body.lat === null ||
+      (typeof body.lat === 'number' && Number.isFinite(body.lat) && body.lat >= -90 && body.lat <= 90);
+    const lngValid =
+      body.lng === undefined ||
+      body.lng === null ||
+      (typeof body.lng === 'number' && Number.isFinite(body.lng) && body.lng >= -180 && body.lng <= 180);
+    if (!latValid || !lngValid) {
+      return NextResponse.json(
+        { error: 'lat/lng — числа (lat −90…90, lng −180…180) или null' },
+        { status: 400 }
+      );
+    }
+    if (body.lat !== undefined) data.lat = body.lat;
+    if (body.lng !== undefined) data.lng = body.lng;
+
+    // IMP-25-09 (REV-8): гео-контроль жалобы.
+    //  1) geocode:true — принудительный перегеокод по ТЕКУЩЕМУ адресу (force,
+    //     как у заявок: кэш игнорируется; неудача НЕ стирает существующую точку);
+    //  2) адрес изменился — точка следует за адресом (перегеокод), независимо
+    //     от того, были ли координаты раньше (раньше геокод молча пропускался
+    //     при имеющихся координатах → точка расходилась с адресом);
+    //  3) адрес НЕ менялся и geocode не запрошен — координаты не трогаем.
+    //     Ручная точка (lat/lng в этом же запросе) старше автогеокода.
+    const wantsGeocode = body.geocode === true;
+    const manualPoint = body.lat !== undefined || body.lng !== undefined;
+    const effectiveAddress =
+      (typeof data.address === 'string' ? data.address : loaded.complaint.address) ?? '';
+    if ((wantsGeocode || (addressChanged && !manualPoint)) && effectiveAddress) {
+      try {
+        const geo = await geocodeAddress(effectiveAddress, { force: wantsGeocode });
+        if (geo) {
+          data.lat = geo.lat;
+          data.lng = geo.lng;
+        } else if (wantsGeocode) {
+          // как у заявок: неудачный поиск не сдвигает/не стирает точку
+          delete data.lat;
+          delete data.lng;
+        }
+      } catch {
+        // геокодинг недоступен — пишем только адрес (точку поставит оператор)
+      }
+    }
+
     if (Object.keys(data).length === 0) {
       return NextResponse.json(
-        { error: 'Нечего обновлять: передайте status, description, address и/или areaLkCode' },
+        {
+          error:
+            'Нечего обновлять: передайте status, description, address, areaLkCode, orderId, lat/lng и/или geocode',
+        },
         { status: 400 }
       );
     }

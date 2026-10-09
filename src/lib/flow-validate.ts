@@ -38,6 +38,20 @@ const COMPLAINT_TYPES: ReadonlySet<string> = new Set<string>([
   'other',
 ]);
 
+/** IMP-25-28: whitelist типов заявки — сверено с POST /orders и createOrder в движке */
+const ORDER_TYPES: ReadonlySet<string> = new Set<string>(['waste', 'kgm', 'other']);
+
+/**
+ * IMP-25-28: имя переменной в var-полях — латиница/цифры/подчёркивание/точка,
+ * начинается с буквы или «_». Допускается и шаблон с {{плейсхолдерами}}
+ * (например «{{city}}, {{street}}» в addressVar) — движок его интерполирует.
+ */
+const VAR_NAME_RE = /^[a-zA-Z_][\w.]*$/;
+function isValidVarField(v: string): boolean {
+  if (VAR_NAME_RE.test(v)) return true;
+  return v.includes('{{') && v.includes('}}');
+}
+
 /** Whitelist типов узлов — сверено с FlowNodeType (src/lib/flow-types.ts) */
 const NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'start',
@@ -158,6 +172,41 @@ export function normalizeFlow(raw: unknown): FlowValidateResult {
       }
     }
 
+    // IMP-25-28: структурная валидация createOrder (message-узел) — раньше поле
+    // не проверялось вовсе; добавлены nameVar/cityVar по задаче волны 25.
+    if (data.createOrder !== undefined && data.createOrder !== null) {
+      if (typeof data.createOrder !== 'object' || Array.isArray(data.createOrder)) {
+        return fail(`Узел «${nodeId}»: data.createOrder должен быть объектом`);
+      }
+      const co = data.createOrder as Record<string, unknown>;
+      if (
+        co.type !== undefined &&
+        co.type !== null &&
+        !ORDER_TYPES.has(String(co.type))
+      ) {
+        return fail(`Узел «${nodeId}»: data.createOrder.type — один из waste/kgm/other`);
+      }
+      for (const key of [
+        'nameVar',
+        'phoneVar',
+        'cityVar',
+        'addressVar',
+        'sizeVar',
+        'dateVar',
+      ] as const) {
+        const v = co[key];
+        if (v === undefined || v === null) continue;
+        if (typeof v !== 'string' || v.length > MAX_VAR_NAME) {
+          return fail(`Узел «${nodeId}»: data.createOrder.${key} — строка до ${MAX_VAR_NAME} символов`);
+        }
+        if (v.trim() && !isValidVarField(v.trim())) {
+          return fail(
+            `Узел «${nodeId}»: data.createOrder.${key} — имя переменной (латиница/цифры/_) или шаблон {{...}}`
+          );
+        }
+      }
+    }
+
     // IMP-23-BE-04: структурная валидация createComplaint (message-узел).
     // Само поле опционально; если задано — объект с известными строковыми полями.
     if (data.createComplaint !== undefined && data.createComplaint !== null) {
@@ -174,11 +223,27 @@ export function normalizeFlow(raw: unknown): FlowValidateResult {
           `Узел «${nodeId}»: data.createComplaint.type — один из no_pickup/damaged/overflow/other`
         );
       }
-      for (const key of ['typeVar', 'descriptionVar', 'whenVar'] as const) {
+      // IMP-25-28: + addressVar/cityVar (волна 24) и паттерн имени переменной
+      for (const key of ['typeVar', 'descriptionVar', 'whenVar', 'addressVar', 'cityVar'] as const) {
         const v = cc[key];
-        if (v !== undefined && v !== null && (typeof v !== 'string' || v.length > MAX_VAR_NAME)) {
+        if (v === undefined || v === null) continue;
+        if (typeof v !== 'string' || v.length > MAX_VAR_NAME) {
           return fail(`Узел «${nodeId}»: data.createComplaint.${key} — строка до ${MAX_VAR_NAME} символов`);
         }
+        if (v.trim() && !isValidVarField(v.trim())) {
+          return fail(
+            `Узел «${nodeId}»: data.createComplaint.${key} — имя переменной (латиница/цифры/_) или шаблон {{...}}`
+          );
+        }
+      }
+      // IMP-25-28: описание жалобы ОБЯЗАТЕЛЕНО — движок берёт его из descriptionVar,
+      // а при пустом — из текста узла (интерполяция {{переменных}})
+      const descVar = typeof cc.descriptionVar === 'string' ? cc.descriptionVar.trim() : '';
+      const nodeText = typeof data.text === 'string' ? data.text.trim() : '';
+      if (!descVar && !nodeText) {
+        return fail(
+          `Узел «${nodeId}»: createComplaint — задайте descriptionVar или непустой текст сообщения (описание жалобы)`
+        );
       }
     }
   }

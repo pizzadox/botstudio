@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { getAreasCached, parseMytkoConfig } from '@/lib/mytko';
-import { haversineM } from '@/lib/area-match'; // IMP-24-BE-07: сортировка по дистанции
+import { areasCacheHit, parseMytkoConfig } from '@/lib/mytko'; // IMP-25-10: areasCacheHit
+import { haversineM, getAreasIndexed, type AreaIndexEntry } from '@/lib/area-match'; // IMP-24-BE-07: сортировка по дистанции; IMP-25-10: индекс адресов
 
 /**
  * IMP-23-BE-10: реестр КП (контейнерных площадок) бота — API для фронта.
@@ -14,7 +14,8 @@ import { haversineM } from '@/lib/area-match'; // IMP-24-BE-07: сортиров
  * ?page= (1-based), ?take= (дефолт 50, максимум 500).
  *
  * IMP-24-BE-06/07: режимы карты (q/city/page в них игнорируются):
- * ?bbox=minLng,minLat,maxLng,maxLat — точки в рамке (cap 1000, page:1);
+ * ?bbox=minLng,minLat,maxLng,maxLat[&sort=dist] — точки в рамке (IMP-25-17:
+ * cap 2500; sort=dist — по дистанции до центра рамки, page:1);
  * ?near=lat,lng&radius=<м, def 300, cap 2000>&limit=<def 5, cap 20> —
  * ближайшие точки по haversine, в item добавляется distanceM.
  * Ответ во всех режимах — один контракт AreasResponse.
@@ -32,7 +33,9 @@ const DEFAULT_TAKE = 50;
 const MAX_TAKE = 500;
 
 // IMP-24-BE-06/07: лимиты режимов карты
-const BBOX_CAP = 1000;
+// IMP-25-17: cap поднят 1000 → 2500 — после кластеризации на фронте это
+// безопасно, а крупные зумы раньше теряли часть КП за срезом
+const BBOX_CAP = 2500;
 const NEAR_DEFAULT_RADIUS = 300;
 const NEAR_MAX_RADIUS = 2000;
 const NEAR_DEFAULT_LIMIT = 5;
@@ -84,10 +87,13 @@ export async function GET(req: NextRequest, { params }: Params) {
     areasSyncedAt = null;
   }
 
-  const [areas, areasCount] = await Promise.all([
-    getAreasCached(bot.id), // кэш TTL 5 мин (та же инфраструктура, что у кодов КП)
-    db.mytkoArea.count({ where: { botId: bot.id } }),
-  ]);
+  // IMP-25-10: реестр + индекс предвычисленных lowercase-адресов (см. area-match).
+  // count() в БД нужен только на cache-miss (раз в TTL кэша) — при cache-hit
+  // areasCount = areas.length (кэш построен из всех строк таблицы бота);
+  // bbox/near-режимы карты больше не выполняют count() на каждый запрос.
+  const cacheHit = areasCacheHit(bot.id); // ДО обращения — пока кэш ещё не мог заполниться
+  const { areas, index } = await getAreasIndexed(bot.id); // кэш TTL 5 мин (та же инфраструктура, что у кодов КП)
+  const areasCount = cacheHit ? areas.length : await db.mytkoArea.count({ where: { botId: bot.id } });
 
   // ── IMP-24-BE-07: режим near — ближайшие точки вокруг lat,lng ──────────────
   const nearParam = sp.get('near');
@@ -135,6 +141,8 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
 
   // ── IMP-24-BE-06: режим bbox — точки в рамке minLng,minLat,maxLng,maxLat ──
+  // IMP-25-17: опция ?sort=dist — сортировка по дистанции до центра рамки
+  // (haversine по кэшу, без запросов к БД; тайбрейк lkCode — детерминизм)
   const bboxParam = sp.get('bbox');
   if (bboxParam) {
     const nums = bboxParam.split(',').map((s) => Number(s.trim()));
@@ -152,17 +160,27 @@ export async function GET(req: NextRequest, { params }: Params) {
       );
     }
 
-    const filtered = areas
-      .filter(
-        (a) =>
-          a.lat != null &&
-          a.lng != null &&
-          a.lat >= minLat &&
-          a.lat <= maxLat &&
-          a.lng >= minLng &&
-          a.lng <= maxLng
-      )
-      .sort((x, y) => (x.lkCode < y.lkCode ? -1 : x.lkCode > y.lkCode ? 1 : 0));
+    const inBox = areas.filter(
+      (a) =>
+        a.lat != null &&
+        a.lng != null &&
+        a.lat >= minLat &&
+        a.lat <= maxLat &&
+        a.lng >= minLng &&
+        a.lng <= maxLng
+    );
+    const sortDist = sp.get('sort') === 'dist';
+    let filtered = inBox;
+    if (sortDist) {
+      const cLat = (minLat + maxLat) / 2;
+      const cLng = (minLng + maxLng) / 2;
+      filtered = inBox
+        .map((a) => ({ a, d: haversineM(cLat, cLng, a.lat as number, a.lng as number) }))
+        .sort((x, y) => x.d - y.d || (x.a.lkCode < y.a.lkCode ? -1 : x.a.lkCode > y.a.lkCode ? 1 : 0))
+        .map(({ a }) => a);
+    } else {
+      filtered = inBox.sort((x, y) => (x.lkCode < y.lkCode ? -1 : x.lkCode > y.lkCode ? 1 : 0));
+    }
     const total = filtered.length;
     const items = filtered.slice(0, BBOX_CAP).map((a) => ({
       lkCode: a.lkCode,
@@ -182,19 +200,25 @@ export async function GET(req: NextRequest, { params }: Params) {
     });
   }
 
-  // Фильтры в памяти (см. шапку): q — адрес ИЛИ код; city — только адрес
+  // Фильтры в памяти (см. шапку): q — адрес ИЛИ код; city — только адрес.
+  // IMP-25-10: lowercase адресов предвычислен в индексе кэша — без
+  // .toLowerCase() всех 11k адресов на каждый запрос.
   let list = areas;
   if (q) {
     const needle = q.toLowerCase();
-    list = list.filter(
-      (a) =>
-        (a.address ?? '').toLowerCase().includes(needle) ||
-        a.lkCode.toLowerCase().includes(needle)
-    );
+    list = list.filter((a) => {
+      const entry: AreaIndexEntry | undefined = index.get(a.lkCode);
+      const lower = entry ? entry.lower : (a.address ?? '').toLowerCase();
+      return lower.includes(needle) || a.lkCode.toLowerCase().includes(needle);
+    });
   }
   if (city) {
     const needle = city.toLowerCase();
-    list = list.filter((a) => (a.address ?? '').toLowerCase().includes(needle));
+    list = list.filter((a) => {
+      const entry = index.get(a.lkCode);
+      const lower = entry ? entry.lower : (a.address ?? '').toLowerCase();
+      return lower.includes(needle);
+    });
   }
 
   // Сортировка: address asc, null последними; тайбрейк lkCode — стабильная пагинация

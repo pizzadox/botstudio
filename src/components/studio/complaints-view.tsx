@@ -6,12 +6,16 @@
 // memo-карточки) и channels-view.tsx (формы/диалоги). API-контракт: волна 23.
 // IMP-24-FE2: адрес/координаты инцидента, inline-правка адреса и совмещение
 // с КП реестра (GET area-match → PATCH {areaLkCode} / PATCH {address}).
+// IMP-25-FE2: merge-пагинация (поллинг не схлопывает «Показать ещё»), тосты
+// ошибок патча, гео-контроль (перегеокодировать/копия координат) и эскалация
+// жалобы в заявку (POST /orders + PATCH {orderId}).
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   CalendarDays,
   ChevronLeft,
   CircleAlert,
+  Copy,
   Loader2,
   MapPin,
   MapPinned,
@@ -19,7 +23,9 @@ import {
   MessagesSquare,
   PencilLine,
   Plus,
+  RefreshCw,
   RotateCcw,
+  Truck,
   Unlink,
   User,
   WifiOff,
@@ -127,6 +133,13 @@ function isLong(description: string): boolean {
   return description.length > 140 || description.split('\n').length > 3;
 }
 
+/** IMP-25-23: порядок бэка — createdAt desc, тайбрейк id desc (merge не ломает сортировку) */
+function cmpServerOrder(a: ComplaintDto, b: ComplaintDto): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+  if (a.id !== b.id) return a.id < b.id ? 1 : -1;
+  return 0;
+}
+
 /** IMP-24-FE2: поля жалобы, меняемые из карточки через PATCH (статус — через changeStatus) */
 type ComplaintPatch = Partial<Pick<ComplaintDto, 'address' | 'areaLkCode'>>;
 
@@ -134,6 +147,10 @@ interface ComplaintCardProps {
   complaint: ComplaintDto;
   botId: string;
   saving: boolean;
+  /** IMP-25-26: идёт эскалация этой карточки (POST заявки + PATCH {orderId}) */
+  escalating: boolean;
+  /** IMP-25-26: номер заявки, созданной из жалобы в этой сессии (DTO несёт только orderId) */
+  orderNumber?: number;
   onStatusChange: (complaint: ComplaintDto, status: string) => void;
   onShowFull: (complaint: ComplaintDto) => void;
   /** IMP-24-FE2-04: оптимистичный PATCH адреса/КП с откатом; true — успех */
@@ -142,6 +159,10 @@ interface ComplaintCardProps {
     patch: ComplaintPatch,
     successTitle: string
   ) => Promise<boolean>;
+  /** IMP-25-25: PATCH {geocode:true}; true — успех */
+  onGeocode: (complaint: ComplaintDto) => Promise<boolean>;
+  /** IMP-25-26: POST /orders из жалобы + PATCH {orderId}; true — успех */
+  onEscalate: (complaint: ComplaintDto) => Promise<boolean>;
 }
 
 /**
@@ -153,13 +174,20 @@ const ComplaintCard = memo(function ComplaintCard({
   complaint,
   botId,
   saving,
+  escalating,
+  orderNumber,
   onStatusChange,
   onShowFull,
   onPatch,
+  onGeocode,
+  onEscalate,
 }: ComplaintCardProps) {
+  const { toast } = useToast();
   // IMP-24-FE2-03: inline-редактор адреса (без модального окна)
   const [editAddr, setEditAddr] = useState(false);
   const [addrDraft, setAddrDraft] = useState('');
+  // IMP-25-25: одноразовый хинт «точка пересчитана по новому адресу»
+  const [geoHint, setGeoHint] = useState(false);
   // IMP-24-FE2-02: блок «КП рядом…» — один GET area-match на каждое открытие
   const [matchOpen, setMatchOpen] = useState(false);
   const [matchLoading, setMatchLoading] = useState(false);
@@ -181,15 +209,44 @@ const ComplaintCard = memo(function ComplaintCard({
   const saveAddress = async () => {
     const address = addrDraft.trim();
     if (!address || address === complaint.address) return;
+    // IMP-25-25: если точка уже была — бэк (25-BE2) пересчитает её по новому
+    // адресу автоматически; показываем одноразовый хинт после успеха
+    const hadCoords = complaint.lat != null && complaint.lng != null;
     const ok = await onPatch(complaint, { address }, 'Адрес обновлён');
-    if (ok) setEditAddr(false);
+    if (ok) {
+      setEditAddr(false);
+      setGeoHint(hadCoords);
+    }
   };
 
   const openAddressEditor = useCallback(() => {
     setAddrDraft(complaint.address ?? '');
     setMatchOpen(false);
+    setGeoHint(false);
     setEditAddr(true);
   }, [complaint.address]);
+
+  // IMP-25-25: координаты — компактно и с копированием (как в заявках)
+  const copyCoords = async () => {
+    if (complaint.lat == null || complaint.lng == null) return;
+    try {
+      await navigator.clipboard.writeText(fmtCoords(complaint.lat, complaint.lng));
+      toast({ title: 'Скопировано: координаты' });
+    } catch {
+      toast({ title: 'Не удалось скопировать', variant: 'destructive' });
+    }
+  };
+
+  // IMP-25-25: перегеокодировать — бэк пересчитает точку по текущему адресу
+  const regeocode = async () => {
+    const ok = await onGeocode(complaint);
+    if (ok) setGeoHint(false);
+  };
+
+  // IMP-25-26: чип «Заявка №N» — переход в раздел «Заявки» (слушатель в app-root)
+  const openOrders = () => {
+    window.dispatchEvent(new CustomEvent('bstudio:open-orders'));
+  };
 
   // IMP-24-FE2-02: кандидаты на совмещение — GET area-match, один запрос на открытие
   const matchAbortRef = useRef<AbortController | null>(null);
@@ -227,12 +284,14 @@ const ComplaintCard = memo(function ComplaintCard({
     void loadMatch();
   };
 
-  // Привязка/отвязка меняют areaLkCode — раскрытый блок сбрасывается эффектом ниже
-  const linkArea = (lk: string) => {
-    void onPatch(complaint, { areaLkCode: lk }, `Жалоба совмещена с КП ${lk}`);
+  // Привязка/отвязка меняют areaLkCode — раскрытый блок сбрасывается эффектом ниже.
+  // IMP-25-24: результат патча обрабатывается — все фейлы (включая «занято»)
+  // patchComplaint показывает тостом с причиной, тихих фейлов больше нет
+  const linkArea = async (lk: string) => {
+    await onPatch(complaint, { areaLkCode: lk }, `Жалоба совмещена с КП ${lk}`);
   };
-  const unlinkArea = () => {
-    void onPatch(complaint, { areaLkCode: null }, 'Жалоба отвязана от КП');
+  const unlinkArea = async () => {
+    await onPatch(complaint, { areaLkCode: null }, 'Жалоба отвязана от КП');
   };
 
   // IMP-24-FE2-02: адрес/привязка изменились (свой PATCH, поллинг, другой клиент) —
@@ -330,6 +389,21 @@ const ComplaintCard = memo(function ComplaintCard({
             >
               <PencilLine className="h-3 w-3" aria-hidden="true" />
             </button>
+            {/* IMP-25-25: перегеокодировать — бэк пересчитает точку по адресу (25-BE2) */}
+            <button
+              type="button"
+              onClick={() => void regeocode()}
+              aria-label="Перегеокодировать адрес"
+              title="Перегеокодировать: пересчитать точку по адресу"
+              disabled={saving}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 sm:h-6 sm:w-6"
+            >
+              {saving ? (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="h-3 w-3" aria-hidden="true" />
+              )}
+            </button>
           </span>
         ) : (
           <button
@@ -342,9 +416,17 @@ const ComplaintCard = memo(function ComplaintCard({
           </button>
         )}
         {complaint.lat != null && complaint.lng != null && (
-          <span className="tabular-nums" title="Координаты инцидента">
+          // IMP-25-25: координаты — кнопка с копированием (как в заявках), tabular-nums
+          <button
+            type="button"
+            onClick={() => void copyCoords()}
+            title="Скопировать координаты"
+            aria-label="Скопировать координаты"
+            className="inline-flex min-h-11 items-center gap-1 rounded-md tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
+          >
             {fmtCoords(complaint.lat, complaint.lng)}
-          </span>
+            <Copy className="h-3 w-3" aria-hidden="true" />
+          </button>
         )}
         {complaint.areaLkCode && (
           <Badge
@@ -356,6 +438,17 @@ const ComplaintCard = memo(function ComplaintCard({
           </Badge>
         )}
       </div>
+
+      {/* IMP-25-25: одноразовый хинт — бэк пересчитал точку по новому адресу */}
+      {geoHint && (
+        <p
+          role="status"
+          className="mt-1 flex items-center gap-1 text-[11px] text-sky-700 dark:text-sky-300"
+        >
+          <MapPin className="h-3 w-3 shrink-0" aria-hidden="true" />
+          Точка пересчитана по новому адресу
+        </p>
+      )}
 
       {/* IMP-24-FE2-03: inline-редактор адреса (Enter — сохранить) */}
       {editAddr && (
@@ -417,17 +510,47 @@ const ComplaintCard = memo(function ComplaintCard({
               {COMPLAINT_STATUS_LABELS[s]}
             </button>
           ))}
-          {complaint.conversationId && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto min-h-11 sm:min-h-0"
-              onClick={openConversation}
-            >
-              <MessagesSquare className="h-3.5 w-3.5" aria-hidden />
-              Открыть диалог
-            </Button>
-          )}
+          {/* IMP-25-26: эскалация — «Создать заявку» из жалобы либо чип «Заявка №N» */}
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            {complaint.orderId ? (
+              <button
+                type="button"
+                onClick={openOrders}
+                title="Открыть раздел «Заявки»"
+                aria-label="Открыть раздел «Заявки»"
+                className="inline-flex min-h-11 items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2.5 text-xs font-medium text-sky-800 transition-colors hover:bg-sky-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:border-sky-500/30 dark:bg-sky-500/15 dark:text-sky-300 dark:hover:bg-sky-500/25 sm:min-h-0 sm:py-1"
+              >
+                <Truck className="h-3.5 w-3.5" aria-hidden />
+                {orderNumber ? `Заявка №${orderNumber}` : 'Заявка создана'}
+              </button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="min-h-11 sm:min-h-0"
+                onClick={() => void onEscalate(complaint)}
+                disabled={saving || escalating}
+              >
+                {escalating ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                ) : (
+                  <Truck className="h-3.5 w-3.5" aria-hidden />
+                )}
+                Создать заявку
+              </Button>
+            )}
+            {complaint.conversationId && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="min-h-11 sm:min-h-0"
+                onClick={openConversation}
+              >
+                <MessagesSquare className="h-3.5 w-3.5" aria-hidden />
+                Открыть диалог
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* IMP-24-FE2-02: совмещение с КП реестра */}
@@ -453,7 +576,7 @@ const ComplaintCard = memo(function ComplaintCard({
                 variant="ghost"
                 size="sm"
                 className="ml-auto min-h-11 sm:min-h-0"
-                onClick={unlinkArea}
+                onClick={() => void unlinkArea()}
                 disabled={saving}
               >
                 <Unlink className="h-3.5 w-3.5" aria-hidden />
@@ -533,7 +656,7 @@ const ComplaintCard = memo(function ComplaintCard({
                         size="sm"
                         className="min-h-11 sm:min-h-0"
                         disabled={saving}
-                        onClick={() => linkArea(cand.lkCode)}
+                        onClick={() => void linkArea(cand.lkCode)}
                       >
                         Совместить
                       </Button>
@@ -579,6 +702,10 @@ export default function ComplaintsView({
   const [error, setError] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
+  // IMP-25-26: идёт эскалация (POST заявки + PATCH orderId) — для спиннера кнопки
+  const [escalatingId, setEscalatingId] = useState<string | null>(null);
+  // IMP-25-26: номера заявок, созданных из жалоб в этой сессии (ComplaintDto несёт только orderId)
+  const [orderNumbers, setOrderNumbers] = useState<Record<string, number>>({});
 
   // Диалог «Добавить вручную» (чистая форма при переоткрытии)
   const [addOpen, setAddOpen] = useState(false);
@@ -599,10 +726,23 @@ export default function ComplaintsView({
     nextCursorRef.current = nextCursor;
   }, [nextCursor]);
 
+  // IMP-25-23: жива ли хотя бы одна догруженная «Показать ещё» страница.
+  // Пока живы — поллинг не откатывает курсор на конец первой страницы,
+  // иначе «Показать ещё» начинало бы перекрывать уже загруженное.
+  const extraPagesRef = useRef(false);
+
+  // IMP-25-23: load умеет три режима.
+  //  — load(cursor) — «Показать ещё»: аппенд с дедупом (как раньше);
+  //  — load(null, true) — ПОЛЛИНГ: merge первой страницы — новые (по id) сверху,
+  //    существующие обновляются по id (статусы/патчи), догруженные старые НЕ удаляются;
+  //  — load() — жёсткая перезагрузка (первый вход / смена фильтров / retry).
   const load = useCallback(
-    async (cursor?: string | null) => {
+    async (cursor?: string | null, merge = false) => {
       const append = !!cursor;
-      if (!append) setError(false);
+      if (!append && !merge) {
+        setError(false);
+        extraPagesRef.current = false;
+      }
       try {
         const params = new URLSearchParams();
         if (statusFilter !== 'all') params.set('status', statusFilter);
@@ -613,18 +753,28 @@ export default function ComplaintsView({
           `/api/bots/${botId}/complaints?${params.toString()}`
         );
         setCounts(d.counts);
-        setNextCursor(d.nextCursor);
         if (append) {
+          extraPagesRef.current = true;
+          setNextCursor(d.nextCursor);
           // Дедуп: между страницами список мог обновиться (поллинг)
           setItems((prev) => {
             const seen = new Set(prev.map((c) => c.id));
             return [...prev, ...d.items.filter((c) => !seen.has(c.id))];
           });
+        } else if (merge) {
+          setNextCursor((cur) => (extraPagesRef.current ? cur : d.nextCursor));
+          setItems((prev) => {
+            const incomingIds = new Set(d.items.map((c) => c.id));
+            const merged = [...d.items, ...prev.filter((c) => !incomingIds.has(c.id))];
+            // Сортировка как на бэке (createdAt desc, id desc) — merges не ломают порядок
+            return merged.sort(cmpServerOrder);
+          });
         } else {
+          setNextCursor(d.nextCursor);
           setItems(d.items);
         }
       } catch {
-        if (!append) setError(true);
+        if (!append && !merge) setError(true);
         /* ошибки поллинга молча — как в inbox-view */
       } finally {
         if (!append) setLoading(false);
@@ -639,10 +789,17 @@ export default function ComplaintsView({
     void load();
   }, [load]);
 
-  // Поллинг: 8 с, пауза при document.hidden
+  // Поллинг: 8 с, пауза при document.hidden; IMP-25-23 — merge-режим (не схлопывает список);
+  // IMP-25-REV-2: каждый 10-й тик — жёсткая перезагрузка, чтобы записи, выпавшие из фильтра
+  // (например, статус сменил коллега), не висели в отфильтрованном списке вечно.
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
-    const tick = () => void load();
+    let tickCount = 0;
+    const tick = () => {
+      tickCount += 1;
+      if (tickCount % 10 === 0) void load();
+      else void load(null, true);
+    };
     const start = () => {
       if (timer === null) timer = setInterval(tick, 8000);
     };
@@ -691,7 +848,7 @@ export default function ComplaintsView({
         body: JSON.stringify({ status }),
       });
       setItems((list) => list.map((c) => (c.id === complaint.id ? d.item : c)));
-    } catch {
+    } catch (e) {
       // Откат: статус и счётчики
       setItems((list) => list.map((c) => (c.id === complaint.id ? { ...c, status: prevStatus } : c)));
       setCounts((cnt) => {
@@ -700,7 +857,11 @@ export default function ComplaintsView({
         if (from === to) return cnt;
         return { ...cnt, [from]: Math.max(0, cnt[from] - 1), [to]: cnt[to] + 1 };
       });
-      toast({ title: 'Не удалось изменить статус', variant: 'destructive' });
+      toast({
+        title: 'Не удалось изменить статус',
+        description: e instanceof Error ? e.message : undefined,
+        variant: 'destructive',
+      });
     } finally {
       setSavingId(null);
     }
@@ -714,7 +875,15 @@ export default function ComplaintsView({
       patch: ComplaintPatch,
       successTitle: string
     ): Promise<boolean> => {
-      if (savingId) return false;
+      // IMP-25-24: «занято» — тоже фейл, показываем тостом (тихих фейлов больше нет)
+      if (savingId) {
+        toast({
+          title: 'Не удалось сохранить изменения',
+          description: 'Другое изменение ещё сохраняется — повторите через мгновение.',
+          variant: 'destructive',
+        });
+        return false;
+      }
       const prev = complaint;
       setItems((list) =>
         list.map((c) => (c.id === complaint.id ? { ...c, ...patch } : c))
@@ -749,6 +918,105 @@ export default function ComplaintsView({
     [botId, savingId, toast]
   );
 
+  // IMP-25-25: перегеокодировать точку жалобы — PATCH {geocode:true} (контракт 25-BE2).
+  // Не оптимистично: координаты считает бэк, ответ — полный DTO.
+  const geocodeComplaint = useCallback(
+    async (complaint: ComplaintDto): Promise<boolean> => {
+      if (savingId) {
+        toast({
+          title: 'Не удалось перегеокодировать',
+          description: 'Другое изменение ещё сохраняется — повторите через мгновение.',
+          variant: 'destructive',
+        });
+        return false;
+      }
+      setSavingId(complaint.id);
+      try {
+        const d = await api<{ item: ComplaintDto }>(
+          `/api/bots/${botId}/complaints/${complaint.id}`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ geocode: true }),
+          }
+        );
+        setItems((list) => list.map((c) => (c.id === complaint.id ? d.item : c)));
+        toast({
+          title:
+            d.item.lat != null && d.item.lng != null
+              ? `Точка обновлена: ${fmtCoords(d.item.lat, d.item.lng)}`
+              : 'Точку не удалось определить — адрес не найден на карте',
+        });
+        return true;
+      } catch (e) {
+        toast({
+          title: 'Не удалось перегеокодировать',
+          description: e instanceof Error ? e.message : '',
+          variant: 'destructive',
+        });
+        return false;
+      } finally {
+        setSavingId(null);
+      }
+    },
+    [botId, savingId, toast]
+  );
+
+  // IMP-25-26: эскалация — заявка из жалобы. POST /orders принимает адрес/точку/
+  // клиента/телефон/комментарий (проверено по роуту), затем жалоба линкуется PATCH {orderId}.
+  const escalateToOrder = useCallback(
+    async (complaint: ComplaintDto): Promise<boolean> => {
+      if (savingId) {
+        toast({
+          title: 'Не удалось создать заявку',
+          description: 'Другое изменение ещё сохраняется — повторите через мгновение.',
+          variant: 'destructive',
+        });
+        return false;
+      }
+      setSavingId(complaint.id);
+      setEscalatingId(complaint.id);
+      try {
+        const created = await api<{ order: { id: string; number: number } }>(
+          `/api/bots/${botId}/orders`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              address: complaint.address,
+              lat: complaint.lat,
+              lng: complaint.lng,
+              phone: complaint.contact,
+              clientName: complaint.contact || null,
+              comment: `По жалобе №${complaint.number}: ${complaint.description}`.slice(0, 500),
+              city: null,
+            }),
+          }
+        );
+        const linked = await api<{ item: ComplaintDto }>(
+          `/api/bots/${botId}/complaints/${complaint.id}`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ orderId: created.order.id }),
+          }
+        );
+        setItems((list) => list.map((c) => (c.id === complaint.id ? linked.item : c)));
+        setOrderNumbers((p) => ({ ...p, [complaint.id]: created.order.number }));
+        toast({ title: `Заявка №${created.order.number} создана из жалобы` });
+        return true;
+      } catch (e) {
+        toast({
+          title: 'Не удалось создать заявку из жалобы',
+          description: e instanceof Error ? e.message : '',
+          variant: 'destructive',
+        });
+        return false;
+      } finally {
+        setSavingId(null);
+        setEscalatingId(null);
+      }
+    },
+    [botId, savingId, toast]
+  );
+
   const submitAdd = async () => {
     if (addBusy) return;
     const description = form.description.trim();
@@ -775,7 +1043,8 @@ export default function ComplaintsView({
       toast({ title: 'Обращение добавлено', description: `№${d.item.number}` });
       // Новое обращение имеет статус new — если фильтр его прячет, показываем «Все»
       if (statusFilter !== 'all' && statusFilter !== 'new') setStatusFilter('all');
-      else void load();
+      // IMP-25-23: merge, чтобы не схлопнуть догруженные «Показать ещё» страницы
+      else void load(null, true);
     } catch (e) {
       toast({
         title: 'Не удалось добавить обращение',
@@ -914,9 +1183,13 @@ export default function ComplaintsView({
                 complaint={c}
                 botId={botId}
                 saving={savingId === c.id}
+                escalating={escalatingId === c.id}
+                orderNumber={orderNumbers[c.id]}
                 onStatusChange={(complaint, status) => void changeStatus(complaint, status)}
                 onShowFull={setFullItem}
                 onPatch={patchComplaint}
+                onGeocode={geocodeComplaint}
+                onEscalate={escalateToOrder}
               />
             ))}
             {nextCursor && (

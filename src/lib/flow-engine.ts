@@ -185,10 +185,33 @@ function mapComplaintType(raw: string): ComplaintType {
   return 'other';
 }
 
-/** whenVar — свободный текст («вчера утром»); дата не парсится → null */
+/** whenVar — свободный текст («вчера», «24.10», «3 октября»).
+ *  IMP-25-13: русские даты разбираются parseWishDate (импорт из wish-date.ts —
+ *  цикла нет: wish-date самодостаточен и ничего не импортирует из движка);
+ *  «вчера/позавчера» добавлены локально (в wish-date их нет — парсер заявок
+ *  смотрит только вперёд). ISO/числовые даты — прежний new Date() fallback;
+ *  нераспознанное → null, как раньше. */
 function parseComplaintWhen(raw: string): Date | null {
   const v = (raw ?? '').trim();
   if (!v) return null;
+  const parsed = parseWishDate(v);
+  if (parsed.matched && parsed.date) return parsed.date;
+  // вчера/позавчера — по календарю Europe/Moscow (сервис Новгородской области,
+  // как в wish-date; не зависит от TZ сервера)
+  const lower = v.toLowerCase().replace(/ё/g, 'е');
+  const m = /(?:^|[^\p{L}\p{N}])(позавчера|вчера)(?=$|[^\p{L}\p{N}])/u.exec(lower);
+  if (m) {
+    const offset = m[1] === 'позавчера' ? -2 : -1;
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Moscow',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const get = (t: string) => parseInt(parts.find((p) => p.type === t)?.value ?? '', 10);
+    const d = new Date(Date.UTC(get('year'), get('month') - 1, get('day') + offset, 9, 0, 0));
+    if (!Number.isNaN(d.getTime())) return d; // полдень московского дня в UTC (как в wish-date)
+  }
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;
 }
@@ -725,6 +748,11 @@ export async function runEngine(
                 select: { contact: true },
               })
             : null;
+        // IMP-25-13: контакт диалога может быть плейсхолдером («Гость сайта» —
+        // так веб-виджет подписывает гостей) или пустым — настоящее имя,
+        // названное в nameVar, сохраняется в диалог и попадает в заявку/жалобу
+        let effectiveContact = (conversation?.contact ?? '').trim();
+        const isGuestContact = (c: string) => !c || c.toLowerCase() === 'гость сайта';
         // Узел с флагом «Создать заявку»: номер попадает в {{order.number}}
         if (node.data.createOrder && ctx?.botId) {
           try {
@@ -745,14 +773,27 @@ export async function runEngine(
                 matches.length === 1 ? matches[0][1] : matches.length === 0 ? cfg.dateVar.trim() : '';
               if (varName) state.vars[varName] = parsedWish.human;
             }
-            // IMP-24-BE-03: имя клиента — из переменной; пусто → контакт диалога
-            const contact = (conversation?.contact ?? '').trim();
+            // IMP-24-BE-03: имя клиента — из переменной; пусто → контакт диалога.
+            // IMP-25-13: имя из nameVar сохраняем и в контакт диалога, если там
+            // был плейсхолдер «Гость сайта»/пусто — оператор видит настоящего клиента
+            const nameFromVar = pick(cfg.nameVar);
+            if (nameFromVar && ctx.conversationId && isGuestContact(effectiveContact)) {
+              try {
+                await db.conversation.update({
+                  where: { id: ctx.conversationId },
+                  data: { contact: nameFromVar.slice(0, 200) },
+                });
+                effectiveContact = nameFromVar;
+              } catch {
+                // контакт не критичен — не роняем создание заявки
+              }
+            }
             const order = await createOrder({
               botId: ctx.botId,
               conversationId: ctx.conversationId,
               externalUserId: ctx.externalUserId ?? null,
               type: cfg.type ?? 'waste',
-              clientName: pick(cfg.nameVar) || contact || null,
+              clientName: nameFromVar || effectiveContact || null,
               phone: pick(cfg.phoneVar) || null,
               city: pick(cfg.cityVar) || null,
               address: pick(cfg.addressVar) || null,
@@ -766,10 +807,14 @@ export async function runEngine(
             state.vars['order.number'] = String(order.number);
             state.vars['order.id'] = order.id;
             state.vars['order.type'] = order.type;
+            state.vars['order_error'] = 'false'; // IMP-25-13: успех — флаг сброшен
             console.log(`[flow-engine] заявка №${order.number} создана (${order.type})`);
           } catch (err) {
             console.error('[flow-engine] createOrder error:', err);
             state.vars['order.number'] = '—';
+            // IMP-25-13: флаг ошибки — сценарист может завести условие на извинение
+            // ({{order_error}} == 'true'); тексты клиенту не менялись
+            state.vars['order_error'] = 'true';
           }
         }
         // IMP-23-BE-04: параллельная ветка «Зарегистрировать жалобу» —
@@ -821,14 +866,15 @@ export async function runEngine(
                 // жалоба сохраняется без координат
               }
             }
-            // Контакт — из диалога (webhook пишет contact при наличии)
+            // Контакт — из диалога (webhook пишет contact при наличии) или имя,
+            // сохранённое из nameVar (IMP-25-13)
             const complaint = await createScenarioComplaint({
               botId: ctx.botId,
               conversationId: ctx.conversationId,
               type,
               description,
               happenedAt: parseComplaintWhen(pick(cc.whenVar)),
-              contact: conversation?.contact ?? null,
+              contact: effectiveContact || null,
               // IMP-24-BE-04: гео-контекст жалобы
               address: address || null,
               lat,
@@ -837,6 +883,7 @@ export async function runEngine(
             state.vars['complaint.number'] = String(complaint.number);
             state.vars['complaint.id'] = complaint.id;
             state.vars['complaint.type'] = complaint.type;
+            state.vars['complaint_error'] = 'false'; // IMP-25-13: успех — флаг сброшен
             console.log(`[flow-engine] жалоба №${complaint.number} создана (${complaint.type})`);
           } catch (err) {
             // Ошибка создания жалобы не должна ломать сценарий — сообщение уходит как обычно
@@ -844,6 +891,8 @@ export async function runEngine(
             // IMP-23-REV-3 (reviewer MINOR-3): fallback как у createOrder — иначе
             // {{complaint.number}} в тексте узла интерполируется в пустую строку
             state.vars['complaint.number'] = '—';
+            // IMP-25-13: флаг ошибки — сценарист может завести условие на извинение
+            state.vars['complaint_error'] = 'true';
           }
         }
         const text = interpolate(node.data.text, state.vars, lastInput || undefined);

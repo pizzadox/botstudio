@@ -45,6 +45,8 @@ import {
 } from 'lucide-react';
 import { api, getAuthToken } from '@/lib/client-api';
 import { cityButtons, composeAddress, SERVICE_CITIES } from '@/lib/cities';
+import { FINAL_ORDER_STATUSES } from '@/lib/order-status'; // IMP-25-20: финальные статусы — гвард bulk
+import { parseWishDate } from '@/lib/wish-date'; // IMP-25-22: превью распознавания желаемой даты
 import type {
   AreaItem,
   AreaMatchCandidate,
@@ -129,6 +131,12 @@ function markerElClassName(o: OrderDto, selected: boolean): string {
 /** IMP-23-MAP-02: свойства точки в индексе supercluster */
 type OrderPointProps = { orderId: string; number: number; typeKey: string };
 
+/** IMP-25-18: свойства точки КП в supercluster-индексе (второй индекс — для КП-слоя) */
+type KpPointProps = { lkCode: string };
+
+/** IMP-25-18: проекция свойств фичи КП (union кластер|точка) */
+type KpFeatureProps = ClusterishProps & { lkCode?: string };
+
 /** IMP-23-MAP-02: проекция свойств фичи из getClusters (union кластер|точка) —
  * namespace-типы supercluster через default-import недоступны, поэтому локальные */
 type ClusterishProps = {
@@ -155,6 +163,26 @@ const KP_EL_CLASS = cn(
 );
 const KP_DIAMOND_CLASS =
   'block h-3.5 w-3.5 rotate-45 rounded-[4px] border-2 border-white bg-teal-600 shadow-md transition-[filter] group-hover:brightness-110';
+
+/** IMP-25-18: кластер КП — teal-ромб с числом точек; размер растёт с количеством */
+function kpClusterElClass(count: number): string {
+  const size = count >= 100 ? 'h-9 w-9' : count >= 10 ? 'h-8 w-8' : 'h-7 w-7';
+  return cn(
+    'kp-cluster group relative flex cursor-pointer items-center justify-center',
+    size,
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+  );
+}
+const KP_CLUSTER_DIAMOND_CLASS =
+  'pointer-events-none absolute inset-[3px] rotate-45 rounded-[5px] border-2 border-white bg-teal-600 shadow-md transition-[filter] group-hover:brightness-110';
+const KP_CLUSTER_COUNT_CLASS =
+  'relative text-[11px] font-bold leading-none text-white tabular-nums';
+
+/** IMP-25-19: подсветка КП, привязанной к выбранной заявке — зелёное кольцо на маркере */
+const KP_SELECTED_CLASS = 'rounded-full ring-2 ring-emerald-500 bg-emerald-500/15';
+
+/** IMP-25-18: zoom-gate КП-слоя — при зуме ниже порога слой не грузит bbox и не рисует */
+const KP_ZOOM_GATE = 11;
 
 /** «Обновлено N с назад» для чипа свежести данных */
 function fmtAgo(ts: number, now: number): string {
@@ -225,7 +253,17 @@ function formatDateRu(iso: string): string {
     month: '2-digit',
     year: 'numeric',
     weekday: 'short',
+    timeZone: 'Europe/Moscow', // IMP-25-22: чип «Забор» не уезжает на день у оператора не в MSK
   }).format(d);
+}
+
+/** IMP-25-22: pickupAt (полдень MSK в UTC) → YYYY-MM-DD московского календарного дня
+ *  для input type="date" (en-CA отдаёт ISO-подобный формат) */
+function pickupInputValue(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow' }).format(d);
 }
 
 /** IMP-24-FE1-05: расстояние в человекочитаемом виде (<1 км — метры) */
@@ -266,6 +304,7 @@ function OrdersMap({
   onHighlight,
   onFocusDone,
   onKpSelect,
+  selectedAreaLkCode, // IMP-25-19: КП выбранной заявки — зелёное кольцо на маркере
   botId,
 }: {
   orders: OrderDto[];
@@ -283,6 +322,8 @@ function OrdersMap({
   onFocusDone?: () => void;
   /** IMP-24-FE1-05: клик по маркеру КП реестра — открыть карточку КП */
   onKpSelect: (area: AreaItem) => void;
+  /** IMP-25-19: areaLkCode выбранной заявки — подсветка привязанной КП на карте */
+  selectedAreaLkCode: string | null;
   /** IMP-23-MAP-03: смена бота → первый автоподгон камеры выполняется заново (один раз) */
   botId?: string;
 }) {
@@ -313,11 +354,21 @@ function OrdersMap({
   // IMP-24-FE1-05: слой КП реестра MyTKO — СВОЙ набор DOM-маркеров (kpMarkersRef,
   // не пересекается с orders-refs: spiderfy/кластеры волны 23 КП не трогают).
   // Загрузка точек текущего вьюпорта (?bbox=), дифф-обновление по lkCode.
-  const [kpEnabled, setKpEnabled] = useState(false); // по умолчанию ВЫКЛ
+  const [kpEnabled, setKpEnabled] = useState(() => {
+    // IMP-25-19: тумблер слоя переживает перезагрузку (bstudio.orders.kpEnabled)
+    const v = typeof window === 'undefined' ? null : readStored('bstudio.orders.kpEnabled');
+    return v === '1';
+  });
   const [kpAreas, setKpAreas] = useState<AreaItem[]>([]);
   const [kpTotal, setKpTotal] = useState(0);
   const [kpLoading, setKpLoading] = useState(false);
+  const [kpError, setKpError] = useState(false); // IMP-25-19: сбой bbox-загрузки КП
+  const [kpSortOk, setKpSortOk] = useState(false); // IMP-25-18: бэк ответил на sort=dist
+  /** IMP-25-18: зум ниже порога — слой не грузится (чип «Приблизьте карту») */
+  const [kpGateBlocked, setKpGateBlocked] = useState(true);
   const kpMarkersRef = useRef<Map<string, MlMarker>>(new Map());
+  /** IMP-25-18: кластеры КП — ромбы с числом, отдельный слой (как orders-кластеры) */
+  const kpClusterMarkersRef = useRef<Map<string, MlMarker>>(new Map());
   const kpAbortRef = useRef<AbortController | null>(null);
   const kpDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** колбэк клика по КП — через ref, чтобы эффект маркеров не пересоздавался */
@@ -325,39 +376,75 @@ function OrdersMap({
   useEffect(() => {
     kpSelectRef.current = onKpSelect;
   }, [onKpSelect]);
+  /** IMP-25-19: КП выбранной заявки — ref для подсветки из колбэков рендера */
+  const selectedAreaLkRef = useRef<string | null>(selectedAreaLkCode);
+  // IMP-25-19: persist тумблера слоя КП
+  useEffect(() => {
+    writeStored('bstudio.orders.kpEnabled', kpEnabled ? '1' : '0');
+  }, [kpEnabled]);
 
-  /** Загрузка КП текущего вьюпорта: bbox = minLng,minLat,maxLng,maxLat (5 знаков) */
+  /** Загрузка КП текущего вьюпорта: bbox = minLng,minLat,maxLng,maxLat (5 знаков).
+   *  IMP-25-18: zoom-gate — ниже KP_ZOOM_GATE не запрашиваем и не рисуем;
+   *  IMP-25-18: sort=dist — «ближайшие к центру кадра» (бэк волны 25), при ошибке
+   *  ретрай без sort (чип честно переключается на «первые по коду в кадре»);
+   *  IMP-25-19: сбой сети — чип «Не удалось загрузить КП» + «Повторить». */
   const loadKpAreas = useCallback(async () => {
     const map = mapRef.current;
     if (!map) return;
+    if (map.getZoom() < KP_ZOOM_GATE) {
+      // zoom-gate: данные не запрашиваем, отрисовку и pending-загрузку гасим
+      kpAbortRef.current?.abort();
+      setKpGateBlocked(true);
+      setKpError(false);
+      setKpLoading(false);
+      setKpAreas((prev) => (prev.length ? [] : prev)); // kpTotal сохраняем — для честной подсказки «~N КП»
+      for (const m of kpMarkersRef.current.values()) m.remove();
+      kpMarkersRef.current.clear();
+      for (const m of kpClusterMarkersRef.current.values()) m.remove();
+      kpClusterMarkersRef.current.clear();
+      return;
+    }
+    setKpGateBlocked(false);
     kpAbortRef.current?.abort();
     const ac = new AbortController();
     kpAbortRef.current = ac;
     setKpLoading(true);
+    setKpError(false);
+    const b = map.getBounds();
+    const bbox = [
+      b.getWest().toFixed(5),
+      b.getSouth().toFixed(5),
+      b.getEast().toFixed(5),
+      b.getNorth().toFixed(5),
+    ].join(',');
+    const url = (sorted: boolean) =>
+      `/api/bots/${botId}/mytko/areas?bbox=${bbox}${sorted ? '&sort=dist' : ''}`;
     try {
-      const b = map.getBounds();
-      const bbox = [
-        b.getWest().toFixed(5),
-        b.getSouth().toFixed(5),
-        b.getEast().toFixed(5),
-        b.getNorth().toFixed(5),
-      ].join(',');
-      const d = await api<{ items: AreaItem[]; total: number }>(
-        `/api/bots/${botId}/mytko/areas?bbox=${bbox}`,
-        { signal: ac.signal }
-      );
+      let d: { items: AreaItem[]; total: number };
+      try {
+        d = await api<{ items: AreaItem[]; total: number }>(url(true), { signal: ac.signal });
+        setKpSortOk(true);
+      } catch (e) {
+        if (ac.signal.aborted) throw e; // отмена — не ошибка и не повод для ретрая
+        // бэк ещё не умеет sort=dist (или сбой) — повторяем по старому контракту
+        d = await api<{ items: AreaItem[]; total: number }>(url(false), { signal: ac.signal });
+        setKpSortOk(false);
+      }
       if (ac.signal.aborted) return;
       setKpAreas(d.items ?? []);
       setKpTotal(d.total ?? d.items?.length ?? 0);
     } catch {
-      /* отмена или сбой сети — слой КП не критичен */
+      if (ac.signal.aborted) return; // отмена — молча
+      setKpError(true); // IMP-25-19: не глотаем — чип с кнопкой «Повторить»
     } finally {
-      if (!ac.signal.aborted) setKpLoading(false);
+      // IMP-25-19: сброс kpLoading и при abort — «висящий» скелетон недопустим.
+      // Управляет только АКТУАЛЬНАЯ загрузка (ref уже мог указывать на новую).
+      if (kpAbortRef.current === ac) setKpLoading(false);
     }
   }, [botId]);
 
-  // Включение слоя — загрузка по текущему bbox; выключение — снять все КП-маркеры
-  // и отменить pending-загрузку (AbortController + debounce-таймер)
+  // Включение слоя — загрузка по текущему bbox (с zoom-gate); выключение — снять все
+  // КП-маркеры/кластеры и отменить pending-загрузку (AbortController + debounce)
   useEffect(() => {
     if (!ready) return;
     if (kpEnabled) {
@@ -367,25 +454,13 @@ function OrdersMap({
       if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
       for (const m of kpMarkersRef.current.values()) m.remove();
       kpMarkersRef.current.clear();
+      for (const m of kpClusterMarkersRef.current.values()) m.remove(); // IMP-25-18
+      kpClusterMarkersRef.current.clear();
       setKpAreas([]);
       setKpTotal(0);
       setKpLoading(false);
+      setKpError(false); // IMP-25-19
     }
-  }, [ready, kpEnabled, loadKpAreas]);
-
-  // Повторная загрузка на moveend — debounce 600мс (не чаще)
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !ready || !kpEnabled) return;
-    const onKpMoveEnd = () => {
-      if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
-      kpDebounceRef.current = setTimeout(() => void loadKpAreas(), 600);
-    };
-    map.on('moveend', onKpMoveEnd);
-    return () => {
-      map.off('moveend', onKpMoveEnd);
-      if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
-    };
   }, [ready, kpEnabled, loadKpAreas]);
 
   // IMP-24-REV-5: смена бота — точки чужого реестра не должны переживать переход
@@ -393,8 +468,11 @@ function OrdersMap({
     kpAbortRef.current?.abort();
     setKpAreas([]);
     setKpTotal(0);
+    setKpError(false); // IMP-25-19
     for (const m of kpMarkersRef.current.values()) m.remove();
     kpMarkersRef.current.clear();
+    for (const m of kpClusterMarkersRef.current.values()) m.remove(); // IMP-25-18
+    kpClusterMarkersRef.current.clear();
   }, [botId]);
 
   // IMP-24-REV-5: размонтирование карты — отменяем pending-загрузку и снимаем маркеры
@@ -404,46 +482,204 @@ function OrdersMap({
       if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
       for (const m of kpMarkersRef.current.values()) m.remove();
       kpMarkersRef.current.clear();
+      for (const m of kpClusterMarkersRef.current.values()) m.remove(); // IMP-25-18
+      kpClusterMarkersRef.current.clear();
     };
   }, []);
 
-  // ДИФФ-рендер КП-маркеров по lkCode: существующие не пересоздаём (точки
-  // реестра неподвижны), добавляем новые, снимаем исчезнувшие из bbox
+  // IMP-25-18: индекс supercluster по КП-точкам (второй индекс — паттерн заявок
+  // волны 23): близкие ромбы объединяются в кластеры, DOM-маркеры создаются только
+  // для видимых одиночных точек. Пересобирается при смене набора (bbox-загрузка).
+  const kpIndex = useMemo(() => {
+    const pts = kpAreas
+      .filter((a) => a.lat != null && a.lng != null)
+      .map((a) => ({
+        type: 'Feature' as const,
+        properties: { lkCode: a.lkCode },
+        geometry: { type: 'Point' as const, coordinates: [a.lng as number, a.lat as number] },
+      }));
+    if (pts.length === 0) return null;
+    return new Supercluster<KpPointProps>({ radius: 48, maxZoom: 16, minPoints: 3 }).load(pts);
+  }, [kpAreas]);
+
+  // Актуальный индекс для кликов по кластерам КП (переживает смену данных)
+  const kpIndexRef = useRef<Supercluster<KpPointProps> | null>(null);
   useEffect(() => {
+    kpIndexRef.current = kpIndex;
+  }, [kpIndex]);
+
+  /** IMP-25-18: кластерный рендер КП-слоя (обновление по moveend, как у заявок).
+   *  Одиночные КП — дифф по lkCode (создаём только недостающие), кластеры —
+   *  дифф по cluster_id с числом точек; ниже KP_ZOOM_GATE слой пуст (zoom-gate). */
+  const renderKpClusters = useCallback(() => {
     const map = mapRef.current;
     const ml = mlRef.current;
     if (!map || !ml || !ready || !kpEnabled) return;
-    const incoming = new Map<string, { area: AreaItem; lat: number; lng: number }>();
+
+    // zoom-gate: ниже порога ничего не рисуем (и не грузим — см. loadKpAreas)
+    if (map.getZoom() < KP_ZOOM_GATE) {
+      for (const m of kpMarkersRef.current.values()) m.remove();
+      kpMarkersRef.current.clear();
+      for (const m of kpClusterMarkersRef.current.values()) m.remove();
+      kpClusterMarkersRef.current.clear();
+      return;
+    }
+
+    const zoom = Math.round(map.getZoom());
+    const bbox = map.getBounds().toArray().flat() as [number, number, number, number];
+    const features = kpIndex ? kpIndex.getClusters(bbox, zoom) : [];
+
+    const nextIndividual = new Set<string>();
+    const nextClusterIds = new Set<string>();
+
+    for (const f of features) {
+      const p = f.properties as KpFeatureProps;
+      const [lng, lat] = f.geometry.coordinates as [number, number];
+      if (p.cluster) {
+        const cid = String(p.cluster_id);
+        const count = p.point_count ?? 0;
+        nextClusterIds.add(cid);
+        const existing = kpClusterMarkersRef.current.get(cid);
+        if (existing) {
+          existing.setLngLat([lng, lat]);
+          const el = existing.getElement();
+          if (el.dataset.count !== String(count)) {
+            el.dataset.count = String(count);
+            el.className = kpClusterElClass(count);
+            const num = el.querySelector('.kp-cluster-count');
+            if (num) num.textContent = String(count);
+            el.title = `${count} КП в кластере — клик раскроет точки`;
+            el.setAttribute('aria-label', `Кластер из ${count} КП`);
+          }
+        } else {
+          const el = document.createElement('button');
+          el.type = 'button';
+          el.dataset.count = String(count);
+          el.className = kpClusterElClass(count);
+          el.title = `${count} КП в кластере — клик раскроет точки`;
+          el.setAttribute('aria-label', `Кластер из ${count} КП`);
+          const diamond = document.createElement('span');
+          diamond.setAttribute('aria-hidden', 'true');
+          diamond.className = KP_CLUSTER_DIAMOND_CLASS;
+          const num = document.createElement('span');
+          num.className = `kp-cluster-count ${KP_CLUSTER_COUNT_CLASS}`;
+          num.textContent = String(count);
+          el.appendChild(diamond);
+          el.appendChild(num);
+          const marker = new ml.Marker({ element: el }).setLngLat([lng, lat]).addTo(map);
+          // клик читает индекс/позицию В МОМЕНТ клика (ref) — переживает смену данных
+          el.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const idx = kpIndexRef.current;
+            const m = mapRef.current;
+            if (!idx || !m) return;
+            const { lng: clng, lat: clat } = marker.getLngLat();
+            // раскрытие кластера — как у заявок: зум до точки раскрытия (минимум +1)
+            const expansion = idx.getClusterExpansionZoom(Number(cid));
+            const target = Math.min(Math.max(expansion, m.getZoom() + 1), 18);
+            m.easeTo({ center: [clng, clat], zoom: target, duration: 600 });
+          });
+          kpClusterMarkersRef.current.set(cid, marker);
+        }
+      } else if (p.lkCode) {
+        nextIndividual.add(p.lkCode);
+      }
+    }
+
+    // снять исчезнувшие кластеры (иначе призраки при смене зума/данных)
+    for (const [cid, m] of kpClusterMarkersRef.current) {
+      if (!nextClusterIds.has(cid)) {
+        m.remove();
+        kpClusterMarkersRef.current.delete(cid);
+      }
+    }
+
+    // одиночные КП — дифф по lkCode: снимаем исчезнувшие, создаём только недостающие
+    const byCode = new Map<string, AreaItem>();
     for (const a of kpAreas) {
-      if (a.lat != null && a.lng != null) incoming.set(a.lkCode, { area: a, lat: a.lat, lng: a.lng });
+      if (a.lat != null && a.lng != null) byCode.set(a.lkCode, a);
     }
     for (const [code, m] of kpMarkersRef.current) {
-      if (!incoming.has(code)) {
+      if (!nextIndividual.has(code)) {
         m.remove();
         kpMarkersRef.current.delete(code);
       }
     }
-    for (const [code, coords] of incoming) {
+    for (const code of nextIndividual) {
       if (kpMarkersRef.current.has(code)) continue; // уже на карте — не трогаем
+      const area = byCode.get(code);
+      if (!area || area.lat == null || area.lng == null) continue;
       const el = document.createElement('button');
       el.type = 'button';
-      el.className = KP_EL_CLASS;
+      const selected = code === selectedAreaLkRef.current; // IMP-25-19
+      el.dataset.kpSel = String(selected);
+      el.className = selected ? `${KP_EL_CLASS} ${KP_SELECTED_CLASS}` : KP_EL_CLASS;
       el.title = `КП ${code}`;
-      el.setAttribute('aria-label', `КП ${code}${coords.area.address ? ` — ${coords.area.address}` : ''}`);
+      el.setAttribute('aria-label', `КП ${code}${area.address ? ` — ${area.address}` : ''}`);
       const diamond = document.createElement('span');
       diamond.setAttribute('aria-hidden', 'true');
       diamond.className = KP_DIAMOND_CLASS;
       el.appendChild(diamond);
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        kpSelectRef.current(coords.area);
+        kpSelectRef.current(area);
       });
       const marker = new ml.Marker({ element: el })
-        .setLngLat([coords.lng, coords.lat])
+        .setLngLat([area.lng, area.lat])
         .addTo(map);
       kpMarkersRef.current.set(code, marker);
     }
-  }, [ready, kpEnabled, kpAreas]);
+  }, [ready, kpEnabled, kpIndex, kpAreas]);
+
+  // IMP-25-19: подсветка КП, привязанной к выбранной заявке — зелёное кольцо на
+  // существующем маркере (класс переключается без пересоздания)
+  useEffect(() => {
+    selectedAreaLkRef.current = selectedAreaLkCode;
+    for (const [code, m] of kpMarkersRef.current) {
+      const el = m.getElement();
+      const sel = code === selectedAreaLkCode;
+      if (el.dataset.kpSel === String(sel)) continue;
+      el.dataset.kpSel = String(sel);
+      el.className = sel ? `${KP_EL_CLASS} ${KP_SELECTED_CLASS}` : KP_EL_CLASS;
+    }
+  }, [selectedAreaLkCode]);
+
+  // IMP-25-19: «Перелететь к КП» из карточки КП — KpDialog — соседний компонент без
+  // доступа к карте, командуем через CustomEvent (паттерн bstudio:open-conversation)
+  useEffect(() => {
+    const onKpEase = (e: Event) => {
+      const map = mapRef.current;
+      const d = (e as CustomEvent<{ lng?: number; lat?: number; zoom?: number }>).detail;
+      if (!map || !d || !Number.isFinite(d.lng) || !Number.isFinite(d.lat)) return;
+      map.easeTo({
+        center: [d.lng as number, d.lat as number],
+        zoom: d.zoom ?? 16,
+        duration: 700,
+      });
+    };
+    window.addEventListener('bstudio:kp-ease', onKpEase);
+    return () => window.removeEventListener('bstudio:kp-ease', onKpEase);
+  }, []);
+
+  // IMP-25-18: на moveend — мгновенная перерисовка кластеров/zoom-gate + отложенная
+  // (600мс) догрузка bbox. renderKpClusters меняется вместе с данными, поэтому
+  // эффект переподписывается и сразу перерисовывает новый набор (как у заявок).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !ready || !kpEnabled) return;
+    const onKpMoveEnd = () => {
+      setKpGateBlocked(map.getZoom() < KP_ZOOM_GATE);
+      renderKpClusters();
+      if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
+      kpDebounceRef.current = setTimeout(() => void loadKpAreas(), 600);
+    };
+    renderKpClusters();
+    map.on('moveend', onKpMoveEnd);
+    return () => {
+      map.off('moveend', onKpMoveEnd);
+      if (kpDebounceRef.current) clearTimeout(kpDebounceRef.current);
+    };
+  }, [ready, kpEnabled, loadKpAreas, renderKpClusters]);
 
   // Инициализация карты (динамический импорт — компонент клиентский)
   useEffect(() => {
@@ -875,9 +1111,43 @@ function OrdersMap({
               {kpEnabled ? 'Скрыть КП' : 'Показать КП'}
             </button>
             {kpEnabled &&
-              (kpLoading ? (
+              (kpError ? (
+                /* IMP-25-19: ошибка bbox-загрузки КП — не глотаем, даём «Повторить» */
+                <div
+                  role="alert"
+                  className="flex items-center gap-1.5 rounded-lg border border-destructive/40 bg-background/95 px-2 py-1.5 text-xs shadow-sm backdrop-blur"
+                >
+                  <WifiOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-hidden />
+                  <span className="shrink-0">Не удалось загрузить КП</span>
+                  <button
+                    type="button"
+                    onClick={() => void loadKpAreas()}
+                    aria-label="Повторить загрузку КП"
+                    className="min-h-11 rounded px-2 font-semibold text-destructive underline underline-offset-2 transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
+                  >
+                    Повторить
+                  </button>
+                </div>
+              ) : kpLoading ? (
                 <div role="status" aria-label="Загрузка КП">
                   <Skeleton className="h-11 w-[72px] rounded-lg sm:h-8" />
+                </div>
+              ) : kpGateBlocked ? (
+                /* IMP-25-18: zoom-gate — слой не грузится до порога */
+                <div
+                  role="status"
+                  title="КП появляются на карте при масштабе улиц"
+                  className="max-w-[210px] rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs leading-snug shadow-sm backdrop-blur"
+                >
+                  Приблизьте карту
+                  {kpTotal > 0 ? (
+                    <>
+                      {' '}
+                      — здесь ~<b className="tabular-nums">{kpTotal}</b> КП
+                    </>
+                  ) : (
+                    ' — здесь КП реестра'
+                  )}
                 </div>
               ) : (
                 <div
@@ -885,12 +1155,19 @@ function OrdersMap({
                   aria-label={`КП в текущей области: ${kpTotal}`}
                   title={
                     kpTotal > kpAreas.length
-                      ? `Показаны ближайшие ${kpAreas.length} из ${kpTotal} — приблизьте карту`
+                      ? `Показаны ${kpAreas.length} из ${kpTotal} — ${kpSortOk ? 'ближайшие к центру кадра' : 'первые по коду в кадре'}`
                       : 'КП в текущей области карты'
                   }
-                  className="rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur"
+                  className="max-w-[230px] rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur"
                 >
                   КП: <b className="tabular-nums">{kpTotal}</b>
+                  {/* IMP-25-18: честная подпись, когда точки в кадре обрезаны */}
+                  {kpTotal > kpAreas.length && (
+                    <span className="block text-[10px] leading-tight text-muted-foreground">
+                      показаны {kpAreas.length} —{' '}
+                      {kpSortOk ? 'ближайшие к центру кадра' : 'первые по коду в кадре'}
+                    </span>
+                  )}
                 </div>
               ))}
           </div>
@@ -927,6 +1204,19 @@ function OrdersMap({
               className="inline-block h-2.5 w-2.5 rotate-45 rounded-[2px] border border-white bg-teal-600 shadow-sm"
             />
             КП (реестр)
+          </span>
+          <span
+            className="flex items-center gap-1.5"
+            title="Кластер КП — клик по нему раскрывает площадки"
+          >
+            {/* IMP-25-18: кластеры КП — ромб с числом */}
+            <span
+              aria-hidden
+              className="inline-flex h-3 w-3 rotate-45 items-center justify-center rounded-[3px] border border-white bg-teal-600 shadow-sm"
+            >
+              <span className="-rotate-45 text-[7px] font-bold leading-none text-white">N</span>
+            </span>
+            кластер КП
           </span>
         </div>
       </div>
@@ -1507,8 +1797,13 @@ function OrderDetailDialog({
       setOrder(d.order);
       onDataChanged();
       if (successMsg) toast({ title: successMsg });
-    } catch {
-      toast({ title: 'Ошибка сохранения', variant: 'destructive' });
+    } catch (e) {
+      // IMP-25-22: причина ошибки (валидация бэка/сеть) видна оператору
+      toast({
+        title: 'Ошибка сохранения',
+        description: e instanceof Error ? e.message : undefined,
+        variant: 'destructive',
+      });
     } finally {
       setSaving(false);
     }
@@ -1628,6 +1923,9 @@ function OrderDetailDialog({
   };
 
   const hasManualPoint = order?.geoSource === 'manual';
+
+  // IMP-25-22: желаемая дата не распознана парсером — превью-подсказка оператору
+  const wishUnmatched = wishDate.trim() !== '' && !parseWishDate(wishDate.trim()).matched;
 
   // IMP-24-FE1-02: активные экипажи первыми, затем неактивные (алфавит внутри групп)
   const { activeCrews, inactiveCrews } = useMemo(() => {
@@ -1916,6 +2214,35 @@ function OrderDetailDialog({
                       }}
                       disabled={saving}
                     />
+                    {/* IMP-25-22: превью распознавания свободного текста даты */}
+                    {wishUnmatched && (
+                      <div role="note" className="text-[11px] text-amber-600 dark:text-amber-400">
+                        Дата не распознана — уточните или выберите вручную
+                      </div>
+                    )}
+                    {/* IMP-25-22: точная дата забора — календарный инпут пишет pickupAt (YYYY-MM-DD) */}
+                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <Label
+                        htmlFor={`order-pickup-${order.id}`}
+                        className="shrink-0 text-[11px] font-medium text-muted-foreground"
+                      >
+                        Когда забрать
+                      </Label>
+                      <Input
+                        type="date"
+                        id={`order-pickup-${order.id}`}
+                        className="h-9 w-[150px]"
+                        value={pickupInputValue(order.pickupAt)}
+                        onChange={(e) =>
+                          patch(
+                            { pickupAt: e.target.value || null },
+                            e.target.value ? 'Дата забора обновлена' : 'Дата забора очищена'
+                          )
+                        }
+                        disabled={saving}
+                        aria-label="Дата забора машины (точная дата)"
+                      />
+                    </div>
                     {/* IMP-24-FE1-03: разобранная дата подачи машины (из wishDate) */}
                     {order.pickupAt && (
                       <div
@@ -2614,20 +2941,37 @@ function CrewsManagerDialog({
 // ─── Карточка КП реестра (IMP-24-FE1-05) ─────────────────────────────────────
 
 /** Клик по КП-маркеру на карте: адрес, координаты, OSM, расстояние до выбранной
- *  заявки (локальный haversine) и совмещение с заявкой одним PATCH. */
+ *  заявки (локальный haversine), перелёт к площадке и совмещение с заявкой.
+ *  IMP-25-19: состояние «Совмещена с этой заявкой» + «Отвязать»; замена существующей
+ *  привязки другой КП — через AlertDialog; «Перелететь к КП» — CustomEvent для карты. */
 function KpDialog({
   area,
   selectedOrder,
   onClose,
   onAttach,
+  onDetach,
 }: {
   area: AreaItem | null;
   /** заявка, выбранная на карте/в списке — кандидат на совмещение */
   selectedOrder: OrderDto | null;
   onClose: () => void;
   onAttach: (area: AreaItem, orderId: string) => Promise<void>;
+  /** IMP-25-19: отвязать выбранную заявку от её текущей КП */
+  onDetach: (order: OrderDto) => Promise<void>;
 }) {
   const [attaching, setAttaching] = useState(false);
+  const [detaching, setDetaching] = useState(false);
+  /** IMP-25-19: подтверждение замены уже привязанной КП другой */
+  const [confirmReplace, setConfirmReplace] = useState(false);
+
+  /** IMP-25-19: эта КП уже совмещена с выбранной заявкой */
+  const attached = !!(area && selectedOrder && selectedOrder.areaLkCode === area.lkCode);
+  /** IMP-25-19: у выбранной заявки есть ДРУГАЯ привязка — замена через confirm */
+  const hasOtherLink = !!(
+    area &&
+    selectedOrder?.areaLkCode &&
+    selectedOrder.areaLkCode !== area.lkCode
+  );
 
   const handleAttach = async () => {
     if (!area || !selectedOrder || attaching) return;
@@ -2637,6 +2981,24 @@ function KpDialog({
     } finally {
       setAttaching(false);
     }
+  };
+
+  const handleDetach = async () => {
+    if (!selectedOrder || detaching) return;
+    setDetaching(true);
+    try {
+      await onDetach(selectedOrder);
+    } finally {
+      setDetaching(false);
+    }
+  };
+
+  /** IMP-25-19: перелететь к КП (зум 16) — карта слушает CustomEvent bstudio:kp-ease */
+  const flyToArea = () => {
+    if (!area || area.lat == null || area.lng == null) return;
+    window.dispatchEvent(
+      new CustomEvent('bstudio:kp-ease', { detail: { lng: area.lng, lat: area.lat, zoom: 16 } })
+    );
   };
 
   // расстояние до выбранной заявки — локальный haversine (если есть обе точки)
@@ -2685,19 +3047,56 @@ function KpDialog({
                 <b className="tabular-nums text-foreground">≈ {fmtDistanceM(dist)}</b>
               </div>
             )}
-            {selectedOrder ? (
-              <Button
-                className="h-11 w-full sm:h-9"
-                disabled={attaching}
-                onClick={() => void handleAttach()}
-              >
-                {attaching ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                ) : (
-                  <Check className="h-4 w-4" aria-hidden />
-                )}
-                Совместить с заявкой №{selectedOrder.number}
+            {/* IMP-25-19: перелёт камеры к площадке (зум 16) */}
+            {area.lat != null && area.lng != null && (
+              <Button variant="outline" className="h-11 w-full sm:h-9" onClick={flyToArea}>
+                <Crosshair className="h-4 w-4" aria-hidden /> Перелететь к КП
               </Button>
+            )}
+            {selectedOrder ? (
+              attached ? (
+                /* IMP-25-19: КП уже совмещена с этой заявкой — статус + «Отвязать»
+                   вместо повторного «Совместить» */
+                <div className="space-y-2">
+                  <div
+                    role="status"
+                    className="flex items-center gap-1.5 rounded-lg border border-emerald-300/70 bg-emerald-50 px-2.5 py-2 text-xs font-medium text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"
+                  >
+                    <Check className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    Совмещена с этой заявкой (№{selectedOrder.number})
+                  </div>
+                  <Button
+                    variant="outline"
+                    className="h-11 w-full sm:h-9"
+                    disabled={detaching}
+                    onClick={() => void handleDetach()}
+                  >
+                    {detaching ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <MapPinned className="h-4 w-4" aria-hidden />
+                    )}
+                    Отвязать от заявки
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  className="h-11 w-full sm:h-9"
+                  disabled={attaching}
+                  onClick={() => {
+                    // IMP-25-19: замена существующей привязки другой КП — через confirm
+                    if (hasOtherLink) setConfirmReplace(true);
+                    else void handleAttach();
+                  }}
+                >
+                  {attaching ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                  ) : (
+                    <Check className="h-4 w-4" aria-hidden />
+                  )}
+                  Совместить с заявкой №{selectedOrder.number}
+                </Button>
+              )
             ) : (
               <div
                 role="status"
@@ -2709,6 +3108,36 @@ function KpDialog({
           </div>
         )}
       </DialogContent>
+      {/* IMP-25-19: у заявки уже есть привязка другой КП — замена требует подтверждения */}
+      <AlertDialog
+        open={confirmReplace}
+        onOpenChange={(o) => {
+          if (!o && !attaching) setConfirmReplace(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Заменить привязку КП?</AlertDialogTitle>
+            <AlertDialogDescription>
+              У заявки №{selectedOrder?.number ?? '—'} уже привязана КП{' '}
+              {selectedOrder?.areaLkCode ?? '—'}. Вместо неё будет привязана КП {area?.lkCode ?? '—'}.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={attaching}>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                setConfirmReplace(false);
+                void handleAttach();
+              }}
+            >
+              {attaching && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              Заменить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
@@ -2933,20 +3362,39 @@ const OrderRow = memo(
     order,
     onOpen,
     mytkoEnabled,
+    selected = false, // IMP-25-20
+    onToggleSelect, // IMP-25-20
   }: {
     order: OrderDto;
     onOpen: (id: string) => void;
     mytkoEnabled: boolean;
+    /** IMP-25-20: строка выбрана для массовых операций */
+    selected?: boolean;
+    /** IMP-25-20: переключить выбор строки */
+    onToggleSelect?: (id: string, checked: boolean) => void;
   }) {
     return (
-      <button
-        onClick={() => onOpen(order.id)}
-        aria-label={`Открыть заявку №${order.number} — ${order.address || order.clientName || 'без адреса'}`}
+      /* IMP-25-20: карточка-строка обёрнута в div — чекбокс массового выбора живёт
+         РЯДОМ с кнопкой строки (checkbox внутри button — невалидный HTML) */
+      <div
         className={cn(
-          'flex w-full flex-col gap-1.5 rounded-xl border bg-card p-3 text-left shadow-sm transition-[box-shadow,background-color] hover:bg-muted/60 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-          order.status === 'new' && 'border-amber-300/70 dark:border-amber-500/40'
+          'flex w-full items-center gap-1 rounded-xl border bg-card p-1.5 shadow-sm transition-[box-shadow,background-color] hover:bg-muted/60 hover:shadow-md',
+          order.status === 'new' && 'border-amber-300/70 dark:border-amber-500/40',
+          selected && 'border-primary/50 bg-primary/5'
         )}
       >
+        <label className="flex h-11 w-7 shrink-0 cursor-pointer items-center justify-center sm:h-9">
+          <Checkbox
+            checked={selected}
+            onCheckedChange={(v) => onToggleSelect?.(order.id, v === true)}
+            aria-label={`Выбрать заявку №${order.number} для массовых действий`}
+          />
+        </label>
+        <button
+          onClick={() => onOpen(order.id)}
+          aria-label={`Открыть заявку №${order.number} — ${order.address || order.clientName || 'без адреса'}`}
+          className="flex min-w-0 flex-1 flex-col gap-1.5 rounded-lg p-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        >
         <div className="flex w-full items-center gap-2">
           <span
             className={cn(
@@ -3006,12 +3454,15 @@ const OrderRow = memo(
           )}
           <span className="ml-auto tabular-nums">{fmtDate(order.createdAt)}</span>
         </div>
-      </button>
+        </button>
+      </div>
     );
   },
   (a, b) =>
     a.onOpen === b.onOpen &&
     a.mytkoEnabled === b.mytkoEnabled &&
+    a.selected === b.selected && // IMP-25-20
+    a.onToggleSelect === b.onToggleSelect && // IMP-25-20
     a.order.id === b.order.id &&
     a.order.number === b.order.number &&
     a.order.type === b.order.type &&
@@ -3088,12 +3539,30 @@ export default function OrdersView({
   const [crewsOpen, setCrewsOpen] = useState(false);
   // IMP-24-FE1-05: карточка КП (открывается кликом по КП-маркеру на карте)
   const [kpDialogArea, setKpDialogArea] = useState<AreaItem | null>(null);
+  // IMP-25-21: фильтр по экипажу ('all' | 'none' | crewId) + полное число заявок (total)
+  const [crewFilter, setCrewFilter] = useState<string>(
+    () => (typeof window === 'undefined' ? null : readStored('bstudio.orders.crewFilter')) ?? 'all'
+  );
+  const [ordersTotal, setOrdersTotal] = useState(0);
+  // IMP-25-20: массовые операции — выбор строк + параметры пачки
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkStatus, setBulkStatus] = useState('none'); // 'none' — статус не менять
+  const [bulkCrewId, setBulkCrewId] = useState('keep'); // 'keep' — не менять; '__clear' — без экипажа
+  const [bulkApplying, setBulkApplying] = useState(false);
+  /** IMP-25-20: пачка, ожидающая подтверждения (массовый финальный статус) */
+  const [bulkConfirm, setBulkConfirm] = useState<{ ids: string[]; status: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const d = await api<{ orders: OrderDto[]; mytkoEnabled?: boolean }>(`/api/bots/${bot.id}/orders`);
+      const d = await api<{
+        orders: OrderDto[];
+        mytkoEnabled?: boolean;
+        total?: number; // IMP-25-21: все заявки бота (список может быть обрезан take)
+      }>(`/api/bots/${bot.id}/orders`);
       setOrders(d.orders);
       setMytkoEnabled(!!d.mytkoEnabled);
+      // IMP-25-21: если бэк ещё не отдаёт total — считаем по списку (баннер скрыт)
+      setOrdersTotal(typeof d.total === 'number' ? d.total : d.orders.length);
       setLastSyncAt(Date.now());
       failStreakRef.current = 0;
       setConnLost(false);
@@ -3150,17 +3619,40 @@ export default function OrdersView({
   useEffect(() => {
     writeStored('bstudio.orders.search', search);
   }, [search]);
+  // IMP-25-21: фильтр экипажа переживает перезагрузку (bstudio.orders.crewFilter)
+  useEffect(() => {
+    writeStored('bstudio.orders.crewFilter', crewFilter);
+  }, [crewFilter]);
+  // IMP-25-20: смена вкладки сбрасывает массовый выбор (невидимые выбранные строки путают)
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [tab]);
+  // IMP-25-REV-7: смена поиска/фильтров тоже сбрасывает массовый выбор —
+  // иначе «Применить» бьёт по строкам, которых пользователь уже не видит
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [search, typeFilter, dateFilter, crewFilter]);
 
   // IMP-24-FE1-02: справочник экипажей — без поллинга; обновляем при открытии
   // карточки заявки и диалога управления (ошибки не критичны)
   const loadCrews = useCallback(async () => {
     try {
       const d = await api<{ items: CrewDto[] }>(`/api/bots/${bot.id}/crews`);
-      setCrews(d.items ?? []);
+      const items = d.items ?? [];
+      setCrews(items);
+      // IMP-25-21: удалённый экипаж в сохранённом фильтре не должен прятать все заявки
+      setCrewFilter((cur) =>
+        cur === 'all' || cur === 'none' || items.some((c) => c.id === cur) ? cur : 'all'
+      );
     } catch {
       /* справочник не критичен — карточка заявки работает и без него */
     }
   }, [bot.id]);
+
+  // IMP-25-21: справочник нужен и фильтру «Экипаж» — грузим при входе в раздел (без поллинга)
+  useEffect(() => {
+    void loadCrews();
+  }, [loadCrews]);
 
   const openOrder = useCallback(
     (id: string) => {
@@ -3228,8 +3720,13 @@ export default function OrdersView({
             : 'Адрес не удалось определить — точка сохранена',
         });
         load();
-      } catch {
-        toast({ title: 'Не удалось сохранить точку', variant: 'destructive' });
+      } catch (e) {
+        // IMP-25-22: причина ошибки — в тосте, не глотаем
+        toast({
+          title: 'Не удалось сохранить точку',
+          description: e instanceof Error ? e.message : undefined,
+          variant: 'destructive',
+        });
       }
     },
     [placementId, bot.id, load, toast]
@@ -3253,12 +3750,124 @@ export default function OrdersView({
         setOrders((prev) => prev.map((o) => (o.id === orderId ? d.order : o)));
         setKpDialogArea(null);
         toast({ title: `Заявка №${d.order.number} совмещена с КП ${area.lkCode}` });
-      } catch {
-        toast({ title: 'Не удалось совместить с КП', variant: 'destructive' });
+      } catch (e) {
+        // IMP-25-22: причина ошибки (валидация lk-кода/сеть) — в тосте
+        toast({
+          title: 'Не удалось совместить с КП',
+          description: e instanceof Error ? e.message : undefined,
+          variant: 'destructive',
+        });
       }
     },
     [bot.id, toast]
   );
+
+  /** IMP-25-19: отвязать заявку от текущей КП (кнопка «Отвязать» в KpDialog) */
+  const detachKpFromOrder = useCallback(
+    async (order: OrderDto) => {
+      try {
+        const d = await api<{ order: OrderDto }>(`/api/bots/${bot.id}/orders/${order.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ areaLkCode: null }),
+        });
+        setOrders((prev) => prev.map((o) => (o.id === d.order.id ? d.order : o)));
+        toast({ title: `Заявка №${d.order.number} отвязана от КП` });
+      } catch (e) {
+        toast({
+          title: 'Не удалось отвязать КП',
+          description: e instanceof Error ? e.message : undefined, // IMP-25-22
+          variant: 'destructive',
+        });
+      }
+    },
+    [bot.id, toast]
+  );
+
+  // ── IMP-25-20: массовые операции над выбранными заявками ────────────────────
+
+  const toggleSelectOrder = useCallback((id: string, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setBulkStatus('none');
+    setBulkCrewId('keep');
+  }, []);
+
+  const applyBulk = useCallback(
+    async (ids: string[], status: string, crewId: string) => {
+      if (ids.length === 0) return;
+      const body: Record<string, unknown> = { ids };
+      if (status !== 'none') body.status = status;
+      // контракт бэка волны 25: crewId — string|null (null = «Без экипажа»)
+      if (crewId === '__clear') body.crewId = null;
+      else if (crewId !== 'keep') body.crewId = crewId;
+      if (!('status' in body) && !('crewId' in body)) {
+        toast({ title: 'Выберите статус или экипаж для применения' });
+        return;
+      }
+      setBulkApplying(true);
+      try {
+        const d = await api<{ ok: boolean; updated: number; skipped: number; crewUpdated?: number }>(
+          `/api/bots/${bot.id}/orders/bulk`,
+          { method: 'POST', body: JSON.stringify(body) }
+        );
+        const updated = d.updated ?? 0;
+        const skipped = d.skipped ?? 0;
+        const crewUpdated = d.crewUpdated ?? 0; // IMP-25-REV-1: crew-only пачка по финальным статусам не меняет статусы, но экипаж применён
+        const parts = [
+          skipped > 0 ? `Пропущено: ${skipped}` : null,
+          crewUpdated > 0 ? `Экипаж назначен: ${crewUpdated}` : null,
+        ].filter(Boolean);
+        if (updated === 0 && skipped > 0 && crewUpdated === 0) {
+          toast({
+            title: 'Ни одна заявка не обновлена',
+            description: `Пропущено: ${skipped} — недопустимый переход статуса`,
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: crewUpdated > 0 && updated === 0 ? `Экипаж назначен заявок: ${crewUpdated}` : `Обновлено заявок: ${updated}`,
+            description: parts.length ? parts.join(' · ') : undefined,
+          });
+        }
+        await load();
+        clearSelection();
+      } catch (e) {
+        toast({
+          title: 'Массовое обновление не удалось',
+          description: e instanceof Error ? e.message : undefined, // IMP-25-22: причина
+          variant: 'destructive',
+        });
+      } finally {
+        setBulkApplying(false);
+      }
+    },
+    [bot.id, load, toast, clearSelection]
+  );
+
+  const handleBulkApply = useCallback(() => {
+    // IMP-25-REV-7: применяется только к реально загруженным заявкам;
+    // выделение сбрасывается при смене фильтров (эффект выше) — невидимых выбранных не остаётся
+    const ids = [...selectedIds].filter((id) => orders.some((o) => o.id === id));
+    if (ids.length === 0) return;
+    if (bulkStatus === 'none' && bulkCrewId === 'keep') {
+      toast({ title: 'Выберите статус или экипаж' });
+      return;
+    }
+    // IMP-25-20: массовое закрытие/архивирование — осознанное действие (гвард как в карточке)
+    if (bulkStatus !== 'none' && (FINAL_ORDER_STATUSES as readonly string[]).includes(bulkStatus)) {
+      setBulkConfirm({ ids, status: bulkStatus });
+      return;
+    }
+    void applyBulk(ids, bulkStatus, bulkCrewId);
+  }, [selectedIds, orders, bulkStatus, bulkCrewId, applyBulk, toast]);
 
   /** FE22-10: выгрузка CSV — с сервера приходит готовый файл (status/from/to);
    *  из клиентских фильтров отдаём диапазон даты создания (фильтр FE22-03) */
@@ -3271,6 +3880,10 @@ export default function OrdersView({
         sp.set('from', new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
       if (dateFilter === 'week')
         sp.set('from', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+      // IMP-25-REV-8: экспорт уважает активный фильтр типа и экипажа
+      if (typeFilter !== 'all') sp.set('type', typeFilter);
+      if (crewFilter === 'none') sp.set('crew', 'none');
+      else if (crewFilter !== 'all') sp.set('crewId', crewFilter);
       const token = getAuthToken();
       const headers: Record<string, string> = {};
       if (token) headers.Authorization = `Bearer ${token}`;
@@ -3293,6 +3906,15 @@ export default function OrdersView({
     }
   }, [bot.id, dateFilter, toast]);
 
+  // IMP-25-21: экипажи для фильтра/bulk-бара — активные первыми, по алфавиту
+  const crewsSorted = useMemo(
+    () =>
+      [...crews].sort((a, b) =>
+        a.active === b.active ? a.name.localeCompare(b.name, 'ru') : a.active ? -1 : 1
+      ),
+    [crews]
+  );
+
   // IMP-F12: все производные списки — один useMemo (раньше filtered() вызывался дважды за рендер)
   const { active, archive, newCount, withoutGeo, mapOrders, listOrders } = useMemo(() => {
     const active = orders.filter((o) => ACTIVE_STATUSES.includes(o.status));
@@ -3308,13 +3930,19 @@ export default function OrdersView({
             : Date.now() - 7 * 24 * 60 * 60 * 1000;
         r = r.filter((o) => new Date(o.createdAt).getTime() >= from);
       }
+      // IMP-25-21: фильтр по экипажу (all / none / конкретный crew)
+      if (crewFilter === 'none') r = r.filter((o) => o.crewId == null);
+      else if (crewFilter !== 'all') r = r.filter((o) => o.crewId === crewFilter);
       if (q) {
         r = r.filter(
           (o) =>
             String(o.number).includes(q) ||
             (o.address ?? '').toLowerCase().includes(q) ||
             (o.clientName ?? '').toLowerCase().includes(q) ||
-            (o.phone ?? '').toLowerCase().includes(q)
+            (o.phone ?? '').toLowerCase().includes(q) ||
+            (o.crew?.name ?? '').toLowerCase().includes(q) || // IMP-25-21
+            (o.areaLkCode ?? '').toLowerCase().includes(q) || // IMP-25-21
+            (o.areaAddress ?? '').toLowerCase().includes(q) // IMP-25-21
         );
       }
       return r;
@@ -3327,7 +3955,7 @@ export default function OrdersView({
       mapOrders: applyFilters(orders),
       listOrders: tab === 'active' ? applyFilters(active) : applyFilters(archive),
     };
-  }, [orders, typeFilter, dateFilter, search, tab]);
+  }, [orders, typeFilter, dateFilter, search, crewFilter, tab]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -3404,6 +4032,22 @@ export default function OrdersView({
             <SelectItem value="kgm">📦 КГМ</SelectItem>
           </SelectContent>
         </Select>
+        {/* IMP-25-21: фильтр по экипажу */}
+        <Select value={crewFilter} onValueChange={setCrewFilter}>
+          <SelectTrigger className="h-9 w-[140px] sm:w-[160px]" aria-label="Фильтр по экипажу">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Все экипажи</SelectItem>
+            <SelectItem value="none">Без экипажа</SelectItem>
+            {crewsSorted.map((c) => (
+              <SelectItem key={c.id} value={c.id}>
+                {c.name}
+                {!c.active && ' (неактивен)'}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {/* FE22-03: фильтр по дате создания (клиентский, persist bstudio.orders.dateFilter) */}
         <div className="flex items-center gap-1" role="group" aria-label="Фильтр по дате создания">
           {(
@@ -3465,8 +4109,8 @@ export default function OrdersView({
           <Input
             className="h-9 pl-8"
             type="search"
-            aria-label="Поиск заявок по номеру, адресу, клиенту или телефону"
-            placeholder="№, адрес, клиент, телефон…"
+            aria-label="Поиск заявок по номеру, адресу, клиенту, телефону, экипажу или КП" // IMP-25-21
+            placeholder="№, адрес, клиент, экипаж, КП…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -3492,6 +4136,7 @@ export default function OrdersView({
                 onPlace={placeOnMap}
                 onHighlight={setSelectedId}
                 onKpSelect={openKpDialog}
+                selectedAreaLkCode={selectedOrder?.areaLkCode ?? null} // IMP-25-19
               />
             </div>
             {withoutGeo.length > 0 && (
@@ -3519,6 +4164,67 @@ export default function OrdersView({
 
         {tab !== 'map' && (
           <div className="h-full overflow-y-auto pr-1">
+            {/* IMP-25-21: бэк волны 25 отдаёт total — если заявок больше, чем в списке, честно скажем */}
+            {ordersTotal > orders.length && (
+              <p role="note" className="px-1 pb-1.5 text-xs tabular-nums text-muted-foreground">
+                Показаны {orders.length} из {ordersTotal} заявок (в списках отображаются последние)
+              </p>
+            )}
+            {/* IMP-25-20: bulk-бар массовых операций */}
+            {selectedIds.size > 0 && (
+              <div
+                role="toolbar"
+                aria-label="Массовые операции над выбранными заявками"
+                className="mb-2 flex flex-wrap items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-2.5 py-2"
+              >
+                <span className="text-xs font-medium tabular-nums">Выбрано: {selectedIds.size}</span>
+                <Select value={bulkStatus} onValueChange={setBulkStatus}>
+                  <SelectTrigger className="h-9 w-[150px]" aria-label="Статус для выбранных заявок">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Статус: не менять</SelectItem>
+                    {Object.entries(ORDER_STATUS_LABELS).map(([k, v]) => (
+                      <SelectItem key={k} value={k}>
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select value={bulkCrewId} onValueChange={setBulkCrewId}>
+                  <SelectTrigger className="h-9 w-[170px]" aria-label="Экипаж для выбранных заявок">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="keep">Экипаж: не менять</SelectItem>
+                    <SelectItem value="__clear">Без экипажа</SelectItem>
+                    {crewsSorted.map((c) => (
+                      <SelectItem key={c.id} value={c.id} disabled={!c.active}>
+                        {c.name}
+                        {!c.active && ' (неактивен)'}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button size="sm" className="h-9" onClick={handleBulkApply} disabled={bulkApplying}>
+                  {bulkApplying ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                  ) : (
+                    <Check className="h-4 w-4" aria-hidden />
+                  )}
+                  Применить
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-9"
+                  onClick={clearSelection}
+                  disabled={bulkApplying}
+                >
+                  Снять выделение
+                </Button>
+              </div>
+            )}
             {loading ? (
               <div className="grid grid-cols-1 gap-2 p-1 lg:grid-cols-2" role="status" aria-label="Загрузка заявок">
                 {Array.from({ length: 6 }).map((_, i) => (
@@ -3547,7 +4253,14 @@ export default function OrdersView({
             ) : (
               <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
                 {listOrders.map((o) => (
-                  <OrderRow key={o.id} order={o} onOpen={openOrder} mytkoEnabled={mytkoEnabled} />
+                  <OrderRow
+                    key={o.id}
+                    order={o}
+                    onOpen={openOrder}
+                    mytkoEnabled={mytkoEnabled}
+                    selected={selectedIds.has(o.id)} // IMP-25-20
+                    onToggleSelect={toggleSelectOrder} // IMP-25-20
+                  />
                 ))}
               </div>
             )}
@@ -3588,6 +4301,7 @@ export default function OrdersView({
         selectedOrder={selectedOrder}
         onClose={() => setKpDialogArea(null)}
         onAttach={attachKpToOrder}
+        onDetach={detachKpFromOrder}
       />
       <NewOrderDialog
         botId={bot.id}
@@ -3598,6 +4312,44 @@ export default function OrdersView({
           openOrder(orderId); // FE22-10: сразу открываем созданную заявку
         }}
       />
+      {/* IMP-25-20: гвард массового перевода в финальный статус (закрытие/архив) */}
+      <AlertDialog
+        open={!!bulkConfirm}
+        onOpenChange={(o) => {
+          if (!o && !bulkApplying) setBulkConfirm(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Массовое изменение статуса на «{ORDER_STATUS_LABELS[bulkConfirm?.status ?? ''] ?? ''}»?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Заявок в пачке: {bulkConfirm?.ids.length ?? 0}. Заявки с недопустимым переходом
+              (например, уже закрытые) будут пропущены — итог покажем в уведомлении.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkApplying}>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              className={cn(
+                bulkConfirm?.status === 'cancelled' &&
+                  'bg-destructive text-white shadow-xs hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60'
+              )}
+              disabled={bulkApplying}
+              onClick={(e) => {
+                e.preventDefault(); // диалог закрываем сразу — busy виден в bulk-баре
+                const c = bulkConfirm;
+                setBulkConfirm(null);
+                if (c) void applyBulk(c.ids, c.status, bulkCrewId);
+              }}
+            >
+              {bulkApplying && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              Применить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

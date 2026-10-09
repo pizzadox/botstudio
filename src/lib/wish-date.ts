@@ -1,6 +1,6 @@
 // IMP-24-BE-01: разбор желаемой даты подачи машины из свободного текста сценария
 // («завтра до 12:00», «послезавтра», «через 3 дня», «в пятницу», «23.10», «23.10.2026»,
-// «5 января после 15» …).
+// «5 января после 15», «3 октября 2026», «через неделю/месяц» …).
 //
 // Календарный день считается в таймзоне Europe/Moscow (сервис обслуживает
 // Новгородскую область): «сегодня» вычисляется через Intl.DateTimeFormat('en-CA')
@@ -56,6 +56,13 @@ const RE_AFTER_TOMORROW = new RegExp(L + '(послезавтра|после\\s+
 const RE_TOMORROW = new RegExp(L + 'завтра' + R, 'iu');
 const RE_TODAY = new RegExp(L + 'сегодня' + R, 'iu');
 const RE_IN_N_DAYS = new RegExp(L + 'через\\s+(\\d{1,3})\\s*(?:дн\\.?|день|дня|дней)' + R, 'iu');
+// IMP-25-02: обороты «через сутки/неделю/месяц» и «через N недель/месяцев»
+const RE_IN_UNITS = new RegExp(
+  L +
+    'через\\s+(?:(\\d{1,3})\\s*)?(сутки|суток|неделю|недели|недель|месяц|месяца|месяцев|месяцем)' +
+    R,
+  'iu'
+);
 const RE_WEEKDAY = new RegExp(
   L +
     '(?:в|во)?\\s*(понедельник(?:а|у)?|вторник(?:а|у)?|сред(?:а|у|е)|четверг(?:а|у)?|пятниц(?:а|у|е)|суббот(?:а|у|е)|воскресень(?:е|я|ю))' +
@@ -67,10 +74,12 @@ const RE_DMY = /(?:^|[^\p{L}\p{N}])(\d{1,2})\.(\d{1,2})\.(\d{4})(?!\d)/iu;
 // «23.10» (без года; «23.10.» с точкой-знаком конца предложения тоже ок,
 // но НЕ хвост «23.10.2026» — его забирает RE_DMY выше)
 const RE_DM = /(?:^|[^\p{L}\p{N}.])(\d{1,2})\.(\d{1,2})(?!\.?\d)/iu;
-// «23 октября», «5 января», «1 мая» …
+// «23 октября», «5 января», «1 мая» … (+ IMP-25-02: опциональный ЯВНЫЙ год — «3 октября 2026»;
+// без группы года явный год выбрасывался и срабатывало «прошлое → +1 год»)
 const RE_DD_MONTH = new RegExp(
   L +
     '(\\d{1,2})\\s*(январ(?:ь|я|е)|феврал(?:ь|я|е)|март(?:а|у|е)|апрел(?:ь|я|е)|ма(?:й|я|е)|июн(?:ь|я|е)|июл(?:ь|я|е)|август(?:а|у|е)|сентябр(?:ь|я|е)|октябр(?:ь|я|е)|ноябр(?:ь|я|е)|декабр(?:ь|я|е))' +
+    '(?:\\s+(\\d{4}))?' +
     R,
   'iu'
 );
@@ -110,9 +119,27 @@ function addDaysYMD(base: YMD, n: number): YMD {
   return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() };
 }
 
+/** IMP-25-02: +N календарных месяцев (день зажимается к последнему дню месяца) */
+function addMonthsYMD(base: YMD, n: number): YMD {
+  const total = base.y * 12 + (base.m - 1) + n;
+  const y = Math.floor(total / 12);
+  const m = (total % 12) + 1;
+  return { y, m, d: Math.min(base.d, daysInMonth(y, m)) };
+}
+
 /** Полдень московского дня в UTC (09:00 UTC = 12:00 MSK) */
 function ymdDate(t: YMD): Date {
   return new Date(Date.UTC(t.y, t.m - 1, t.d, 9, 0, 0));
+}
+
+/**
+ * IMP-25-06: дефолт-время «дата без времени» — полдень московского дня в UTC
+ * (09:00 UTC = 12:00 MSK), та же логика, что внутри parseWishDate (ymdDate).
+ * null — дата невозможна (например 31 февраля); вызывающий код решает, как отдать ошибку.
+ */
+export function moscowNoonUTC(y: number, m: number, d: number): Date | null {
+  if (!validYMD(y, m, d)) return null;
+  return ymdDate({ y, m, d });
 }
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -189,6 +216,21 @@ export function parseWishDate(raw: string, now: Date = new Date()): ParsedWishDa
       const n = parseInt(m[1] ?? '', 10);
       // разумный потолок — 10 лет; «через 99999 дней» датой не считается
       if (Number.isFinite(n) && n >= 0 && n <= 3650) target = rel(n);
+    } else {
+      // IMP-25-02: «через сутки/неделю/месяц», «через N недель/месяцев»
+      const u = RE_IN_UNITS.exec(lower);
+      if (u) {
+        const n = u[1] ? parseInt(u[1], 10) : 1;
+        const unit = u[2] ?? '';
+        const ok = Number.isFinite(n) && n >= 0;
+        if (ok && unit.startsWith('сутк') && n <= 3650) {
+          target = rel(n); // «через сутки» = завтра (сутки = 1 день)
+        } else if (ok && unit.startsWith('недел') && n <= 3650) {
+          target = rel(n * 7);
+        } else if (ok && unit.startsWith('месяц') && n <= 120) {
+          target = addMonthsYMD(today, n); // календарный месяц, не 30 дней
+        }
+      }
     }
   }
   if (!target) {
@@ -215,7 +257,9 @@ export function parseWishDate(raw: string, now: Date = new Date()): ParsedWishDa
       const mo = parseInt(m[2] ?? '', 10);
       // без года: прошлое число этого года → ближайший следующий год
       const year = todaySerial > today.y * 10000 + mo * 100 + d ? today.y + 1 : today.y;
+      // IMP-25-REV-3: «29 февраля» без года в невисокосный год — пробуем следующий год
       if (validYMD(year, mo, d)) target = { y: year, m: mo, d };
+      else if (validYMD(year + 1, mo, d)) target = { y: year + 1, m: mo, d };
     }
   }
   if (!target) {
@@ -223,9 +267,21 @@ export function parseWishDate(raw: string, now: Date = new Date()): ParsedWishDa
     if (m) {
       const d = parseInt(m[1] ?? '', 10);
       const mo = monthFromWord(m[2] ?? '');
-      if (mo != null && validYMD(today.y, mo, d)) {
-        const year = todaySerial > today.y * 10000 + mo * 100 + d ? today.y + 1 : today.y;
+      // IMP-25-02: явный год («3 октября 2026») — используем ЕГО, а не правило
+      // «прошедшая дата без года → +1 год». Прежняя проверка validYMD(today.y, …)
+      // до выбора года отбрасывала и валидные високосные дни чужого года
+      // («29 февраля 2028» не распознавалась вовсе).
+      if (mo != null) {
+        const year =
+          m[3] != null && m[3] !== ''
+            ? parseInt(m[3], 10)
+            : todaySerial > today.y * 10000 + mo * 100 + d
+              ? today.y + 1
+              : today.y;
         if (validYMD(year, mo, d)) target = { y: year, m: mo, d };
+        // IMP-25-REV-3: «29 февраля» (без года) в невисокосный год → ближайший високосный
+        else if ((m[3] == null || m[3] === '') && validYMD(year + 1, mo, d))
+          target = { y: year + 1, m: mo, d };
       }
     }
   }

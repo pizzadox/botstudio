@@ -9,12 +9,65 @@
 // текстовое совпадение слегка дисконтируется. Реестр берётся из кэша
 // getAreasCached (TTL 5 мин) — ~11k записей, перебор в памяти.
 
-import { getAreasCached, normText } from '@/lib/mytko';
+import { getAreasCached, normText, type MytkoArea } from '@/lib/mytko';
 import type { AreaMatchCandidate } from '@/lib/studio-types';
 
 const DEFAULT_RADIUS_M = 250;
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 20;
+
+// ─── IMP-25-10 (REV-4): кэш предвычисленных токенов адресов КП ────────────────
+// Токенизация ~11k адресов заново на каждый запрос — дороже самого перебора.
+// Кэш ленивый и привязан К ССЫЛКЕ на массив кэша getAreasCached (WeakMap):
+//  - на cache-hit getAreasCached возвращает тот же массив → данные считаются
+//    один раз на TTL кэша (5 минут);
+//  - invalidateAreaCodesCache() (mytko.ts) выбрасывает запись кэша — при
+//    следующем чтении строится НОВЫЙ массив, старая запись WeakMap становится
+//    недостижимой и собирается GC, т.е. токены сбрасываются ВМЕСТЕ с кэшем.
+// Циклический импорт mytko ↔ area-match исключён: токенизация живёт здесь.
+
+/** Предвычисленные данные адреса КП: lowercase для поиска реестра и
+ *  множество значимых токенов для адресного совпадения. */
+export interface AreaIndexEntry {
+  lower: string;
+  tokens: Set<string>;
+}
+
+type AreaIndex = Map<string, AreaIndexEntry>;
+
+const areaIndexCache = new WeakMap<MytkoArea[], AreaIndex>();
+
+/** Индекс (lazy-хранилище) для массива КП из кэша */
+function areaIndexFor(areas: MytkoArea[]): AreaIndex {
+  let idx = areaIndexCache.get(areas);
+  if (!idx) {
+    idx = new Map();
+    areaIndexCache.set(areas, idx);
+  }
+  return idx;
+}
+
+/** Запись индекса для КП (создаётся лениво при первом обращении) */
+function indexEntry(idx: AreaIndex, a: MytkoArea): AreaIndexEntry {
+  let e = idx.get(a.lkCode);
+  if (!e) {
+    e = { lower: (a.address ?? '').toLowerCase(), tokens: new Set(addressTokens(a.address)) };
+    idx.set(a.lkCode, e);
+  }
+  return e;
+}
+
+/**
+ * Реестр КП из кэша + индекс предвычисленных токенов/lowercase.
+ * IMP-25-10: единая точка для matchAreasFor и реестра areas — чтобы
+ * ни один из них не токенизировал 11k адресов на каждый запрос.
+ */
+export async function getAreasIndexed(
+  botId: string
+): Promise<{ areas: MytkoArea[]; index: AreaIndex }> {
+  const areas = await getAreasCached(botId);
+  return { areas, index: areaIndexFor(areas) };
+}
 
 /**
  * Расстояние между точками по формуле гаверсинуса, метры.
@@ -67,7 +120,7 @@ export async function matchAreasFor(
   const reqTokens = addressTokens(point.address);
   const reqNorm = normText(point.address ?? '');
 
-  const areas = await getAreasCached(botId);
+  const { areas, index } = await getAreasIndexed(botId); // IMP-25-10: токены из кэша
   const candidates: AreaMatchCandidate[] = [];
 
   for (const a of areas) {
@@ -86,7 +139,9 @@ export async function matchAreasFor(
     let addrScore = 0;
     let byAddress = false;
     if (reqTokens.length) {
-      const areaSet = new Set(addressTokens(a.address));
+      // IMP-25-10 (REV-4): токены КП предвычислены в кэше — без
+      // new Set(addressTokens(...)) на каждой итерации
+      const areaSet = indexEntry(index, a).tokens;
       let inter = 0;
       for (const t of reqTokens) if (areaSet.has(t)) inter += 1;
       addrScore = inter / reqTokens.length;

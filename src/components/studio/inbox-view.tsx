@@ -23,6 +23,7 @@ import {
   Inbox,
   Loader2,
   MessageCircle,
+  MessageCircleWarning,
   MessagesSquare,
   MessageSquare,
   MoreHorizontal,
@@ -40,6 +41,10 @@ import type { LucideIcon } from 'lucide-react';
 import { api } from '@/lib/client-api';
 import type { ChatMessage, ConversationListItem } from '@/lib/studio-types';
 import {
+  // IMP-25-27: чипы типов/статусов в списке жалоб клиента
+  COMPLAINT_STATUS_BADGES,
+  COMPLAINT_STATUS_LABELS,
+  COMPLAINT_TYPE_LABELS,
   ORDER_STATUS_BADGES,
   ORDER_STATUS_LABELS,
   ORDER_TYPE_LABELS,
@@ -348,6 +353,10 @@ interface ConversationRowMenuProps {
   onCopyContact: (contact: string | null) => void;
   onCopyTranscript: (convId: string, contact: string | null) => void;
   onCloseRequest: (convId: string, contact: string | null) => void;
+  /** IMP-25-27: создать жалобу из диалога */
+  onCreateComplaint: (convId: string, contact: string | null) => void;
+  /** IMP-25-27: жалоба уже создаётся — пункт меню заблокирован */
+  complaintBusy: boolean;
 }
 
 const ConversationRowMenu = memo(function ConversationRowMenu({
@@ -359,6 +368,8 @@ const ConversationRowMenu = memo(function ConversationRowMenu({
   onCopyContact,
   onCopyTranscript,
   onCloseRequest,
+  onCreateComplaint,
+  complaintBusy,
 }: ConversationRowMenuProps) {
   return (
     <DropdownMenu>
@@ -382,6 +393,10 @@ const ConversationRowMenu = memo(function ConversationRowMenu({
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onCopyTranscript(convId, contact)}>
           <ClipboardCopy className="h-4 w-4" /> Скопировать переписку
+        </DropdownMenuItem>
+        {/* IMP-25-27: жалоба из диалога — минимум в один клик из списка */}
+        <DropdownMenuItem disabled={complaintBusy} onSelect={() => onCreateComplaint(convId, contact)}>
+          <MessageCircleWarning className="h-4 w-4" /> Создать жалобу
         </DropdownMenuItem>
         {status === 'open' && (
           <>
@@ -508,7 +523,16 @@ interface ConvOrder {
   createdAt: string;
 }
 
-/** Панель заявок клиента: просмотр и быстрое изменение статуса/исполнителя */
+/** IMP-25-27: жалоба клиента — компактная строка в панели диалога */
+interface ConvComplaint {
+  id: string;
+  number: number;
+  type: string;
+  status: string;
+  createdAt: string;
+}
+
+/** Панель заявок и жалоб клиента: просмотр и быстрое изменение статуса/исполнителя */
 function ConversationOrdersPanel({
   conversationId,
   botId,
@@ -524,6 +548,12 @@ function ConversationOrdersPanel({
   const [mytkoEnabled, setMytkoEnabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
+  // IMP-25-27: жалобы клиента — независимый блок (рендерится и без заявок)
+  const [cmpOpen, setCmpOpen] = useState(false);
+  const [complaints, setComplaints] = useState<ConvComplaint[]>([]);
+  const [cmpLoaded, setCmpLoaded] = useState(false);
+  // IMP-25-27: «Исполнитель» — controlled (defaultValue не синхронился с поллингом)
+  const [assigneeDrafts, setAssigneeDrafts] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     try {
@@ -543,6 +573,24 @@ function ConversationOrdersPanel({
     load();
   }, [load, refreshTick]);
 
+  // IMP-25-27: жалобы клиента — контракт 25-BE2 (?conversationId на GET /complaints)
+  const loadComplaints = useCallback(async () => {
+    try {
+      const d = await api<{ items: ConvComplaint[] }>(
+        `/api/bots/${botId}/complaints?conversationId=${encodeURIComponent(conversationId)}&take=10`
+      );
+      setComplaints(d.items);
+    } catch {
+      /* ignore — компактный блок не должен ронять инбокс */
+    } finally {
+      setCmpLoaded(true);
+    }
+  }, [botId, conversationId]);
+
+  useEffect(() => {
+    loadComplaints();
+  }, [loadComplaints, refreshTick]);
+
   const patch = async (orderId: string, data: Record<string, unknown>) => {
     setSavingId(orderId);
     try {
@@ -555,6 +603,15 @@ function ConversationOrdersPanel({
           o.id === orderId ? { ...o, status: d.order.status, assignee: d.order.assignee } : o
         )
       );
+      // IMP-25-27: после успешного сохранения показываем серверное значение исполнителя
+      if (data.assignee !== undefined) {
+        setAssigneeDrafts((p) => {
+          if (!(orderId in p)) return p;
+          const next = { ...p };
+          delete next[orderId];
+          return next;
+        });
+      }
       toast({ title: 'Заявка обновлена' });
     } catch {
       toast({ title: 'Не удалось обновить заявку', variant: 'destructive' });
@@ -613,9 +670,13 @@ function ConversationOrdersPanel({
                   </Select>
                   <Input
                     className="h-7 w-[120px] flex-1 text-[11px] sm:w-[140px]"
-                    defaultValue={o.assignee ?? ''}
+                    // IMP-25-27: controlled — значение живёт в синхронизации с поллингом
+                    value={assigneeDrafts[o.id] ?? o.assignee ?? ''}
                     placeholder="Исполнитель…"
                     aria-label="Исполнитель"
+                    onChange={(e) =>
+                      setAssigneeDrafts((p) => ({ ...p, [o.id]: e.target.value }))
+                    }
                     onBlur={(e) => {
                       if (e.target.value !== (o.assignee ?? '')) patch(o.id, { assignee: e.target.value });
                     }}
@@ -635,6 +696,59 @@ function ConversationOrdersPanel({
           <div className="mt-2 space-y-1.5" role="status" aria-label="Загрузка заявок клиента">
             <Skeleton className="h-[52px] w-full rounded-lg" />
             <Skeleton className="h-[52px] w-full rounded-lg" />
+          </div>
+        )}
+      </div>
+
+      {/* IMP-25-27: жалобы клиента — рендерятся НЕЗАВИСИМО от наличия заявок */}
+      <button
+        className="mt-2 flex w-full items-center gap-1.5 rounded text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        onClick={() => setCmpOpen((v) => !v)}
+        aria-expanded={cmpOpen}
+        aria-controls="conversation-complaints-list"
+      >
+        {cmpOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        <MessageCircleWarning className="h-3.5 w-3.5" />
+        Жалобы клиента <span className="tabular-nums">({complaints.length})</span>
+      </button>
+      <div id="conversation-complaints-list">
+        {cmpOpen && cmpLoaded && complaints.length > 0 && (
+          <div className="mt-2 max-h-48 space-y-1.5 overflow-y-auto pr-1">
+            {complaints.map((c) => (
+              <div key={c.id} className="rounded-lg border p-2">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-xs font-semibold tabular-nums">№{c.number}</span>
+                  <Badge variant="outline" className="h-4 px-1 text-[9px]" title="Тип обращения">
+                    {COMPLAINT_TYPE_LABELS[c.type] ?? c.type}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className={cn('h-4 px-1 text-[9px]', COMPLAINT_STATUS_BADGES[c.status])}
+                  >
+                    {COMPLAINT_STATUS_LABELS[c.status] ?? c.status}
+                  </Badge>
+                  <span
+                    className="ml-auto text-[10px] text-muted-foreground tabular-nums"
+                    title={new Date(c.createdAt).toLocaleString('ru-RU')}
+                  >
+                    {new Date(c.createdAt).toLocaleString('ru-RU', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {cmpOpen && cmpLoaded && complaints.length === 0 && (
+          <p className="mt-1.5 text-[11px] text-muted-foreground">Жалоб от этого клиента нет.</p>
+        )}
+        {cmpOpen && !cmpLoaded && (
+          <div className="mt-2 space-y-1.5" role="status" aria-label="Загрузка жалоб клиента">
+            <Skeleton className="h-[36px] w-full rounded-lg" />
           </div>
         )}
       </div>
@@ -1067,6 +1181,46 @@ export default function InboxView({
 
   const selected = conversations.find((c) => c.id === selectedId) ?? null;
 
+  // IMP-25-27: жалоба из диалога — POST /complaints с привязкой к переписке.
+  // type обязателен (whitelist бэка), description обязателен (1–2000) — минимальная
+  // валидная заглушка, которую оператор уточнит в карточке жалобы; source бэк ставит 'manual'.
+  const [complaintBusy, setComplaintBusy] = useState(false);
+  const createComplaintFromConv = useCallback(
+    async (convId: string, contactName: string | null) => {
+      if (complaintBusy) return;
+      setComplaintBusy(true);
+      try {
+        const d = await api<{ item: { number: number } }>(`/api/bots/${bot.id}/complaints`, {
+          method: 'POST',
+          body: JSON.stringify({
+            conversationId: convId,
+            type: 'other',
+            description: 'Жалоба из диалога — уточните у клиента',
+            source: 'manual',
+            contact: contactName,
+          }),
+        });
+        toast({ title: `Жалоба №${d.item.number} создана` });
+      } catch (e) {
+        toast({
+          title: 'Не удалось создать жалобу',
+          description: e instanceof Error ? e.message : '',
+          variant: 'destructive',
+        });
+      } finally {
+        setComplaintBusy(false);
+      }
+    },
+    [bot.id, complaintBusy, toast]
+  );
+  // Стабильная обёртка для memo-меню (void — «запустил и не жду»)
+  const onCreateComplaint = useCallback(
+    (convId: string, contactName: string | null) => {
+      void createComplaintFromConv(convId, contactName);
+    },
+    [createComplaintFromConv]
+  );
+
   const operatorCount = useMemo(
     () => conversations.filter((c) => c.needsOperator && c.status === 'open').length,
     [conversations]
@@ -1322,6 +1476,8 @@ export default function InboxView({
                       onCopyContact={copyContact}
                       onCopyTranscript={copyTranscript}
                       onCloseRequest={requestClose}
+                      onCreateComplaint={onCreateComplaint}
+                      complaintBusy={complaintBusy}
                     />
                   </div>
                 ))}
@@ -1367,6 +1523,21 @@ export default function InboxView({
                 )}
                 {status === 'closed' && <Badge variant="outline">закрыт</Badge>}
                 <div className="ml-auto flex gap-2">
+                  {/* IMP-25-27: жалоба из открытого диалога — в один клик из шапки */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={complaintBusy}
+                    onClick={() => void createComplaintFromConv(selected.id, contact)}
+                  >
+                    {complaintBusy ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                    ) : (
+                      <MessageCircleWarning className="h-3.5 w-3.5" aria-hidden />
+                    )}
+                    <span className="hidden sm:inline">Создать жалобу</span>
+                    <span className="sm:hidden">Жалоба</span>
+                  </Button>
                   {/* FE22-25: закрыть можно ЛЮБОЙ открытый диалог (не только needsOperator);
                       подтверждение — общий AlertDialog */}
                   {status === 'open' && (

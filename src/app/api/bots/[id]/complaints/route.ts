@@ -18,7 +18,7 @@ const MAX_TAKE = 500;
 const DEFAULT_TAKE = 100;
 const MAX_DESCRIPTION = 2000;
 
-/** ComplaintDto — контракт с фронтом (закреплён в волне 23; IMP-24-BE-14 — гео-поля) */
+/** ComplaintDto — контракт с фронтом (закреплён в волне 23; IMP-24-BE-14 — гео-поля; IMP-25-14 — orderId) */
 function toDto(c: {
   id: string;
   number: number;
@@ -33,6 +33,8 @@ function toDto(c: {
   lng: number | null;
   areaLkCode: string | null;
   areaAddress: string | null;
+  // IMP-25-14: заявка, оформленная по жалобе (эскалация)
+  orderId: string | null;
   source: string;
   createdAt: Date;
   conversationId: string | null;
@@ -50,6 +52,7 @@ function toDto(c: {
     lng: c.lng,
     areaLkCode: c.areaLkCode,
     areaAddress: c.areaAddress,
+    orderId: c.orderId, // IMP-25-14
     source: c.source,
     createdAt: c.createdAt.toISOString(),
     conversationId: c.conversationId,
@@ -65,8 +68,10 @@ async function loadOwnedBot(req: NextRequest, botId: string) {
 }
 
 /**
- * Список жалоб: фильтры ?status= ?type=, пагинация курсором по (createdAt, id) —
- * стабильна при вставках между страницами (в отличие от offset).
+ * Список жалоб: фильтры ?status= ?type= ?conversationId= (IMP-25-16 —
+ * панель инбокса «жалобы клиента»; при фильтре дефолтный take = 10),
+ * пагинация курсором по (createdAt, id) — стабильна при вставках между
+ * страницами (в отличие от offset).
  * counts — группировка по status БЕЗ фильтров (бейджи навигации).
  */
 export async function GET(req: NextRequest, { params }: Params) {
@@ -95,11 +100,17 @@ export async function GET(req: NextRequest, { params }: Params) {
       { status: 400 }
     );
   }
+  // IMP-25-16: фильтр по диалогу (панель инбокса «жалобы клиента»);
+  // дефолтный take для этого режима — 10 (явный ?take= по-прежнему работает)
+  const conversationFilter = (sp.get('conversationId') ?? '').trim() || null;
+
   const takeParam = Number(sp.get('take') ?? '');
   const take =
     Number.isFinite(takeParam) && takeParam > 0
       ? Math.min(Math.floor(takeParam), MAX_TAKE)
-      : DEFAULT_TAKE;
+      : conversationFilter
+        ? 10 // IMP-25-16
+        : DEFAULT_TAKE;
 
   // Курсор: id последней жалобы предыдущей страницы; ищем строки СТРОГО «до» неё
   // по (createdAt, id) — надёжно при равных createdAt (SQLite хранит мс).
@@ -120,6 +131,7 @@ export async function GET(req: NextRequest, { params }: Params) {
     botId: id,
     ...(statusParam ? { status: statusParam } : {}),
     ...(typeParam ? { type: typeParam } : {}),
+    ...(conversationFilter ? { conversationId: conversationFilter } : {}), // IMP-25-16
     ...(cursor
       ? {
           OR: [
@@ -203,17 +215,21 @@ export async function POST(req: NextRequest, { params }: Params) {
       happenedAt = d;
     }
 
-    // conversationId — если указан, должен принадлежать этому боту
+    // conversationId — если указан, должен принадлежать этому боту;
+    // IMP-25-14: контакт не теряется — если контакт не передан явно,
+    // берём его из диалога (жалоба остаётся связанной с клиентом)
     let conversationId: string | null = null;
+    let conversationContact: string | null = null;
     if (typeof body.conversationId === 'string' && body.conversationId.trim()) {
       const conv = await db.conversation.findUnique({
         where: { id: body.conversationId.trim() },
-        select: { id: true, botId: true },
+        select: { id: true, botId: true, contact: true },
       });
       if (!conv || conv.botId !== id) {
         return NextResponse.json({ error: 'Диалог не найден' }, { status: 400 });
       }
       conversationId = conv.id;
+      conversationContact = conv.contact;
     }
 
     // IMP-24-BE-14: адрес инцидента (≤ 300, опционально) и координаты (если переданы)
@@ -238,8 +254,12 @@ export async function POST(req: NextRequest, { params }: Params) {
             status,
             description: description.slice(0, MAX_DESCRIPTION),
             happenedAt,
+            // IMP-25-14: contact не перетирается — явный непустой contact приоритетен,
+            // иначе контакт диалога (если тот задан)
             contact:
-              typeof body.contact === 'string' ? body.contact.trim().slice(0, 200) || null : null,
+              (typeof body.contact === 'string'
+                ? body.contact.trim().slice(0, 200) || null
+                : null) || conversationContact,
             // IMP-24-BE-14: гео-контекст ручной жалобы
             address,
             lat,

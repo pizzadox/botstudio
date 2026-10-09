@@ -396,8 +396,19 @@ export async function getAreasCached(botId: string): Promise<MytkoArea[]> {
   return areas;
 }
 
+/** IMP-25-10: валиден ли кэш реестра КП бота. Роуты используют это, чтобы не
+ *  делать db.mytkoArea.count() на каждый запрос — при cache-hit areasCount =
+ *  areas.length (кэш строится из полного списка строк таблицы). */
+export function areasCacheHit(botId: string): boolean {
+  const hit = (areaCodeGlobals.__mytkoAreasCache ??= new Map()).get(botId);
+  return !!hit && hit.expiresAt > Date.now();
+}
+
 /** Сбросить кэши реестра КП бота (после sync-areas / изменения реестра).
- *  Сигнатура прежняя — сбрасываются и коды, и полный реестр. */
+ *  Сигнатура прежняя — сбрасываются и коды, и полный реестр.
+ *  IMP-25-10: предвычисленные токены адресов (WeakMap по ссылке на массив в
+ *  area-match.ts) сбрасываются автоматически — при следующем чтении строится
+ *  НОВЫЙ массив, старая запись WeakMap становится недостижимой (GC). */
 export function invalidateAreaCodesCache(botId: string): void {
   (areaCodeGlobals.__mytkoAreaCodeCache ??= new Map()).delete(botId);
   (areaCodeGlobals.__mytkoAreasCache ??= new Map()).delete(botId);

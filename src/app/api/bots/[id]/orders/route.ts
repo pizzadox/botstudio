@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   const takeParam = Number(req.nextUrl.searchParams.get('take') ?? '');
   const take =
     Number.isFinite(takeParam) && takeParam > 0 ? Math.min(Math.floor(takeParam), MAX_TAKE) : 500;
-  const [ordersRaw, cfg] = await Promise.all([
+  const [ordersRaw, cfg, total] = await Promise.all([
     db.order.findMany({
       where: { botId: id },
       select: {
@@ -69,12 +69,14 @@ export async function GET(req: NextRequest, { params }: Params) {
       take,
     }),
     Promise.resolve(parseMytkoConfig(bot.mytkoConfig)),
+    // IMP-25-04: общее число заявок бота (не зависит от take) — фронт покажет «показаны N из M»
+    db.order.count({ where: { botId: id } }),
   ]);
 
   // messagesCount — аддитивное поле для чипа «N сообщ.» в списке (форма _count сохранена)
   const orders = ordersRaw.map((o) => ({ ...o, messagesCount: o._count.messages }));
 
-  return NextResponse.json({ orders, mytkoEnabled: cfg.enabled });
+  return NextResponse.json({ orders, mytkoEnabled: cfg.enabled, total });
 }
 
 /** Создать заявку вручную (оператор из ЛК) */

@@ -233,6 +233,8 @@ model Complaint {
   areaLkCode     String?
   /// IMP-24: адрес этой КП (снимок для отображения)
   areaAddress    String?
+  /// IMP-25: заявка, оформленная по жалобе (эскалация; связь без FK — валидируется на уровне API)
+  orderId        String?
   /// scenario — создана сценарием бота; manual — оператором из ЛК
   source         String        @default("scenario")
   createdAt      DateTime      @default(now())

@@ -62,6 +62,9 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
   }
 
+  // IMP-25-01: тот же include, что в PATCH /orders/[orderId] — фронт заменяет order
+  // ЦЕЛИКОМ (setOrder(d.order)), и плоский ответ затирал полный DTO карточки:
+  // пропадали «Открыть диалог» (conversation), экипаж/tel и счётчик сообщений.
   const updated = await db.order.update({
     where: { id: order.id },
     data: {
@@ -70,7 +73,15 @@ export async function POST(req: NextRequest, { params }: Params) {
       mytkoInfo: res.info,
       mytkoError: res.error,
     },
+    include: {
+      conversation: {
+        select: { id: true, contact: true, source: true, externalUserId: true, needsOperator: true },
+      },
+      crew: { select: { id: true, name: true, phone: true } },
+      _count: { select: { messages: true } },
+    },
   });
-
-  return NextResponse.json({ ok: res.ok, order: updated });
+  // messagesCount — плоское поле, как в PATCH карточки (внутренняя форма _count наружу не отдаётся)
+  const { _count, ...flat } = updated;
+  return NextResponse.json({ ok: res.ok, order: { ...flat, messagesCount: _count.messages } });
 }

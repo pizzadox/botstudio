@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { normalizePhone } from '@/lib/orders'; // IMP-25-07: нормализация телефона экипажа
 import type { CrewDto } from '@/lib/studio-types';
 
 /**
@@ -72,7 +73,8 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     }
     if (body.phone !== undefined) {
       // IMP-24-REV-2: null — очистить телефон (инлайн-редактор справочника шлёт null)
-      data.phone = typeof body.phone === 'string' ? body.phone.trim().slice(0, MAX_PHONE) || null : null;
+      // IMP-25-07: телефон нормализуется (раньше сохранялся «как есть» — только trim/лимит)
+      data.phone = normalizePhone(typeof body.phone === 'string' ? body.phone : null);
     }
     if (body.notes !== undefined) {
       data.notes = typeof body.notes === 'string' ? body.notes.trim().slice(0, MAX_NOTES) || null : null;

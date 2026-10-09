@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { geocodeAddress, geocodeOrderAddress, reverseGeocode } from '@/lib/orders';
+import {
+  geocodeAddress,
+  geocodeOrderAddress,
+  reverseGeocode,
+  normalizePhone, // IMP-25-07: нормализация телефона в PATCH
+} from '@/lib/orders';
 import { composeAddress } from '@/lib/cities'; // IMP-23-BE-06: чистая сборка адреса
-import { parseWishDate } from '@/lib/wish-date'; // IMP-24-BE-12: pickupAt из wishDate
+import { parseWishDate, moscowNoonUTC } from '@/lib/wish-date'; // IMP-24-BE-12 / IMP-25-06
 import { parseMytkoConfig } from '@/lib/mytko';
 import { checkStatusTransition } from '@/lib/order-status';
 
@@ -117,9 +122,40 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       data.wishDate = wish;
       data.pickupAt = wish ? parseWishDate(wish).date : null;
     }
+    // IMP-25-06: явная дата забора — ISO-строка или 'YYYY-MM-DD'; null/пустая строка — очистить.
+    // Для date-only время — дефолт парсера (полдень MSK в UTC, moscowNoonUTC);
+    // обработка ПОСЛЕ wishDate — явный pickupAt сильнее производного из wishDate.
+    if (body.pickupAt !== undefined) {
+      if (body.pickupAt === null) {
+        data.pickupAt = null;
+      } else if (typeof body.pickupAt === 'string') {
+        const s = body.pickupAt.trim();
+        if (!s) {
+          data.pickupAt = null;
+        } else {
+          const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+          const value = ymd
+            ? moscowNoonUTC(Number(ymd[1]), Number(ymd[2]), Number(ymd[3]))
+            : new Date(s);
+          if (!value || Number.isNaN(value.getTime())) {
+            return NextResponse.json(
+              { error: 'Некорректный pickupAt: ожидается ISO-дата или YYYY-MM-DD' },
+              { status: 400 }
+            );
+          }
+          data.pickupAt = value;
+        }
+      } else {
+        return NextResponse.json(
+          { error: 'Некорректный pickupAt: ожидается ISO-дата, YYYY-MM-DD или null' },
+          { status: 400 }
+        );
+      }
+    }
     if (body.phone !== undefined) {
       // IMP-24-REV-2: null — очистить поле (редактор клиента шлёт null при очистке)
-      data.phone = typeof body.phone === 'string' ? body.phone.trim().slice(0, 40) || null : null;
+      // IMP-25-07: телефон нормализуется («+7 (900) 123-45-67» → «+79001234567»)
+      data.phone = normalizePhone(typeof body.phone === 'string' ? body.phone : null);
     }
     if (body.clientName !== undefined) {
       data.clientName = typeof body.clientName === 'string' ? body.clientName.trim().slice(0, 120) || null : null;

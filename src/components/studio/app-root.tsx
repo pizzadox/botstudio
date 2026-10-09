@@ -22,6 +22,7 @@ import {
 import { useTheme } from 'next-themes';
 import { api, clearAuthToken } from '@/lib/client-api';
 import type { NotificationDto, SessionUser, BotListItem, ViewKey } from '@/lib/studio-types';
+import { COMPLAINT_TYPE_LABELS } from '@/lib/studio-types';
 import { useToast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
@@ -56,11 +57,26 @@ import AreasView from './areas-view';
 
 // IMP-23-TAB-01: форма ответа /api/notifications живёт в studio-types
 // (NotificationDto) — полю complaints верит бейдж вкладки «Обращения».
-type NotificationsResponse = NotificationDto;
+// IMP-25-29: 25-BE2 добавит в ответ массив newComplaints (форма как newOrders);
+// studio-types — чужая зона волны, поэтому расширяем ЛОКАЛЬНО и читаем defensively
+// (number/description/botName — опциональны).
+type NewComplaintItem = {
+  id: string;
+  number?: number;
+  type?: string;
+  description?: string | null;
+  conversationId?: string | null;
+  botId: string;
+  botName?: string;
+};
+type NotificationsResponse = NotificationDto & {
+  newComplaints?: NewComplaintItem[];
+};
 
 /** Куда ведёт клик по уведомлению */
 export type NotificationTarget = {
-  kind: 'order' | 'chat';
+  // IMP-25-29: + complaint — клик по тосту новой жалобы открывает вкладку «Обращения»
+  kind: 'order' | 'chat' | 'complaint';
   botId: string;
   botName: string;
   /** null — просто открыть раздел (сводное уведомление) */
@@ -454,9 +470,16 @@ function NotificationsWatcher({
 
         const freshOrders = d.newOrders.filter((o) => !shownRef.current.has(`order:${o.id}`));
         const freshChats = d.newChats.filter((c) => !shownRef.current.has(`chat:${c.id}`));
+        // IMP-25-29: новые жалобы — дедуп по id, как у заявок/диалогов (defensive:
+        // массива может не быть, пока 25-BE2 не развернул поле)
+        const freshComplaints = (d.newComplaints ?? []).filter(
+          (c) => !shownRef.current.has(`complaint:${c.id}`)
+        );
         for (const o of freshOrders) shownRef.current.add(`order:${o.id}`);
         for (const c of freshChats) shownRef.current.add(`chat:${c.id}`);
-        if (freshOrders.length === 0 && freshChats.length === 0) return;
+        for (const c of freshComplaints) shownRef.current.add(`complaint:${c.id}`);
+        if (freshOrders.length === 0 && freshChats.length === 0 && freshComplaints.length === 0)
+          return;
 
         const openBtn = (t: NotificationTarget, label = 'Открыть') => (
           <ToastAction altText={label} onClick={() => onOpenTarget(t)}>
@@ -503,6 +526,32 @@ function NotificationsWatcher({
               .join(', '),
             duration: 8000,
             action: openBtn({ kind: 'chat', botId: first.botId, botName: first.botName, id: first.id }, 'Открыть'),
+          });
+        }
+        if (freshComplaints.length === 1) {
+          // IMP-25-29: тост о новой жалобе — клик открывает вкладку «Обращения»
+          const c = freshComplaints[0];
+          const typeLabel = COMPLAINT_TYPE_LABELS[c.type ?? ''] ?? (c.type || 'обращение');
+          toast({
+            title: c.number != null ? `🆕 Новая жалоба №${c.number}: ${typeLabel}` : `🆕 Новая жалоба: ${typeLabel}`,
+            description: `${c.botName || 'бот'}${c.description ? ` · ${c.description.slice(0, 80)}` : ''}`,
+            duration: 8000,
+            action: openBtn({ kind: 'complaint', botId: c.botId, botName: c.botName ?? '', id: c.id }, 'Открыть жалобу'),
+          });
+        } else if (freshComplaints.length > 1) {
+          const first = freshComplaints[0];
+          toast({
+            title: `🆕 Новых жалоб: ${freshComplaints.length}`,
+            description: freshComplaints
+              .slice(0, 3)
+              .map((c) =>
+                c.number != null
+                  ? `№${c.number}: ${COMPLAINT_TYPE_LABELS[c.type ?? ''] ?? (c.type || 'обращение')}`
+                  : COMPLAINT_TYPE_LABELS[c.type ?? ''] ?? (c.type || 'обращение')
+              )
+              .join('\n') + (freshComplaints.length > 3 ? '\n…' : ''),
+            duration: 8000,
+            action: openBtn({ kind: 'complaint', botId: first.botId, botName: first.botName ?? '', id: first.id }, 'Открыть'),
           });
         }
       } catch {
@@ -600,6 +649,14 @@ export default function AppRoot() {
     if (t.kind === 'order') {
       setView('orders');
       if (t.id) setOrderFocus(t.id);
+    } else if (t.kind === 'complaint') {
+      // IMP-25-29: у вкладки жалоб фокуса нет — просто открываем раздел.
+      // Defensive: без botId не подменяем выбранного бота.
+      if (!t.botId) {
+        setView('complaints');
+        return;
+      }
+      setView('complaints');
     } else {
       setView('inbox');
       if (t.id) setChatFocus(t.id);
@@ -679,6 +736,13 @@ export default function AppRoot() {
     };
     window.addEventListener('bstudio:open-conversation', onOpenConversation);
     return () => window.removeEventListener('bstudio:open-conversation', onOpenConversation);
+  }, []);
+
+  // IMP-25-26: чип «Заявка №N» в карточке жалобы → раздел «Заявки» текущего бота
+  useEffect(() => {
+    const onOpenOrders = () => setView('orders');
+    window.addEventListener('bstudio:open-orders', onOpenOrders);
+    return () => window.removeEventListener('bstudio:open-orders', onOpenOrders);
   }, []);
 
   // IMP-FE21-06: сохраняем view и бота только у авторизованных

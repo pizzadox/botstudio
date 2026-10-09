@@ -9,11 +9,15 @@ type Params = { params: Promise<{ id: string }> };
 const MAX_IDS = 1000;
 
 /**
- * Массовое изменение статуса заявок (22-BE2, IMP-BE22-09).
- * POST { ids: string[], status, force? } → { ok, updated, skipped }
- *  - та же матрица переходов, что в PATCH заявки;
+ * Массовое изменение статуса заявок (22-BE2, IMP-BE22-09) + назначение экипажа (IMP-25-05).
+ * POST { ids: string[], status?, force?, crewId?: string | null }
+ *   → { ok, updated, skipped, crewUpdated? }
+ *  - та же матрица переходов, что в PATCH заявки (при переданном status);
  *  - финальные (completed/cancelled) без force пропускаются (skipped);
- *  - completedAt ставится только при переходе в completed, обратно не сбрасывается.
+ *  - completedAt ставится только при переходе в completed, обратно не сбрасывается;
+ *  - crewId (опционально): непустая строка — экипаж существует и принадлежит боту
+ *    (та же валидация, что в PATCH карточки), null — снять экипаж; применяется ко ВСЕМ
+ *    найденным заявкам бота независимо от статуса (счётчик — crewUpdated).
  */
 export async function POST(req: NextRequest, { params }: Params) {
   const { id } = await params;
@@ -26,7 +30,9 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   try {
-    const body = (await req.json().catch(() => null)) as { ids?: unknown; status?: unknown; force?: unknown } | null;
+    const body = (await req.json().catch(() => null)) as
+      | { ids?: unknown; status?: unknown; force?: unknown; crewId?: unknown }
+      | null;
 
     const rawIds: unknown[] = Array.isArray(body?.ids) ? body.ids : [];
     const ids = [...new Set(rawIds.filter((x): x is string => typeof x === 'string' && !!x))];
@@ -37,10 +43,31 @@ export async function POST(req: NextRequest, { params }: Params) {
       return NextResponse.json({ error: `Не больше ${MAX_IDS} заявок за раз` }, { status: 400 });
     }
 
+    // IMP-25-05: действие — статус и/или экипаж (хотя бы одно)
     const status = typeof body?.status === 'string' ? body.status : '';
-    if (!(ORDER_STATUSES as readonly string[]).includes(status)) {
+    const hasStatus = status.length > 0;
+    const hasCrew = body?.crewId !== undefined;
+    if (!hasStatus && !hasCrew) {
+      return NextResponse.json({ error: 'Укажите status и/или crewId' }, { status: 400 });
+    }
+    if (hasStatus && !(ORDER_STATUSES as readonly string[]).includes(status)) {
       return NextResponse.json({ error: 'Неизвестный статус' }, { status: 400 });
     }
+
+    // IMP-25-05: валидация crewId как в PATCH карточки — экипаж существует и принадлежит боту;
+    // null (или пустая строка) — снять экипаж
+    let crewIdValue: string | null = null;
+    if (hasCrew) {
+      const cid = typeof body?.crewId === 'string' ? body.crewId.trim() : '';
+      if (cid) {
+        const crew = await db.crew.findFirst({ where: { id: cid, botId: id } });
+        if (!crew) {
+          return NextResponse.json({ error: 'Экипаж не найден' }, { status: 400 });
+        }
+        crewIdValue = cid;
+      }
+    }
+
     const force = body?.force === true || req.nextUrl.searchParams.get('force') === '1';
 
     // Владелец уже проверен — выбираем только заявки этого бота из пачки
@@ -51,14 +78,16 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     const eligible: string[] = [];
     let skipped = ids.length - orders.length; // не найдены / чужие
-    for (const o of orders) {
-      const check = checkStatusTransition(o.status, status, force);
-      if (check.ok) eligible.push(o.id);
-      else skipped += 1;
+    if (hasStatus) {
+      for (const o of orders) {
+        const check = checkStatusTransition(o.status, status, force);
+        if (check.ok) eligible.push(o.id);
+        else skipped += 1;
+      }
     }
 
     let updated = 0;
-    if (eligible.length > 0) {
+    if (hasStatus && eligible.length > 0) {
       const result = await db.order.updateMany({
         where: { id: { in: eligible }, botId: id },
         data: {
@@ -70,7 +99,24 @@ export async function POST(req: NextRequest, { params }: Params) {
       updated = result.count;
     }
 
-    return NextResponse.json({ ok: true, updated, skipped });
+    // IMP-25-05: экипаж применяется ко всем найденным заявкам бота независимо от статуса
+    // (закрепить экипаж за уже выполненной заявкой — легитимно); skip/force касается только статуса
+    let crewUpdated = 0;
+    if (hasCrew) {
+      const result = await db.order.updateMany({
+        where: { id: { in: orders.map((o) => o.id) }, botId: id },
+        data: { crewId: crewIdValue },
+      });
+      crewUpdated = result.count;
+    }
+
+    return NextResponse.json({
+      ok: true,
+      updated,
+      skipped,
+      // поле добавляется только когда crewId был в запросе — обратная совместимость ответа
+      ...(hasCrew ? { crewUpdated } : {}),
+    });
   } catch (err) {
     console.error('[orders bulk]', err);
     return NextResponse.json({ error: 'Не удалось обновить заявки' }, { status: 500 });

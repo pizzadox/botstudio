@@ -282,6 +282,8 @@ export interface ComplaintDto {
   createdAt: string;
   /** Диалог, из которого пришла жалоба (для кнопки «Открыть диалог») */
   conversationId: string | null;
+  /** IMP-25: заявка, оформленная по жалобе (эскалация) */
+  orderId: string | null;
 }
 
 /** IMP-24: экипаж (бригада) из справочника оператора */
@@ -293,6 +295,8 @@ export interface CrewDto {
   active: boolean;
   /** Сколько заявок сейчас закреплено (для отображения в справочнике) */
   ordersCount?: number;
+  /** IMP-25: сколько из закреплённых заявок в активных статусах (не закрыто/архив) */
+  activeOrders?: number;
   createdAt: string;
 }
 

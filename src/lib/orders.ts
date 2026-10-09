@@ -362,12 +362,15 @@ export async function reverseGeocode(
 /**
  * BE22-19: телефон — только цифры и ведущий «+», длина ≤ 20.
  * «+7 (900) 123-45-67» → «+79001234567».
+ * IMP-25-07: экспортирована — применяется также в PATCH заявки и в POST/PATCH экипажей
+ * (раньше была приватной, экипажи сохраняли телефон без нормализации вовсе).
  */
-function normalizePhone(input?: string | null): string | null {
+export function normalizePhone(input?: string | null): string | null {
   const raw = (input ?? '').trim();
   if (!raw) return null;
   const plus = raw.startsWith('+') ? '+' : '';
   const digits = raw.slice(plus.length).replace(/\D/g, '');
+  if (!digits) return null; // IMP-25-REV-6: голый «+»/«+abc» — не мусор в БД
   const phone = (plus + digits).slice(0, 20);
   return phone || null;
 }
@@ -377,7 +380,9 @@ export async function createOrder(input: CreateOrderInput) {
   // длина/формат не гарантированы). Пределы согласованы с операторской формой
   // (см. POST /api/bots/[id]/orders); нормализация здесь защищает ВСЕХ вызывающих.
   const clientName = input.clientName?.trim().slice(0, 200) || null;
-  const city = input.city?.trim().slice(0, 100) || null;
+  // IMP-25-06: лимит города унифицирован с API (120, было 100 — PATCH/POST резали 120,
+  // а финальная нарезка здесь незаметно ужимала до 100)
+  const city = input.city?.trim().slice(0, 120) || null;
   const address = input.address?.trim().slice(0, 300) || null;
   const comment = input.comment?.trim().slice(0, 1000) || null;
   // IMP-24-BE: wishDate до 60 символов (было 30 — human-строка парсера

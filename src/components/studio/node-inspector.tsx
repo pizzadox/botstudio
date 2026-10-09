@@ -1,7 +1,7 @@
 'use client';
 
 import type { ComponentProps } from 'react';
-import { CircleHelp, ClipboardList, MousePointerClick, Plus, Settings2, ShieldCheck, Trash2, X } from 'lucide-react';
+import { CircleHelp, ClipboardList, MessageCircleWarning, MousePointerClick, Plus, Settings2, ShieldCheck, Trash2, X } from 'lucide-react';
 import type { ConditionOp, FlowButton, FlowNode, FlowNodeData } from '@/lib/flow-types';
 import { CONDITION_OP_LABELS, NODE_META } from '@/lib/flow-types';
 import { NODE_DARK, NODE_ICONS } from './flow-node';
@@ -157,7 +157,10 @@ export default function NodeInspector({
                       createOrder: v
                         ? {
                             type: 'waste' as const,
+                            // IMP-25-28: добавились имя клиента и город
+                            nameVar: 'name',
                             phoneVar: 'phone',
+                            cityVar: 'city',
                             addressVar: 'address',
                             dateVar: 'date',
                           }
@@ -215,6 +218,33 @@ export default function NodeInspector({
                         }
                       />
                     </div>
+                    {/* IMP-25-28: имя клиента (пусто — контакт диалога) и город обслуживания */}
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: имя</Label>
+                      <Input
+                        className="h-9"
+                        value={d.createOrder.nameVar ?? ''}
+                        placeholder="name"
+                        onChange={(e) =>
+                          onChange({
+                            createOrder: { ...d.createOrder, nameVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: город</Label>
+                      <Input
+                        className="h-9"
+                        value={d.createOrder.cityVar ?? ''}
+                        placeholder="city"
+                        onChange={(e) =>
+                          onChange({
+                            createOrder: { ...d.createOrder, cityVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
                     <div className="space-y-2">
                       <Label className="text-xs font-medium text-muted-foreground">Перем.: дата</Label>
                       <Input
@@ -244,6 +274,126 @@ export default function NodeInspector({
                   </div>
                   <p className="text-[11px] text-muted-foreground">
                     Перед показом сообщения бот создаст заявку с номером — он подставится в {'{{order.number}}'}. Заявка появится в разделе «Заявки» на карте.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* IMP-25-28: редактор жалобной ветки — createComplaint на message-узле */}
+          {node.type === 'message' && (
+            <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+              <div className="flex items-center justify-between">
+                <Label className="flex items-center gap-1 text-sm font-medium">
+                  <MessageCircleWarning className="h-3.5 w-3.5" aria-hidden /> Создать жалобу
+                </Label>
+                <Switch
+                  checked={!!d.createComplaint}
+                  onCheckedChange={(v) =>
+                    onChange({
+                      createComplaint: v ? { type: 'other' as const } : undefined,
+                    })
+                  }
+                />
+              </div>
+              {d.createComplaint && (
+                <div className="space-y-3 pt-1">
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium text-muted-foreground">Тип жалобы</Label>
+                    <Select
+                      value={d.createComplaint.type ?? 'other'}
+                      onValueChange={(v) =>
+                        onChange({
+                          createComplaint: {
+                            ...d.createComplaint,
+                            type: v as 'no_pickup' | 'damaged' | 'overflow' | 'other',
+                          },
+                        })
+                      }
+                    >
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="no_pickup">🚫 Не вывезли</SelectItem>
+                        <SelectItem value="damaged">💥 Повреждён контейнер</SelectItem>
+                        <SelectItem value="overflow">🗑 Площадка переполнена</SelectItem>
+                        <SelectItem value="other">📋 Другое</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-muted-foreground">
+                      Если задана переменная типа — значение из неё важнее фиксированного.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: тип</Label>
+                      <Input
+                        className="h-9"
+                        value={d.createComplaint.typeVar ?? ''}
+                        placeholder="cmp_type"
+                        onChange={(e) =>
+                          onChange({
+                            createComplaint: { ...d.createComplaint, typeVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: описание</Label>
+                      <Input
+                        className="h-9"
+                        value={d.createComplaint.descriptionVar ?? ''}
+                        placeholder="cmp_desc"
+                        onChange={(e) =>
+                          onChange({
+                            createComplaint: { ...d.createComplaint, descriptionVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: когда</Label>
+                      <Input
+                        className="h-9"
+                        value={d.createComplaint.whenVar ?? ''}
+                        placeholder="cmp_when"
+                        onChange={(e) =>
+                          onChange({
+                            createComplaint: { ...d.createComplaint, whenVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: адрес</Label>
+                      <Input
+                        className="h-9"
+                        value={d.createComplaint.addressVar ?? ''}
+                        placeholder="cmp_address"
+                        onChange={(e) =>
+                          onChange({
+                            createComplaint: { ...d.createComplaint, addressVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Перем.: город</Label>
+                      <Input
+                        className="h-9"
+                        value={d.createComplaint.cityVar ?? ''}
+                        placeholder="cmp_city"
+                        onChange={(e) =>
+                          onChange({
+                            createComplaint: { ...d.createComplaint, cityVar: e.target.value.replace(/\s/g, '_') },
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Бот зарегистрирует жалобу — номер подставится в {'{{complaint.number}}'} и появится в разделе «Обращения». Без переменной описания берётся текст этого сообщения.
                   </p>
                 </div>
               )}

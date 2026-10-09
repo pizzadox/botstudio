@@ -19,7 +19,9 @@ function parseTake(req: NextRequest, fallback: number): number {
 
 /** Кнопки последнего блока меню — для кликабельных чипов в виджете */
 function lastMenuButtons(botId: string, botUpdatedAt: Date, botFlow: string, messages: { id: string; role: string; nodeId: string | null }[]) {
-  const lastBotWithNode = [...messages].reverse().find((m) => m.role === 'bot' && m.nodeId && m.nodeId !== '__operator');
+  // IMP-25-REV-4: '__bot' — спец-маркер сервисных сообщений без узла (симметрия webhook.ts);
+  // старые записи с '__bot' деградируют мягко — просто без чипов
+  const lastBotWithNode = [...messages].reverse().find((m) => m.role === 'bot' && m.nodeId && m.nodeId !== '__operator' && m.nodeId !== '__bot');
   if (!lastBotWithNode) return { lastBotWithNodeId: undefined as string | undefined, buttons: undefined as { id: string; text: string }[] | undefined };
   try {
     const flow = getFlowCached(botId, botUpdatedAt, botFlow);

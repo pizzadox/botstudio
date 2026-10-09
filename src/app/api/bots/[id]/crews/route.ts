@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { normalizePhone } from '@/lib/orders'; // IMP-25-07: нормализация телефона экипажа
+import { FINAL_ORDER_STATUSES } from '@/lib/order-status'; // IMP-25-08: финальные статусы заявок
 import type { CrewDto } from '@/lib/studio-types';
 
 /**
  * IMP-24-BE-17: справочник экипажей (бригад) бота.
- * GET  — список (сначала активные, затем по имени) с числом закреплённых заявок;
- * POST — создание: name 1..120 обязателен, phone ≤ 20, notes ≤ 300 (trim).
+ * GET  — список (сначала активные, затем по имени) с числом закреплённых заявок
+ *        (ordersCount) и числом заявок в АКТИВНОМ статусе (activeOrders, IMP-25-08);
+ * POST — создание: name 1..120 обязателен, phone ≤ 20 (нормализуется, IMP-25-07), notes ≤ 300 (trim).
  * Назначение экипажа на заявку — PATCH /api/bots/[id]/orders/[orderId] ({crewId}).
  */
 
@@ -56,13 +59,25 @@ export async function GET(req: NextRequest, { params }: Params) {
     );
   }
 
-  const crews = await db.crew.findMany({
-    where: { botId: id },
-    orderBy: [{ active: 'desc' }, { name: 'asc' }],
-    include: { _count: { select: { orders: true } } },
-  });
+  const [crews, activeRows] = await Promise.all([
+    db.crew.findMany({
+      where: { botId: id },
+      orderBy: [{ active: 'desc' }, { name: 'asc' }],
+      include: { _count: { select: { orders: true } } },
+    }),
+    // IMP-25-08: заявки экипажей в АКТИВНОМ статусе (финальные completed/cancelled не считаем;
+    // ordersCount остаётся без изменений — всего закреплённых)
+    db.order.groupBy({
+      by: ['crewId'],
+      where: { botId: id, crewId: { not: null }, status: { notIn: [...FINAL_ORDER_STATUSES] } },
+      _count: { _all: true },
+    }),
+  ]);
+  const activeByCrew = new Map(activeRows.map((r) => [r.crewId, r._count._all]));
 
-  const res = NextResponse.json({ items: crews.map(toDto) });
+  const res = NextResponse.json({
+    items: crews.map((c) => ({ ...toDto(c), activeOrders: activeByCrew.get(c.id) ?? 0 })),
+  });
   res.headers.set('Cache-Control', 'no-store');
   return res;
 }
@@ -88,7 +103,8 @@ export async function POST(req: NextRequest, { params }: Params) {
       );
     }
     const phone =
-      typeof body.phone === 'string' ? body.phone.trim().slice(0, MAX_PHONE) || null : null;
+      // IMP-25-07: нормализация телефона («+7 (900) 123-45-67» → «+79001234567», ≤20)
+      normalizePhone(typeof body.phone === 'string' ? body.phone : null);
     const notes =
       typeof body.notes === 'string' ? body.notes.trim().slice(0, MAX_NOTES) || null : null;
 

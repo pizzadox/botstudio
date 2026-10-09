@@ -31,6 +31,10 @@ export interface InboundMessage {
 export interface OutboundMessage {
   text: string;
   buttons?: { id: string; text: string }[];
+  /** IMP-25-11: nodeId узла-источника (реальный id узла сценария); у сервисных
+   *  сообщений вебхука (список заявок, соединение с оператором и т.п.) — нет,
+   *  при записи в БД им ставится спец-маркер '__bot' (см. persistBotMessages). */
+  nodeId?: string;
 }
 
 export type InboundResult =
@@ -375,7 +379,15 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
     let needsOperator = conv.needsOperator;
 
     /** Записать исходящие сообщения бота в БД одним createMany (IMP-BE21-14;
-     *  id созданных записей нигде не используются — только текст в replies) */
+     *  id созданных записей нигде не используются — только текст в replies).
+     *  IMP-25-11: сохраняем РЕАЛЬНЫЙ nodeId узла, сгенерировавшего сообщение —
+     *  именно по нему демо-виджет (GET /api/webhook/demo/[secret]) находит
+     *  последний узел «Кнопки» и показывает чипы. Раньше всем bot-сообщениям
+     *  писался маркер '__bot', из-за чего виджет никогда не показывал кнопки.
+     *  Семантика маркера сохранена: '__bot' остаётся признаком СЕРВИСНОГО
+     *  сообщения (создано вебхуком/роутом, а не узлом сценария) — такие
+     *  сообщения не получают чипов, а их кнопки — команды вебхука
+     *  («Мои заявки», «№N …»), а не узлы flow. */
     const persistBotMessages = async (orderId?: string | null) => {
       if (messages.length === 0) return;
       await db.message.createMany({
@@ -383,7 +395,7 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
           conversationId: conv.id,
           role: 'bot',
           text: m.text,
-          nodeId: '__bot',
+          nodeId: m.nodeId ?? '__bot', // IMP-25-11: реальный nodeId или спец-маркер
           orderId: orderId ?? null,
         })),
       });
@@ -396,8 +408,36 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
       opts?: { operator?: boolean; orderId?: string | null }
     ): Promise<InboundResult> => {
       const operatorMode = opts?.operator ? true : needsOperator;
-      await db.conversation.update({
-        where: { id: conv.id },
+      // IMP-25-12: гонка «закрытие ↔ движок». Если диалог был ОТКРЫТ на момент
+      // старта обработки, но оператор закрыл его, пока движок работал — не
+      // переоткрываем и не затираем сброшенное close-роутом состояние (меню).
+      // Диалог, уже закрытый ДО сообщения, штатно переоткрывается ниже
+      // (новое сообщение от клиента — это продолжение общения).
+      if (conv.status !== 'closed') {
+        const fresh = await db.conversation.findUnique({
+          where: { id: conv.id },
+          select: { status: true },
+        });
+        if (fresh && fresh.status !== 'open') {
+          return {
+            ok: true,
+            replies,
+            messages,
+            conversationId: conv.id,
+            chatId: conv.externalId ?? undefined,
+            needsOperator: false, // close-роут уже снял флаг оператора
+          };
+        }
+      }
+      // IMP-25-REV-5а: атомарный гвард вместо re-read → update (TOCTOU-окно между
+      // findUnique и update). Семантика прежняя: диалог, закрытый ДО этого сообщения,
+      // штатно переоткрывается (новое сообщение — продолжение общения); а диалог,
+      // открытый на старте обработки, но закрытый оператором ПОСЛЕ, — не переоткрываем.
+      const reopened = await db.conversation.updateMany({
+        where:
+          conv.status === 'closed'
+            ? { id: conv.id }
+            : { id: conv.id, status: 'open' },
         data: {
           state: JSON.stringify(newState),
           needsOperator: operatorMode,
@@ -407,6 +447,18 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
           updatedAt: new Date(),
         },
       });
+      if (reopened.count === 0) {
+        // IMP-25-REV-5а: диалог закрыли, пока движок работал — не переоткрываем
+        // (сообщения уже персистнут persistBotMessages до finish)
+        return {
+          ok: true,
+          replies,
+          messages,
+          conversationId: conv.id,
+          chatId: conv.externalId ?? undefined,
+          needsOperator: false,
+        };
+      }
       return {
         ok: true,
         replies,
@@ -447,7 +499,8 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
           conversationId: conv.id,
           externalUserId: conv.externalUserId,
         });
-        for (const m of result.messages) messages.push({ text: m.text, buttons: m.buttons });
+        for (const m of result.messages)
+          messages.push({ text: m.text, buttons: m.buttons, nodeId: m.nodeId }); // IMP-25-11
         appendPersistentButtons(messages);
         await persistBotMessages();
         return finish(result.state);
@@ -652,7 +705,8 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
         conversationId: conv.id,
         externalUserId: conv.externalUserId,
       });
-      for (const m of result.messages) messages.push({ text: m.text, buttons: m.buttons });
+      for (const m of result.messages)
+        messages.push({ text: m.text, buttons: m.buttons, nodeId: m.nodeId }); // IMP-25-11
       // handoff-узел сценария — поднимаем флаг оператора и в БД (не только в state)
       if (result.needsOperator) {
         needsOperator = true;

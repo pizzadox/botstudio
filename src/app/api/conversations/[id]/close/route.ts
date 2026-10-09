@@ -99,7 +99,14 @@ export async function POST(req: NextRequest, { params }: Params) {
     await closePair;
     await Promise.all([
       db.message.create({
-        data: { conversationId: conversation.id, role: 'bot', text: menuText, nodeId: '__bot' },
+        data: {
+          conversationId: conversation.id,
+          role: 'bot',
+          text: menuText,
+          // IMP-25-REV-4: реальный nodeId меню-узла — веб-виджет рисует чипы
+          // (спец-маркер '__bot' оставлен только для сообщений без узла)
+          nodeId: menu.id,
+        },
       }),
       deliverTextToConversation(conversation.id, menuText, buttons).catch(() => {}),
     ]);
