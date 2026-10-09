@@ -1,7 +1,8 @@
 #!/bin/bash
 # Пуш в GitHub после каждого изменения (токен из .env.local, вне репозитория)
 cd /home/z/my-project
-TOKEN=$(sed -n 's/^ghp_/ghp_/p' .env.local | head -1)
+# Токен: строка вида ghp_... ИЛИ GITHUB_TOKEN=ghp_... (IMP-25-INT: оба формата)
+TOKEN=$(sed -n 's/^ghp_.*/&/p; s/^GITHUB_TOKEN=//p' .env.local | grep '^ghp_' | head -1)
 MSG="${1:-update}"
 git add -A
 if git diff --cached --quiet; then
