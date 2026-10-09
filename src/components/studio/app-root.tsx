@@ -21,7 +21,13 @@ import {
 } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { api, clearAuthToken } from '@/lib/client-api';
-import type { NotificationDto, SessionUser, BotListItem, ViewKey } from '@/lib/studio-types';
+import type {
+  AreaItem, // IMP-26-06: «Показать на карте» из реестра КП
+  BotListItem,
+  NotificationDto,
+  SessionUser,
+  ViewKey,
+} from '@/lib/studio-types';
 import { COMPLAINT_TYPE_LABELS } from '@/lib/studio-types';
 import { useToast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
@@ -613,6 +619,9 @@ export default function AppRoot() {
   // Фокус из уведомления: открыть раздел и подсветить нужную заявку/диалог
   const [orderFocus, setOrderFocus] = useState<string | null>(null);
   const [chatFocus, setChatFocus] = useState<string | null>(null);
+  // IMP-26-06: КП из реестра (areas-view «Показать на карте») — открыть «Заявки»,
+  // карту и карточку КП; зануляется OrdersView'ем через onKpFocusConsumed
+  const [kpFocus, setKpFocus] = useState<AreaItem | null>(null);
   // Палитра команд (Ctrl/Cmd+K)
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Диалог «Профиль» (смена пароля)
@@ -743,6 +752,21 @@ export default function AppRoot() {
     const onOpenOrders = () => setView('orders');
     window.addEventListener('bstudio:open-orders', onOpenOrders);
     return () => window.removeEventListener('bstudio:open-orders', onOpenOrders);
+  }, []);
+
+  // IMP-26-06: «Показать на карте» из реестра КП (areas-view диспатчит
+  // bstudio:kp-focus с полным AreaItem) → раздел «Заявки»: карта + карточка КП.
+  // Объект копируется — повторный клик по той же КП даёт новый detail и
+  // срабатывает снова (setKpFocus с тем же инстансом React бы срезал).
+  useEffect(() => {
+    const onKpFocus = (e: Event) => {
+      const area = (e as CustomEvent<{ area?: AreaItem }>).detail?.area;
+      if (!area) return;
+      setKpFocus({ ...area });
+      setView('orders');
+    };
+    window.addEventListener('bstudio:kp-focus', onKpFocus);
+    return () => window.removeEventListener('bstudio:kp-focus', onKpFocus);
   }, []);
 
   // IMP-FE21-06: сохраняем view и бота только у авторизованных
@@ -892,6 +916,8 @@ export default function AppRoot() {
           onBack={() => setView('dashboard')}
           focusOrderId={orderFocus}
           onFocusConsumed={() => setOrderFocus(null)}
+          kpFocusArea={kpFocus} // IMP-26-06: КП из реестра — карта + KpDialog
+          onKpFocusConsumed={() => setKpFocus(null)} // IMP-26-06
         />
       )}
       {/* IMP-23-TAB-02: вкладки «Обращения» и «Реестр КП» — по образцу InboxView */}

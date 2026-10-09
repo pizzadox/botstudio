@@ -197,6 +197,24 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       }
     }
 
+    // IMP-26-02: lat/lng — валидация диапазонов (семантика эталона IMP-25-09/REV-8
+    // у жалоб: тот же текст ошибки и 400). undefined — не менять; null = снять
+    // точку (ветка ниже сохранена); нечисловое/NaN/вне диапазона → 400.
+    const latValid =
+      body.lat === undefined ||
+      body.lat === null ||
+      (typeof body.lat === 'number' && Number.isFinite(body.lat) && body.lat >= -90 && body.lat <= 90);
+    const lngValid =
+      body.lng === undefined ||
+      body.lng === null ||
+      (typeof body.lng === 'number' && Number.isFinite(body.lng) && body.lng >= -180 && body.lng <= 180);
+    if (!latValid || !lngValid) {
+      return NextResponse.json(
+        { error: 'lat/lng — числа (lat −90…90, lng −180…180) или null' },
+        { status: 400 }
+      );
+    }
+
     if (typeof body.lat === 'number' && Number.isFinite(body.lat)) {
       data.lat = body.lat;
       data.geoSource = 'manual';

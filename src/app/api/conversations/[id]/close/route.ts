@@ -66,7 +66,10 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   await db.conversation.update({
     where: { id: conversation.id },
-    data: { status: 'closed', needsOperator: false, state: nextState },
+    // IMP-26-01 (REV-5б): фиксируем момент закрытия — зеркало-проверка в
+    // persistBotMessages (webhook.ts) по нему отбрасывает реплики бота,
+    // сгенерированные ПОСЛЕ закрытия (не пишутся в БД, не доставляются).
+    data: { status: 'closed', needsOperator: false, state: nextState, closedAt: new Date() },
   });
 
   // Сообщаем клиенту в мессенджере, что обращение закрыто, и возвращаем меню

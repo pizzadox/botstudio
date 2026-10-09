@@ -390,6 +390,23 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
      *  («Мои заявки», «№N …»), а не узлы flow. */
     const persistBotMessages = async (orderId?: string | null) => {
       if (messages.length === 0) return;
+      // IMP-26-01 (REV-5б): зеркало закрытия. Снапшот диалога был ОТКРЫТ на старте
+      // обработки, но оператор закрыл его, пока движок генерировал ответ — реплики
+      // бота не пишутся в БД и не доставляются: messages очищается → replies
+      // остаются пустыми (MAX/demo-чат/виджет ничего не получат). Снапшот, уже
+      // закрытый ДО сообщения, не перечитываем — такой диалог штатно отвечает и
+      // переоткрывается ниже (finish): новое сообщение посетителя — продолжение
+      // общения, и closedAt у него сбрасывается reopen-гвардом.
+      if (conv.status !== 'closed') {
+        const fresh = await db.conversation.findUnique({
+          where: { id: conv.id },
+          select: { status: true },
+        });
+        if (fresh && fresh.status === 'closed') {
+          messages.length = 0;
+          return;
+        }
+      }
       await db.message.createMany({
         data: messages.map((m) => ({
           conversationId: conv.id,
@@ -444,6 +461,11 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
           contact: conv.contact ?? msg.contact ?? null,
           channelId: conv.channelId ?? channel.id,
           status: 'open',
+          // IMP-26-01 (REV-5б): новое сообщение посетителя переоткрывает закрытый
+          // диалог — closedAt сбрасывается (момент закрытия больше не актуален).
+          // В ветке открытого снапшота (where status:'open') строка обновится
+          // только если диалог всё ещё открыт — closedAt там и так null (no-op).
+          closedAt: null,
           updatedAt: new Date(),
         },
       });

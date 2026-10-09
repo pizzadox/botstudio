@@ -40,6 +40,41 @@
       "version": "1.0.0",
       "installedAt": 1791454863551,
       "ownerHandle": "zuoyunlai"
+    },
+    "@ivangdavila/self-improving": {
+      "version": "1.2.16",
+      "installedAt": 1791536381442,
+      "ownerHandle": "ivangdavila"
+    },
+    "@oswalpalash/ontology": {
+      "version": "1.0.4",
+      "installedAt": 1791536386860,
+      "ownerHandle": "oswalpalash"
+    },
+    "@autogame-17/evolver": {
+      "version": "1.91.0",
+      "installedAt": 1791536437036,
+      "ownerHandle": "autogame-17"
+    },
+    "@nextfrontierbuilds/elite-longterm-memory": {
+      "version": "1.2.3",
+      "installedAt": 1791536443889,
+      "ownerHandle": "nextfrontierbuilds"
+    },
+    "@bestrocky/proactive-agent-lite": {
+      "version": "1.0.0",
+      "installedAt": 1791536452256,
+      "ownerHandle": "bestrocky"
+    },
+    "@arminnaimi/agent-team-orchestration": {
+      "version": "1.0.0",
+      "installedAt": 1791536458864,
+      "ownerHandle": "arminnaimi"
+    },
+    "@ivangdavila/productivity": {
+      "version": "1.0.6",
+      "installedAt": 1791536469421,
+      "ownerHandle": "ivangdavila"
     }
   }
 }

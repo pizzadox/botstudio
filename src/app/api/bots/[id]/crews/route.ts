@@ -9,7 +9,8 @@ import type { CrewDto } from '@/lib/studio-types';
  * IMP-24-BE-17: справочник экипажей (бригад) бота.
  * GET  — список (сначала активные, затем по имени) с числом закреплённых заявок
  *        (ordersCount) и числом заявок в АКТИВНОМ статусе (activeOrders, IMP-25-08);
- * POST — создание: name 1..120 обязателен, phone ≤ 20 (нормализуется, IMP-25-07), notes ≤ 300 (trim).
+ * POST — создание: name 1..120 обязателен, phone ≤ 20 (нормализуется, IMP-25-07),
+ *        notes ≤ 300 (trim), city ≤ 120 — опционально (IMP-26-04, для автоназначения).
  * Назначение экипажа на заявку — PATCH /api/bots/[id]/orders/[orderId] ({crewId}).
  */
 
@@ -18,6 +19,7 @@ type Params = { params: Promise<{ id: string }> };
 const MAX_NAME = 120;
 const MAX_PHONE = 20;
 const MAX_NOTES = 300;
+const MAX_CITY = 120; // IMP-26-04: город экипажа
 
 /** CrewDto — контракт с фронтом (studio-types) */
 function toDto(c: {
@@ -25,6 +27,7 @@ function toDto(c: {
   name: string;
   phone: string | null;
   notes: string | null;
+  city: string | null; // IMP-26-04
   active: boolean;
   createdAt: Date;
   _count?: { orders: number };
@@ -34,6 +37,7 @@ function toDto(c: {
     name: c.name,
     phone: c.phone,
     notes: c.notes,
+    city: c.city, // IMP-26-04: город в DTO (CrewDto.city из studio-types)
     active: c.active,
     ordersCount: c._count?.orders ?? 0,
     createdAt: c.createdAt.toISOString(),
@@ -107,8 +111,11 @@ export async function POST(req: NextRequest, { params }: Params) {
       normalizePhone(typeof body.phone === 'string' ? body.phone : null);
     const notes =
       typeof body.notes === 'string' ? body.notes.trim().slice(0, MAX_NOTES) || null : null;
+    // IMP-26-04: опциональный город экипажа — trim, ≤120, пустая строка/null → null
+    const city =
+      typeof body.city === 'string' ? body.city.trim().slice(0, MAX_CITY) || null : null;
 
-    const crew = await db.crew.create({ data: { botId: id, name, phone, notes } });
+    const crew = await db.crew.create({ data: { botId: id, name, phone, notes, city } });
     return NextResponse.json({ crew: toDto(crew) }, { status: 201 });
   } catch (err) {
     console.error('[crews create]', err);

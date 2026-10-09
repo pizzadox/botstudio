@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
+import { rateLimit } from '@/lib/rate-limit'; // IMP-26-03: лимит на выгрузку CSV
 import { ORDER_STATUS_LABELS, ORDER_TYPE_LABELS } from '@/lib/orders';
 import { ORDER_STATUSES } from '@/lib/order-status';
 
@@ -65,6 +66,12 @@ export async function GET(req: NextRequest, { params }: Params) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });
 
+  // IMP-26-03: выгрузка дорогая (цикл батчей по курсору) — не больше 5 CSV
+  // с одного пользователя в минуту (паттерн rateLimit демо-роута)
+  if (!rateLimit(`csv:${user.id}`, 5, 60_000)) {
+    return NextResponse.json({ error: 'Слишком много запросов' }, { status: 429 });
+  }
+
   const bot = await db.bot.findUnique({ where: { id } });
   if (!bot || bot.userId !== user.id) {
     return NextResponse.json({ error: 'Бот не найден' }, { status: 404 });
@@ -127,69 +134,105 @@ export async function GET(req: NextRequest, { params }: Params) {
   if (createdAt.gte || createdAt.lt) where.createdAt = createdAt;
 
   // Те же поля, что у GET /api/bots/[id]/orders (без гео/mytko — в CSV не нужны);
-  // IMP-25-03: + экипаж (name/phone), КП (код/адрес) и дата забора pickupAt;
-  // потолок 5000 строк — выгрузка не должна становиться «дампом таблицы».
-  const orders = await db.order.findMany({
-    where,
-    select: {
-      number: true,
-      type: true,
-      status: true,
-      clientName: true,
-      phone: true,
-      city: true,
-      address: true,
-      size: true,
-      wishDate: true,
-      pickupAt: true,
-      comment: true,
-      crew: { select: { name: true, phone: true } },
-      areaLkCode: true,
-      areaAddress: true,
-      createdAt: true,
-      updatedAt: true,
-    },
-    orderBy: { createdAt: 'desc' },
-    take: 5000,
-  });
-
+  // IMP-25-03: + экипаж (name/phone), КП (код/адрес) и дата забора pickupAt.
+  // IMP-26-03: один take:5000 заменён циклом батчей по курсору (take 500,
+  // orderBy с id-tiebreaker, cursor от последней строки) — большие таблицы
+  // больше не выгружаются одним тяжёлым запросом. Потолок 5000 сохранён —
+  // выгрузка не должна становиться «дампом таблицы»; при достижении капа
+  // и наличии строк за последней выгруженной — заголовок X-Truncated: 1.
+  const BATCH_SIZE = 500;
+  const EXPORT_CAP = 5000;
   const rows: string[] = [HEADERS.map(csvCell).join(',')];
-  for (const o of orders) {
-    rows.push(
-      [
-        o.number,
-        ORDER_TYPE_LABELS[o.type] ?? o.type,
-        ORDER_STATUS_LABELS[o.status] ?? o.status,
-        o.clientName,
-        o.phone,
-        o.city,
-        o.address,
-        o.size,
-        o.wishDate,
-        csvDate(o.pickupAt),
-        o.comment,
-        o.crew?.name ?? null,
-        o.crew?.phone ?? null,
-        o.areaLkCode,
-        o.areaAddress,
-        csvDate(o.createdAt),
-        csvDate(o.updatedAt),
-      ]
-        .map(csvCell)
-        .join(',')
-    );
+  let cursorId: string | null = null;
+  let lastAddedId: string | null = null;
+  let total = 0;
+  let truncated = false;
+  for (;;) {
+    const batch = await db.order.findMany({
+      where,
+      select: {
+        id: true, // IMP-26-03: поле курсора (в CSV не попадает)
+        number: true,
+        type: true,
+        status: true,
+        clientName: true,
+        phone: true,
+        city: true,
+        address: true,
+        size: true,
+        wishDate: true,
+        pickupAt: true,
+        comment: true,
+        crew: { select: { name: true, phone: true } },
+        areaLkCode: true,
+        areaAddress: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      // id — детерминированный tiebreaker: стабильный порядок при равных createdAt
+      // обязателен для курсорной пагинации
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: BATCH_SIZE,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+    });
+    if (batch.length === 0) break;
+    for (const o of batch) {
+      rows.push(
+        [
+          o.number,
+          ORDER_TYPE_LABELS[o.type] ?? o.type,
+          ORDER_STATUS_LABELS[o.status] ?? o.status,
+          o.clientName,
+          o.phone,
+          o.city,
+          o.address,
+          o.size,
+          o.wishDate,
+          csvDate(o.pickupAt),
+          o.comment,
+          o.crew?.name ?? null,
+          o.crew?.phone ?? null,
+          o.areaLkCode,
+          o.areaAddress,
+          csvDate(o.createdAt),
+          csvDate(o.updatedAt),
+        ]
+          .map(csvCell)
+          .join(',')
+      );
+      lastAddedId = o.id;
+      if (++total >= EXPORT_CAP) break;
+    }
+    if (total >= EXPORT_CAP && lastAddedId) {
+      // Кап достигнут: X-Truncated ставим только если за последней строкой
+      // есть ещё данные (ровно 5000 строк всего — НЕ усечение)
+      const more = await db.order.findMany({
+        where,
+        select: { id: true },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        cursor: { id: lastAddedId },
+        skip: 1,
+        take: 1,
+      });
+      truncated = more.length > 0;
+      break;
+    }
+    if (batch.length < BATCH_SIZE) break; // данные кончились
+    cursorId = batch[batch.length - 1].id;
   }
 
   // BOM (\uFEFF) — чтобы Excel корректно открыл UTF-8 с кириллицей
   const csv = '\uFEFF' + rows.join('\r\n');
   const stamp = new Date().toISOString().slice(0, 10);
 
-  return new NextResponse(csv, {
-    status: 200,
-    headers: {
-      'Content-Type': 'text/csv; charset=utf-8',
-      'Content-Disposition': `attachment; filename="orders-${stamp}.csv"`,
-      'Cache-Control': 'no-store',
-    },
-  });
+  // IMP-26-03: контракт blob'а для фронта (orders-view exportCsv) сохранён:
+  // Content-Disposition/BOM/Cache-Control без изменений; X-Truncated —
+  // аддитивный заголовок, ставится только при усечении капом
+  const headers: Record<string, string> = {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="orders-${stamp}.csv"`,
+    'Cache-Control': 'no-store',
+  };
+  if (truncated) headers['X-Truncated'] = '1';
+  return new NextResponse(csv, { status: 200, headers });
 }

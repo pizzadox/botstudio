@@ -292,12 +292,40 @@ export interface CrewDto {
   name: string;
   phone: string | null;
   notes: string | null;
+  /** IMP-26-04: базовый город экипажа — для автоназначения по городу */
+  city?: string | null;
   active: boolean;
   /** Сколько заявок сейчас закреплено (для отображения в справочнике) */
   ordersCount?: number;
   /** IMP-25: сколько из закреплённых заявок в активных статусах (не закрыто/архив) */
   activeOrders?: number;
   createdAt: string;
+}
+
+/** IMP-26-05: строка плана автоназначения экипажа по городу (POST /crews/auto-assign) */
+export interface CrewAutoAssignPlanItem {
+  crewId: string;
+  crewName: string;
+  /** Город для отображения — сырой вид из Order.city (матч выполняется по нормализованному) */
+  city: string;
+  /** Сколько заявок получит этот экипаж */
+  count: number;
+  /** ID заявок в плане (для проверки/логики фронта) */
+  orderIds: string[];
+}
+
+/** IMP-26-05: город, для которого не нашлось активного экипажа */
+export interface CrewAutoAssignUnmatched {
+  city: string;
+  count: number;
+}
+
+/** IMP-26-05: ответ POST /crews/auto-assign */
+export interface CrewAutoAssignResult {
+  /** Только при dryRun:false — сколько заявок назначено */
+  assigned?: number;
+  plan: CrewAutoAssignPlanItem[];
+  unmatched: CrewAutoAssignUnmatched[];
 }
 
 /** IMP-24: кандидат на совмещение заявки/жалобы с КП реестра */

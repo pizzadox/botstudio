@@ -41,6 +41,7 @@ import {
   Truck,
   User,
   Users,
+  Wand2, // IMP-26-07: кнопка «Автоназначить по городам»
   WifiOff,
 } from 'lucide-react';
 import { api, getAuthToken } from '@/lib/client-api';
@@ -50,6 +51,7 @@ import { parseWishDate } from '@/lib/wish-date'; // IMP-25-22: превью ра
 import type {
   AreaItem,
   AreaMatchCandidate,
+  CrewAutoAssignResult, // IMP-26-07: план автоназначения экипажей по городам
   CrewDto,
   OrderDto,
   OrderMessageDto,
@@ -305,6 +307,8 @@ function OrdersMap({
   onFocusDone,
   onKpSelect,
   selectedAreaLkCode, // IMP-25-19: КП выбранной заявки — зелёное кольцо на маркере
+  kpFocusTick, // IMP-26-06: тик «Показать на карте» из реестра КП
+  kpFocusArea, // IMP-26-06: координаты КП для easeTo (переживает зануление пропа в app-root)
   botId,
 }: {
   orders: OrderDto[];
@@ -324,6 +328,10 @@ function OrdersMap({
   onKpSelect: (area: AreaItem) => void;
   /** IMP-25-19: areaLkCode выбранной заявки — подсветка привязанной КП на карте */
   selectedAreaLkCode: string | null;
+  /** IMP-26-06: тик перелёта к КП из реестра (0 — нет фокуса; растёт при каждом фокусе) */
+  kpFocusTick?: number;
+  /** IMP-26-06: КП, к которой надо перелететь ({lat,lng}; null/без координат — только KpDialog) */
+  kpFocusArea?: AreaItem | null;
   /** IMP-23-MAP-03: смена бота → первый автоподгон камеры выполняется заново (один раз) */
   botId?: string;
 }) {
@@ -660,6 +668,28 @@ function OrdersMap({
     window.addEventListener('bstudio:kp-ease', onKpEase);
     return () => window.removeEventListener('bstudio:kp-ease', onKpEase);
   }, []);
+
+  // IMP-26-06: «Показать на карте» из реестра КП (bstudio:kp-focus → app-root →
+  // OrdersView → тик+координаты). Ref последнего обработанного тика: нулевой старт
+  // и рендеры без смены тика не срабатывают; тик «сгорает» только ПОСЛЕ ready —
+  // карта инициализируется асинхронно, эффект переживёт переключение ready.
+  // Zoom 16 ≥ KP_ZOOM_GATE: moveend-цепочка КП-слоя сама догрузит bbox и отрисует
+  // кластеры/маркеры — маркер синхронно НЕ ищем (данные ещё грузятся).
+  const kpFocusTickRef = useRef(0);
+  useEffect(() => {
+    if (!kpFocusTick || kpFocusTick === kpFocusTickRef.current) return;
+    const map = mapRef.current;
+    if (!ready || !map) return; // easeTo до ready невозможен — дождёмся переключения
+    kpFocusTickRef.current = kpFocusTick;
+    // IMP-26-REV-6: фокус из реестра КП важнее автоподгона — гасим autoFit на этой
+    // инстанции карты, иначе свежий ремоунт (autoFitDoneRef=false) перебьёт easeTo
+    // fitBounds'ом по всей области, как только догрузятся заявки (готово → visibleKey).
+    autoFitDoneRef.current = true;
+    const a = kpFocusArea;
+    if (!a || a.lat == null || a.lng == null) return; // без координат — только KpDialog с адресом
+    if (!kpEnabled) setKpEnabled(true); // persist (bstudio.orders.kpEnabled) + bbox-загрузка сработают сами
+    map.easeTo({ center: [a.lng, a.lat], zoom: 16, duration: 700 });
+  }, [ready, kpFocusTick, kpFocusArea, kpEnabled]);
 
   // IMP-25-18: на moveend — мгновенная перерисовка кластеров/zoom-gate + отложенная
   // (600мс) догрузка bbox. renderKpClusters меняется вместе с данными, поэтому
@@ -2641,11 +2671,14 @@ function CrewRow({
   crew,
   onUpdate,
   onRemoveRequest,
+  onPatchCity, // IMP-26-07: сохранить город экипажа (PATCH {city})
 }: {
   botId: string;
   crew: CrewDto;
   onUpdate: (crew: CrewDto) => void;
   onRemoveRequest: (crew: CrewDto) => void;
+  /** IMP-26-07: сохранить город экипажа (null — «Без города»); PATCH уходит только с полем city */
+  onPatchCity: (city: string | null) => void;
 }) {
   const { toast } = useToast();
   const [name, setName] = useState(crew.name);
@@ -2668,8 +2701,13 @@ function CrewRow({
         });
         onUpdate(d.crew);
         return true;
-      } catch {
-        toast({ title: 'Не удалось сохранить экипаж', variant: 'destructive' });
+      } catch (e) {
+        // IMP-26-07: причина ошибки — в тосте (паттерн IMP-25-22), не глотаем
+        toast({
+          title: 'Не удалось сохранить экипаж',
+          description: e instanceof Error ? e.message : undefined,
+          variant: 'destructive',
+        });
         setName(crew.name); // откат локальных правок к сохранённым
         setPhone(crew.phone ?? '');
         return false;
@@ -2718,6 +2756,29 @@ function CrewRow({
             onChange={(e) => setPhone(e.target.value)}
             onBlur={savePhone}
           />
+          {/* IMP-26-07: базовый город экипажа — для автоназначения заявок по городам
+              (26-BE: POST /crews/auto-assign). Стиль Select города карточки заявки:
+              «__none» → null + SERVICE_CITIES. Тач ≥44px на мобиле (min-h-11 sm:h-9). */}
+          <Select
+            value={crew.city ?? '__none'}
+            onValueChange={(v) => onPatchCity(v === '__none' ? null : v)}
+            disabled={busy}
+          >
+            <SelectTrigger
+              className="min-h-11 w-full sm:h-9"
+              aria-label={`Город экипажа «${crew.name}»`}
+            >
+              <SelectValue placeholder="Город" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none">Без города</SelectItem>
+              {SERVICE_CITIES.map((c) => (
+                <SelectItem key={c} value={c}>
+                  {c}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
             {typeof crew.ordersCount === 'number' && (
               <span>
@@ -2753,20 +2814,24 @@ function CrewRow({
   );
 }
 
-/** Диалог управления справочником экипажей: список + создание + удаление.
- *  crews/setCrews живут в OrdersView — изменения видны карточке заявки сразу. */
+/** Диалог управления справочником экипажей: список + создание + удаление + город
+ *  экипажа (IMP-26-07) + автоназначение заявок по городам (план → подтверждение →
+ *  применение). crews/setCrews живут в OrdersView — изменения видны карточке заявки сразу. */
 function CrewsManagerDialog({
   botId,
   open,
   onClose,
   crews,
   setCrews,
+  onApplied, // IMP-26-07: после применения автоназначения — перезагрузить заявки/экипажей
 }: {
   botId: string;
   open: boolean;
   onClose: () => void;
   crews: CrewDto[];
   setCrews: Dispatch<SetStateAction<CrewDto[]>>;
+  /** IMP-26-07: вызывается после успешного применения автоназначения */
+  onApplied?: () => void;
 }) {
   const { toast } = useToast();
   const [name, setName] = useState('');
@@ -2775,6 +2840,10 @@ function CrewsManagerDialog({
   /** экипаж, ожидающий подтверждения удаления */
   const [deletingCrew, setDeletingCrew] = useState<CrewDto | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // IMP-26-07: автоназначение — план (dryRun) / применение / busy-состояния
+  const [autoPlan, setAutoPlan] = useState<CrewAutoAssignResult | null>(null);
+  const [autoAssigning, setAutoAssigning] = useState(false); // запрос плана (dryRun)
+  const [autoApplying, setAutoApplying] = useState(false); // применение (dryRun:false)
 
   // при закрытии — чистим локальные состояния
   useEffect(() => {
@@ -2783,6 +2852,9 @@ function CrewsManagerDialog({
       setPhone('');
       setDeletingCrew(null);
       setDeleting(false);
+      setAutoPlan(null); // IMP-26-07
+      setAutoAssigning(false);
+      setAutoApplying(false);
     }
   }, [open]);
 
@@ -2799,6 +2871,85 @@ function CrewsManagerDialog({
     (c: CrewDto) => setCrews((prev) => prev.map((x) => (x.id === c.id ? c : x))),
     [setCrews]
   );
+
+  // IMP-26-07: город экипажа — PATCH только {city} (null = «Без города»);
+  // контракт 26-BE: city: string | null (undefined = не менять). Причина ошибки — в тосте.
+  const patchCity = useCallback(
+    async (target: CrewDto, city: string | null) => {
+      try {
+        const d = await api<{ crew: CrewDto }>(`/api/bots/${botId}/crews/${target.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ city }),
+        });
+        updateCrew(d.crew);
+      } catch (e) {
+        toast({
+          title: 'Не удалось сохранить город экипажа',
+          description: e instanceof Error ? e.message : undefined,
+          variant: 'destructive',
+        });
+      }
+    },
+    [botId, updateCrew, toast]
+  );
+
+  // IMP-26-07: dryRun-план автоназначения (бэк 26-BE: POST /crews/auto-assign;
+  // dryRun default TRUE — передаём явно для читаемости). Пустой план+unmatched —
+  // тост без AlertDialog.
+  const runAutoAssignPlan = useCallback(async () => {
+    if (autoAssigning || autoApplying) return;
+    setAutoAssigning(true);
+    try {
+      const d = await api<CrewAutoAssignResult>(`/api/bots/${botId}/crews/auto-assign`, {
+        method: 'POST',
+        body: JSON.stringify({ dryRun: true }),
+      });
+      if ((d.plan ?? []).length === 0 && (d.unmatched ?? []).length === 0) {
+        toast({ title: 'Нечего назначать: нет заявок без экипажа или городов' });
+        return;
+      }
+      setAutoPlan(d);
+    } catch (e) {
+      toast({
+        title: 'Не удалось построить план автоназначения',
+        description: e instanceof Error ? e.message : undefined,
+        variant: 'destructive',
+      });
+    } finally {
+      setAutoAssigning(false);
+    }
+  }, [botId, autoAssigning, autoApplying, toast]);
+
+  // IMP-26-07: применение плана — POST {dryRun:false, onlyUnassigned:true};
+  // после успеха — тостатистикой, закрытие плана и onApplied (перезагрузка данных)
+  const applyAutoAssign = useCallback(async () => {
+    if (autoApplying) return;
+    setAutoApplying(true);
+    try {
+      const d = await api<CrewAutoAssignResult>(`/api/bots/${botId}/crews/auto-assign`, {
+        method: 'POST',
+        body: JSON.stringify({ dryRun: false, onlyUnassigned: true }),
+      });
+      const plan = d.plan ?? [];
+      const unmatchedCount = (d.unmatched ?? []).reduce((s, u) => s + (u.count ?? 0), 0);
+      toast({
+        title:
+          plan.length === 0
+            ? 'Нет заявок для автоназначения'
+            : `Назначено: ${d.assigned ?? 0} · Не сопоставлено: ${unmatchedCount}`,
+      });
+      setAutoPlan(null);
+      onApplied?.();
+    } catch (e) {
+      toast({
+        title: 'Не удалось применить автоназначение',
+        description: e instanceof Error ? e.message : undefined,
+        variant: 'destructive',
+      });
+    } finally {
+      setAutoApplying(false);
+    }
+  }, [botId, autoApplying, onApplied, toast]);
 
   const create = async () => {
     const n = name.trim();
@@ -2885,6 +3036,22 @@ function CrewsManagerDialog({
             Добавить экипаж
           </Button>
         </form>
+        {/* IMP-26-07: автоназначение активных заявок без экипажа по городам экипажей —
+            сначала dryRun-план (AlertDialog ниже), затем применение по подтверждению */}
+        <Button
+          type="button"
+          variant="outline"
+          className="h-11 w-full sm:h-9"
+          onClick={() => void runAutoAssignPlan()}
+          disabled={autoAssigning || autoApplying}
+        >
+          {autoAssigning ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+          ) : (
+            <Wand2 className="h-4 w-4" aria-hidden />
+          )}
+          Автоназначить по городам
+        </Button>
         {sorted.length === 0 ? (
           <div className="rounded-xl border border-dashed py-6 text-center text-xs text-muted-foreground">
             Экипажей пока нет — добавьте первого.
@@ -2898,6 +3065,7 @@ function CrewsManagerDialog({
                 crew={c}
                 onUpdate={updateCrew}
                 onRemoveRequest={setDeletingCrew}
+                onPatchCity={(city) => void patchCity(c, city)} // IMP-26-07
               />
             ))}
           </ul>
@@ -2930,6 +3098,83 @@ function CrewsManagerDialog({
             >
               {deleting && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
               Удалить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      {/* IMP-26-07: подтверждение плана автоназначения (паттерн bulkConfirm карточки):
+          таблица «Экипаж → Город → N заявок» + amber-блок несопоставленных городов */}
+      <AlertDialog
+        open={!!autoPlan}
+        onOpenChange={(o) => {
+          if (!o && !autoApplying) setAutoPlan(null);
+        }}
+      >
+        <AlertDialogContent className="max-h-[92dvh] max-w-md overflow-y-auto">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Автоназначить заявки по городам?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Активные заявки без экипажа получат экипажа своего города. Заявки с уже назначенным
+              экипажем не изменяются.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {(autoPlan?.plan?.length ?? 0) > 0 && (
+            <div className="overflow-hidden rounded-lg border" role="table" aria-label="План автоназначения">
+              <div
+                role="row"
+                className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 border-b bg-muted/50 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"
+              >
+                <span role="columnheader">Экипаж</span>
+                <span role="columnheader">Город</span>
+                <span role="columnheader" className="text-right">Заявок</span>
+              </div>
+              <div className="divide-y">
+                {autoPlan!.plan.map((p) => (
+                  <div
+                    key={p.crewId}
+                    role="row"
+                    className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2 px-2.5 py-1.5 text-xs"
+                  >
+                    <span role="cell" className="min-w-0 truncate font-medium" title={p.crewName}>
+                      {p.crewName}
+                    </span>
+                    <span role="cell" className="min-w-0 truncate text-muted-foreground" title={p.city}>
+                      {p.city}
+                    </span>
+                    <span role="cell" className="text-right font-medium tabular-nums">{p.count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {(autoPlan?.unmatched?.length ?? 0) > 0 && (
+            /* IMP-26-07: города без активного экипажа — amber-блок с dark-парой */
+            <div
+              role="note"
+              className="space-y-1 rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
+            >
+              <div className="font-medium">Не сопоставлено (нет экипажа с таким городом):</div>
+              {autoPlan!.unmatched.map((u) => (
+                <div key={u.city} className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate" title={u.city}>
+                    {u.city}
+                  </span>
+                  <span className="shrink-0 tabular-nums">{u.count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={autoApplying}>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={autoApplying}
+              onClick={(e) => {
+                e.preventDefault(); // диалог не закрываем — ждём ответ сервера
+                void applyAutoAssign();
+              }}
+            >
+              {autoApplying && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              Применить
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -3490,12 +3735,18 @@ export default function OrdersView({
   onBack,
   focusOrderId,
   onFocusConsumed,
+  kpFocusArea, // IMP-26-06: КП из реестра (areas-view «Показать на карте»)
+  onKpFocusConsumed,
 }: {
   bot: { id: string; name: string };
   onBack: () => void;
   /** id заявки из уведомления — открыть карту и подсветить её точку */
   focusOrderId?: string | null;
   onFocusConsumed?: () => void;
+  /** IMP-26-06: AreaItem из реестра КП — открыть карту с карточкой КП (KpDialog) */
+  kpFocusArea?: AreaItem | null;
+  /** IMP-26-06: очистить фокус в app-root после принятия */
+  onKpFocusConsumed?: () => void;
 }) {
   const { toast } = useToast();
   const [orders, setOrders] = useState<OrderDto[]>([]);
@@ -3539,6 +3790,11 @@ export default function OrdersView({
   const [crewsOpen, setCrewsOpen] = useState(false);
   // IMP-24-FE1-05: карточка КП (открывается кликом по КП-маркеру на карте)
   const [kpDialogArea, setKpDialogArea] = useState<AreaItem | null>(null);
+  // IMP-26-06: фокус КП из реестра — тик для OrdersMap (easeTo) и ЛОКАЛЬНАЯ копия
+  // координат: onKpFocusConsumed зануляет проп в app-root в том же коммите, что
+  // меняет тик, — без копии map.easeTo не нашёл бы координаты (race с пропом)
+  const [kpFocusTick, setKpFocusTick] = useState(0);
+  const [kpFocusTarget, setKpFocusTarget] = useState<AreaItem | null>(null);
   // IMP-25-21: фильтр по экипажу ('all' | 'none' | crewId) + полное число заявок (total)
   const [crewFilter, setCrewFilter] = useState<string>(
     () => (typeof window === 'undefined' ? null : readStored('bstudio.orders.crewFilter')) ?? 'all'
@@ -3675,6 +3931,30 @@ export default function OrdersView({
     setFocus((f) => ({ id: focusOrderId, tick: (f?.tick ?? 0) + 1 }));
     onFocusConsumed?.();
   }, [focusOrderId, onFocusConsumed]);
+
+  // IMP-26-06: «Показать на карте» из реестра КП (эффект-близнец focusOrderId):
+  // карта + KpDialog сразу (адрес/координаты); без выбранной заявки KpDialog честно
+  // предложит выбрать заявку для совмещения. kpFocusTick растёт — повторный клик
+  // по той же КП срабатывает снова; координаты дублируются в kpFocusTarget (см. выше)
+  useEffect(() => {
+    if (!kpFocusArea) return;
+    setTab('map');
+    setSelectedId(null);
+    setDialogOpen(false);
+    setPlacementId(null);
+    setKpFocusTarget(kpFocusArea);
+    setKpDialogArea(kpFocusArea);
+    setKpFocusTick((t) => t + 1);
+    onKpFocusConsumed?.();
+  }, [kpFocusArea, onKpFocusConsumed]);
+
+  // IMP-26-REV-4: при уходе с вкладки карты сбрасываем фокус-тик — OrdersMap размонтируется,
+  // его tickRef обнуляется; без сброса возврат на карту перелетал бы к последней КП повторно.
+  useEffect(() => {
+    if (tab === 'map') return;
+    setKpFocusTick(0);
+    setKpFocusTarget(null);
+  }, [tab]);
 
   // IMP-23-MAP-01: очистка focus-состояния карты — OrdersMap вызывает после перелёта,
   // чтобы focus не жил вечно (одноразовость сохраняет tick)
@@ -4137,6 +4417,8 @@ export default function OrdersView({
                 onHighlight={setSelectedId}
                 onKpSelect={openKpDialog}
                 selectedAreaLkCode={selectedOrder?.areaLkCode ?? null} // IMP-25-19
+                kpFocusTick={kpFocusTick} // IMP-26-06: перелёт к КП из реестра
+                kpFocusArea={kpFocusTarget} // IMP-26-06: координаты для easeTo
               />
             </div>
             {withoutGeo.length > 0 && (
@@ -4294,6 +4576,12 @@ export default function OrdersView({
         onClose={() => setCrewsOpen(false)}
         crews={crews}
         setCrews={setCrews}
+        onApplied={() => {
+          // IMP-26-07: после автоназначения — свежие экипажи (ordersCount/activeOrders)
+          // и свежие заявки (новые crewId)
+          void loadCrews();
+          void load();
+        }}
       />
       {/* IMP-24-FE1-05: карточка КП реестра (клик по КП-маркеру на карте) */}
       <KpDialog

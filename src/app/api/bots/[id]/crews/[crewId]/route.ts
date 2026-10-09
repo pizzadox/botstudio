@@ -5,7 +5,7 @@ import { normalizePhone } from '@/lib/orders'; // IMP-25-07: нормализа�
 import type { CrewDto } from '@/lib/studio-types';
 
 /**
- * IMP-24-BE-18: карточка экипажа — PATCH (частичное обновление name/phone/notes/active)
+ * IMP-24-BE-18: карточка экипажа — PATCH (частичное обновление name/phone/notes/city/active)
  * и DELETE. Удаление отвязывает заявки автоматически (Order.crewId onDelete: SetNull).
  * Экипаж обязателен принадлежащий этому боту — иначе 404.
  */
@@ -15,12 +15,14 @@ type Params = { params: Promise<{ id: string; crewId: string }> };
 const MAX_NAME = 120;
 const MAX_PHONE = 20;
 const MAX_NOTES = 300;
+const MAX_CITY = 120; // IMP-26-04: город экипажа
 
 function toDto(c: {
   id: string;
   name: string;
   phone: string | null;
   notes: string | null;
+  city: string | null; // IMP-26-04
   active: boolean;
   createdAt: Date;
   _count?: { orders: number };
@@ -30,6 +32,7 @@ function toDto(c: {
     name: c.name,
     phone: c.phone,
     notes: c.notes,
+    city: c.city, // IMP-26-04: город в DTO (CrewDto.city из studio-types)
     active: c.active,
     ordersCount: c._count?.orders ?? 0,
     createdAt: c.createdAt.toISOString(),
@@ -79,11 +82,15 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     if (body.notes !== undefined) {
       data.notes = typeof body.notes === 'string' ? body.notes.trim().slice(0, MAX_NOTES) || null : null;
     }
+    if (body.city !== undefined) {
+      // IMP-26-04: город экипажа — trim, ≤120; null — очистить (undefined = не менять)
+      data.city = typeof body.city === 'string' ? body.city.trim().slice(0, MAX_CITY) || null : null;
+    }
     if (typeof body.active === 'boolean') data.active = body.active;
 
     if (Object.keys(data).length === 0) {
       return NextResponse.json(
-        { error: 'Нечего обновлять: передайте name/phone/notes и/или active' },
+        { error: 'Нечего обновлять: передайте name/phone/notes/city и/или active' },
         { status: 400 }
       );
     }

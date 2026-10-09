@@ -294,6 +294,15 @@ function geocodeRetryLater(orderId: string, query: string): void {
 }
 
 /**
+ * IMP-23-BE-07/IMP-26-05: срез мусорного префикса «городской/муниципальный округ »
+ * с чисткой краёв. Вынесен из reverseGeocode для переиспользования
+ * (normalizeCityName); поведение reverseGeocode не изменилось (та же регулярка и trim).
+ */
+function stripCityPrefix(s: string): string {
+  return s.replace(/^(городской|муниципальный) округ\s*/i, '').trim();
+}
+
+/**
  * Обратный геокодинг: координаты → адрес (Nominatim /reverse).
  * Используется, когда оператор ставит/сдвигает точку заявки вручную —
  * адрес в карточке подтягивается под точку на карте.
@@ -343,9 +352,9 @@ export async function reverseGeocode(
         (a.town ?? '').trim() ||
         (a.village ?? '').trim() ||
         (a.municipality ?? '').trim();
-      const city = rawCity
-        ? rawCity.replace(/^(городской|муниципальный) округ\s*/i, '').trim() || null
-        : null;
+      // IMP-23-BE-07: чистка префикса вынесена в stripCityPrefix (IMP-26-05) —
+      // поведение идентично прежней inline-замене
+      const city = rawCity ? stripCityPrefix(rawCity) || null : null;
       const address = street || json.name || a.suburb || null;
       return address ? { address, city } : null;
     } catch {
@@ -373,6 +382,17 @@ export function normalizePhone(input?: string | null): string | null {
   if (!digits) return null; // IMP-25-REV-6: голый «+»/«+abc» — не мусор в БД
   const phone = (plus + digits).slice(0, 20);
   return phone || null;
+}
+
+/**
+ * IMP-26-05: нормализованное имя города для ТОЧНОГО сопоставления при
+ * автоназначении экипажей (POST /api/bots/[id]/crews/auto-assign):
+ * trim, lowercase, ё→е, срез префикса «городской/муниципальный округ»
+ * (stripCityPrefix — общий с reverseGeocode, IMP-23-BE-07).
+ * «городской округ Великий Новгород» и «Великий Новгород» → «великий новгород».
+ */
+export function normalizeCityName(s: string): string {
+  return stripCityPrefix(s.trim().toLowerCase().replace(/ё/g, 'е'));
 }
 
 export async function createOrder(input: CreateOrderInput) {

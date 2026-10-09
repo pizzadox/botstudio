@@ -95,6 +95,24 @@ export async function POST(req: NextRequest, { params }: Params) {
     const address = String(body.address ?? '').trim().slice(0, 300) || null;
     const city = String(body.city ?? '').trim().slice(0, 120) || null; // IMP-23-BE-06
 
+    // IMP-26-02: lat/lng — валидация диапазонов (семантика эталона IMP-25-09/REV-8
+    // у жалоб: тот же текст ошибки и 400). undefined/null — точки нет (в заявке
+    // запишется null); нечисловое/NaN/вне диапазона — 400.
+    const latValid =
+      body.lat === undefined ||
+      body.lat === null ||
+      (typeof body.lat === 'number' && Number.isFinite(body.lat) && body.lat >= -90 && body.lat <= 90);
+    const lngValid =
+      body.lng === undefined ||
+      body.lng === null ||
+      (typeof body.lng === 'number' && Number.isFinite(body.lng) && body.lng >= -180 && body.lng <= 180);
+    if (!latValid || !lngValid) {
+      return NextResponse.json(
+        { error: 'lat/lng — числа (lat −90…90, lng −180…180) или null' },
+        { status: 400 }
+      );
+    }
+
     let lat = typeof body.lat === 'number' && Number.isFinite(body.lat) ? body.lat : null;
     let lng = typeof body.lng === 'number' && Number.isFinite(body.lng) ? body.lng : null;
     let geoSource: string | null = lat != null && lng != null ? 'manual' : null;
