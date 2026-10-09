@@ -4,6 +4,7 @@ import { getSessionUser } from '@/lib/auth';
 import { rateLimit } from '@/lib/rate-limit'; // IMP-26-03: лимит на выгрузку CSV
 import { ORDER_STATUS_LABELS, ORDER_TYPE_LABELS } from '@/lib/orders';
 import { ORDER_STATUSES } from '@/lib/order-status';
+import { csvCell } from '@/lib/csv'; // IMP-27-04: общее CSV-экранирование (вынесено из этого файла)
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -27,18 +28,6 @@ const HEADERS = [
   'Создана',
   'Обновлена',
 ] as const;
-
-/**
- * Экранирование значения CSV: если есть кавычки/запятые/переносы —
- * оборачиваем в кавычки и удваиваем внутренние.
- * IMP-25-03: защита от CSV-инъекции — значение, начинающееся на = + - @ TAB,
- * префиксуем апострофом (Excel/LibreOffice не исполнит его как формулу).
- */
-function csvCell(value: unknown): string {
-  let s = value == null ? '' : String(value);
-  if (/^[=+\-@\t]/.test(s)) s = `'${s}`;
-  return /["\r\n,]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
 
 // IMP-25-03: все даты CSV — в Europe/Moscow (+3, без DST), а не в UTC сервера;
 // формат прежний Excel-дружелюбный «YYYY-MM-DD HH:mm»

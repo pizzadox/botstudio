@@ -4168,7 +4168,16 @@ export default function OrdersView({
       const headers: Record<string, string> = {};
       if (token) headers.Authorization = `Bearer ${token}`;
       const res = await fetch(`/api/bots/${bot.id}/orders/export?${sp}`, { headers });
-      if (!res.ok) throw new Error(`export ${res.status}`);
+      if (!res.ok) {
+        // IMP-27-02: rate-limit экспорта (5/мин) → 429 JSON; понятный тост вместо generic
+        if (res.status === 429) {
+          toast({ title: 'Слишком много выгрузок — подождите минуту', variant: 'destructive' });
+          return; // finally снимет exporting
+        }
+        throw new Error(`export ${res.status}`);
+      }
+      // IMP-27-02: same-origin — заголовок доступен; '1' = выгрузка упёрлась в кап 5000
+      const truncated = res.headers.get('X-Truncated') === '1';
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -4178,13 +4187,20 @@ export default function OrdersView({
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      toast({ title: 'CSV выгружен' });
+      // IMP-27-02: честный сигнал усечения (бэк ставит X-Truncated: 1 при капе 5000)
+      if (truncated)
+        toast({
+          title: 'Выгружены последние 5000 заявок',
+          description: 'Сужьте фильтры (даты, тип, экипаж), чтобы выгрузить остальное',
+          variant: 'destructive',
+        });
+      else toast({ title: 'CSV выгружен' });
     } catch {
       toast({ title: 'Не удалось выгрузить CSV', variant: 'destructive' });
     } finally {
       setExporting(false);
     }
-  }, [bot.id, dateFilter, toast]);
+  }, [bot.id, dateFilter, toast, typeFilter, crewFilter]); // IMP-27-02: фикс stale-closure фильтров
 
   // IMP-25-21: экипажи для фильтра/bulk-бара — активные первыми, по алфавиту
   const crewsSorted = useMemo(

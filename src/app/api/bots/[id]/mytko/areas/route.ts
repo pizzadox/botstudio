@@ -12,6 +12,9 @@ import { haversineM, getAreasIndexed, type AreaIndexEntry } from '@/lib/area-mat
  *          SQLite-коллация LOWER() не знает нелатиницу);
  * ?city= — подмножество адресов, содержащих город;
  * ?page= (1-based), ?take= (дефолт 50, максимум 500).
+ * IMP-27-03: ?sort=address|lkCode (дефолт address), ?dir=asc|desc (дефолт asc) —
+ * серверная сортировка list-режима; ответ эхирует применённые sort/dir
+ * (near/bbox параметры игнорируют — их ранний return раньше парса).
  *
  * IMP-24-BE-06/07: режимы карты (q/city/page в них игнорируются):
  * ?bbox=minLng,minLat,maxLng,maxLat[&sort=dist] — точки в рамке (IMP-25-17:
@@ -20,9 +23,10 @@ import { haversineM, getAreasIndexed, type AreaIndexEntry } from '@/lib/area-mat
  * ближайшие точки по haversine, в item добавляется distanceM.
  * Ответ во всех режимах — один контракт AreasResponse.
  *
- * lat/lng могут быть null — отдаются как есть. Сортировка address asc
- * (null последними), стабильный тайбрейк lkCode (уникален в пределах бота) —
- * пагинация детерминирована.
+ * lat/lng могут быть null — отдаются как есть. Сортировка по ключу ?sort
+ * (IMP-27-03), null-address последними в обоих направлениях, тайбрейк lkCode
+ * всегда asc (уникален в пределах бота) — «Показать ещё» детерминировано
+ * и при asc, и при desc.
  * Если mytkoConfig отсутствует/не читается — пустой список с areasSyncedAt:null
  * (НЕ 404 — фронт показывает CTA «загрузить реестр»).
  */
@@ -40,6 +44,13 @@ const NEAR_DEFAULT_RADIUS = 300;
 const NEAR_MAX_RADIUS = 2000;
 const NEAR_DEFAULT_LIMIT = 5;
 const NEAR_MAX_LIMIT = 20;
+
+// IMP-27-03: серверная сортировка list-режима — белые списки ключа и направления
+// (невалидные значения query молча откатываются к дефолту — не 400)
+const SORT_KEYS = ['address', 'lkCode'] as const;
+const SORT_DIRS = ['asc', 'desc'] as const;
+type SortKey = (typeof SORT_KEYS)[number];
+type SortDir = (typeof SORT_DIRS)[number];
 
 function noStore(body: Record<string, unknown>): NextResponse {
   const res = NextResponse.json(body);
@@ -200,6 +211,19 @@ export async function GET(req: NextRequest, { params }: Params) {
     });
   }
 
+  // ── list-режим (реестр): q/city-фильтры + серверная сортировка ─────────────
+
+  // IMP-27-03: серверная сортировка — sort/dir из query; невалидные значения
+  // молча откатываются к дефолту (реестр должен всегда отвечать — здесь не 400)
+  const sortParam = sp.get('sort') ?? '';
+  const sort: SortKey = (SORT_KEYS as readonly string[]).includes(sortParam)
+    ? (sortParam as SortKey)
+    : 'address';
+  const dirParam = sp.get('dir') ?? '';
+  const dir: SortDir = (SORT_DIRS as readonly string[]).includes(dirParam)
+    ? (dirParam as SortDir)
+    : 'asc';
+
   // Фильтры в памяти (см. шапку): q — адрес ИЛИ код; city — только адрес.
   // IMP-25-10: lowercase адресов предвычислен в индексе кэша — без
   // .toLowerCase() всех 11k адресов на каждый запрос.
@@ -221,15 +245,23 @@ export async function GET(req: NextRequest, { params }: Params) {
     });
   }
 
-  // Сортировка: address asc, null последними; тайбрейк lkCode — стабильная пагинация
+  // IMP-27-03: сортировка по ключу sort (address|lkCode) в направлении dir;
+  // null-address последними в ОБЕИХ направлениях (позиция null не инвертируется),
+  // тайбрейк byLk всегда asc — одинаковые ключи идут в одном порядке при asc
+  // и desc, «Показать ещё» на фронте детерминировано
   const byLk = (a: { lkCode: string }, b: { lkCode: string }) =>
     a.lkCode < b.lkCode ? -1 : a.lkCode > b.lkCode ? 1 : 0;
   list = [...list].sort((a, b) => {
-    if (!a.address && !b.address) return byLk(a, b);
-    if (!a.address) return 1;
-    if (!b.address) return -1;
-    const c = a.address.localeCompare(b.address, 'ru');
-    return c !== 0 ? c : byLk(a, b);
+    if (sort === 'address' && (!a.address || !b.address)) {
+      if (!a.address && !b.address) return byLk(a, b);
+      return !a.address ? 1 : -1;
+    }
+    const c =
+      sort === 'lkCode'
+        ? byLk(a, b)
+        : (a.address ?? '').localeCompare(b.address ?? '', 'ru');
+    if (c !== 0) return dir === 'desc' ? -c : c;
+    return byLk(a, b);
   });
 
   const total = list.length;
@@ -249,6 +281,10 @@ export async function GET(req: NextRequest, { params }: Params) {
     take,
     areasSyncedAt,
     areasCount,
+    // IMP-27-03: эхо применённой сортировки — фронту нужно отображать активное
+    // направление; поля аддитивны (старый фронт их просто не читает)
+    sort,
+    dir,
   });
   return res;
 }

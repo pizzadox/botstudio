@@ -803,6 +803,9 @@ export async function runEngine(
               // IMP-24-BE-02: разобранная дата подачи машины → отдельное поле
               pickupAt: parsedWish.date,
               comment: cfg.comment ? interpolate(cfg.comment, state.vars) : null,
+              // IMP-27-05: автоназначение экипажа по городу заявки (opt-in,
+              // undefined → false; разрешение экипажа — внутри createOrder)
+              autoAssignCrew: cfg.autoAssignCrew === true,
             });
             state.vars['order.number'] = String(order.number);
             state.vars['order.id'] = order.id;

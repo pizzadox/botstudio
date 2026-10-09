@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
-import type { Order } from '@prisma/client';
+// IMP-27-05: Crew — тип возврата хелпера findActiveCrewByCity
+import type { Crew, Order } from '@prisma/client';
 
 /**
  * Заявки клиентов (вывоз отходов / КГМ).
@@ -42,6 +43,10 @@ export interface CreateOrderInput {
   areaAddress?: string | null;
   /// IMP-24: экипаж (Crew), назначенный на заявку
   crewId?: string | null;
+  /// IMP-27-05: автоназначить активный экипаж по городу заявки, если crewId не
+  /// задан (opt-in из сценария; матч точный по normalizeCityName — правила 1:1
+  /// с POST /api/bots/[id]/crews/auto-assign; не найден/ошибка — тихий фейл)
+  autoAssignCrew?: boolean;
   comment?: string | null;
   status?: string;
   lat?: number | null;
@@ -395,6 +400,31 @@ export function normalizeCityName(s: string): string {
   return stripCityPrefix(s.trim().toLowerCase().replace(/ё/g, 'е'));
 }
 
+/**
+ * IMP-27-05: первый активный экипаж бота по городу заявки. Правила 1:1 с
+ * POST /api/bots/[id]/crews/auto-assign (:79-91): активные с city != null,
+ * порядок name asc (детерминированный), матч ТОЧНЫЙ по normalizeCityName
+ * входящего города против normalizeCityName(crew.city), первый совпавший.
+ * Город пустой/не задан → сразу null (как в роуте: пустой ключ не матчится).
+ */
+export async function findActiveCrewByCity(
+  botId: string,
+  city: string | null | undefined
+): Promise<Crew | null> {
+  if (!city || !city.trim()) return null;
+  const key = normalizeCityName(city);
+  if (!key) return null;
+  const crews = await db.crew.findMany({
+    where: { botId, active: true, city: { not: null } },
+    orderBy: { name: 'asc' },
+  });
+  for (const c of crews) {
+    if (!c.city) continue; // страховка (where уже отсёк)
+    if (normalizeCityName(c.city) === key) return c;
+  }
+  return null;
+}
+
 export async function createOrder(input: CreateOrderInput) {
   // BE22-19: нормализация полей из сценария (бот собирает их из {{переменных}} —
   // длина/формат не гарантированы). Пределы согласованы с операторской формой
@@ -437,6 +467,20 @@ export async function createOrder(input: CreateOrderInput) {
   }
 
   let order: Order | null = null;
+  // IMP-27-05: автоназначение экипажа по городу (opt-in из сценария, только если
+  // crewId не задан). Тихий фейл: экипаж не найден или запрос упал — заявка
+  // всё равно создаётся без экипажа; order_error остаётся флагом ТОЛЬКО о
+  // создании заявки, автоназначение его не трогает.
+  let crewId = input.crewId ?? null;
+  if (!crewId && input.autoAssignCrew) {
+    try {
+      const crew = await findActiveCrewByCity(input.botId, city);
+      crewId = crew?.id ?? null;
+      if (!crew) console.warn('[orders] auto-assign: экипаж по городу не найден', city);
+    } catch (e) {
+      console.warn('[orders] auto-assign failed', e);
+    }
+  }
   // До 3 попыток: unique(botId, number) может нарушиться при гонке
   for (let attempt = 0; attempt < 3 && !order; attempt++) {
     try {
@@ -457,7 +501,7 @@ export async function createOrder(input: CreateOrderInput) {
           pickupAt: input.pickupAt ?? null,
           areaLkCode,
           areaAddress,
-          crewId: input.crewId ?? null,
+          crewId, // IMP-27-05: input.crewId либо подобранный по городу экипаж
           comment,
           status: input.status ?? 'new',
           lat,

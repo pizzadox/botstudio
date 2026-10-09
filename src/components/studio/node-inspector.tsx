@@ -272,6 +272,30 @@ export default function NodeInspector({
                       />
                     </div>
                   </div>
+                  {/* IMP-27-05: автоназначение экипажа по городу заявки (opt-in,
+                      undefined → false — старые сценарии без поля не падают).
+                      Паттерн Switch-строки как у «Память диалога» (:605-617):
+                      bordered-ряд p-3 даёт тач ≥44px и на мобиле. */}
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <div>
+                      <Label htmlFor="insp-auto-crew" className="text-sm">
+                        Экипаж автоматически
+                      </Label>
+                      <p className="text-[11px] text-muted-foreground">
+                        Назначить экипаж по городу заявки (если найден)
+                      </p>
+                    </div>
+                    <Switch
+                      id="insp-auto-crew"
+                      aria-label="Экипаж автоматически"
+                      checked={d.createOrder?.autoAssignCrew === true}
+                      onCheckedChange={(v) =>
+                        onChange({
+                          createOrder: { ...d.createOrder, autoAssignCrew: v },
+                        })
+                      }
+                    />
+                  </div>
                   <p className="text-[11px] text-muted-foreground">
                     Перед показом сообщения бот создаст заявку с номером — он подставится в {'{{order.number}}'}. Заявка появится в разделе «Заявки» на карте.
                   </p>

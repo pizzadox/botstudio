@@ -72,6 +72,13 @@ export interface FlowNodeData {
     dateVar?: string;
     /** Статичный комментарий (может содержать {{переменные}}) */
     comment?: string;
+    /**
+     * IMP-27-05: автоназначить активный экипаж по городу заявки
+     * (opt-in, undefined = false). Матч точный по normalizeCityName —
+     * правила 1:1 с POST /crews/auto-assign; экипаж не найден →
+     * заявка создаётся без экипажа (тихий фейл).
+     */
+    autoAssignCrew?: boolean;
   };
   /**
    * IMP-23-BE-04: зарегистрировать жалобу перед показом сообщения

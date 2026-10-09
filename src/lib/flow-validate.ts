@@ -205,6 +205,11 @@ export function normalizeFlow(raw: unknown): FlowValidateResult {
           );
         }
       }
+      // IMP-27-05: автоназначение экипажа — опциональный boolean (undefined валиден,
+      // трактуется как false); явное не-boolean-значение — ошибка, как у соседних полей
+      if (co.autoAssignCrew !== undefined && typeof co.autoAssignCrew !== 'boolean') {
+        return fail(`Узел «${nodeId}»: data.createOrder.autoAssignCrew — boolean`);
+      }
     }
 
     // IMP-23-BE-04: структурная валидация createComplaint (message-узел).

@@ -9,11 +9,19 @@
 // IMP-26-09: merge-пагинация «Показать ещё» (take=100, дедуп по lkCode, кап отрисовки 500)
 // вместо постраничных «Назад/Вперёд».
 // IMP-26-10: AbortController-гигиена load() — stale-ответы быстрого поиска отменяются.
+// IMP-27-03: серверная сортировка кликами по заголовкам (sort/dir в query, aria-sort,
+// эхо применённой сортировки из меты ответа); адрес в таблице — truncate.
+// IMP-27-04: кнопка «CSV» — экспорт реестра с фильтрами (raw fetch + blob, тосты
+// X-Truncated 12000 / 429 rate-limit).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   ChevronDown,
   ChevronLeft,
+  Download,
   ExternalLink,
   Loader2,
   MapPin,
@@ -23,7 +31,7 @@ import {
   SearchCheck,
   WifiOff,
 } from 'lucide-react';
-import { api } from '@/lib/client-api';
+import { api, getAuthToken } from '@/lib/client-api';
 import type { AreaItem, AreasResponse } from '@/lib/studio-types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -45,8 +53,17 @@ const PAGE_TAKE = 100;
 const RENDER_CAP = 500;
 const ALL_CITIES = '__all__';
 
+// IMP-27-03: серверная сортировка реестра — белые списки 27-BE2; невалидные значения
+// бэк молча заменяет дефолтом (address/asc), фронт шлёт только валидные
+type SortKey = 'address' | 'lkCode';
+type SortDir = 'asc' | 'desc';
+
 /** Метаданные реестра из AreasResponse (items накапливаются отдельным state) */
 type AreasMeta = Pick<AreasResponse, 'areasSyncedAt' | 'areasCount'>;
+
+/** IMP-27-03: list-ответ эхирует применённую сортировку (контракт 27-BE2); старые
+ *  ответы/кэш полей могут не иметь — читаем с fallback 'address'/'asc' */
+type AreasListData = AreasResponse & { sort?: string; dir?: string };
 
 /** Ссылка на площадку в OpenStreetMap (только при наличии координат) */
 function osmUrl(lat: number, lng: number): string {
@@ -124,6 +141,47 @@ function KpFocusButton({ area }: { area: AreaItem }) {
   );
 }
 
+/** IMP-27-03: сортируемый заголовок таблицы (md+) — кнопка во всю ячейку th
+ *  (отрицательные поля компенсируют px-4/py-2.5, тач ≥44px без раздувания строки),
+ *  aria-sort на активной th; иконка: неактивно ArrowUpDown / asc ArrowUp / desc ArrowDown */
+function SortableTh({
+  label,
+  active,
+  dir,
+  onSort,
+}: {
+  label: string;
+  active: boolean;
+  dir: SortDir;
+  onSort: () => void;
+}) {
+  const Icon = !active ? ArrowUpDown : dir === 'asc' ? ArrowUp : ArrowDown;
+  const hint = dir === 'asc' ? 'по возрастанию' : 'по убыванию';
+  // MIN-1 (27-REV): aria-label активной колонки описывает ДЕЙСТВИЕ после клика (toggle dir),
+  // а не текущее состояние — скринридер-пользователь может предсказать результат
+  const nextHint = active ? (dir === 'asc' ? 'по убыванию' : 'по возрастанию') : 'по возрастанию';
+  return (
+    <th
+      scope="col"
+      className="px-4 py-2.5 font-medium"
+      aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : undefined}
+    >
+      <button
+        type="button"
+        onClick={onSort}
+        aria-label={active ? `Отсортировано по «${label}» ${hint}, нажмите для сортировки ${nextHint}` : `Сортировать по «${label}» — ${nextHint}`}
+        title={`Сортировать: ${label} (${hint})`}
+        className={`-mx-4 -my-2.5 flex h-11 items-center gap-1 px-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
+          active ? 'text-foreground' : 'hover:text-foreground'
+        }`}
+      >
+        {label}
+        <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      </button>
+    </th>
+  );
+}
+
 /** Пустое состояние (иконка + заголовок + пояснение) */
 function EmptyState({
   icon: Icon,
@@ -162,6 +220,9 @@ export default function AreasView({
   const [appliedQ, setAppliedQ] = useState('');
   const [city, setCity] = useState(ALL_CITIES);
   const [page, setPage] = useState(1);
+  // IMP-27-03: серверная сортировка реестра — дефолт «адрес по возрастанию» (как было)
+  const [sortKey, setSortKey] = useState<SortKey>('address');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
   // IMP-26-09: накопление вместо replace — страница 1 замещает список (смена фильтров/синк),
   // «Показать ещё» аппендит следующую страницу с дедупом по lkCode
   const [areas, setAreas] = useState<AreaItem[]>([]);
@@ -178,6 +239,8 @@ export default function AreasView({
   const [fetching, setFetching] = useState(false);
   // Синк реестра занимает ~минуту — busy-состояние с прогресс-текстом
   const [syncing, setSyncing] = useState(false);
+  // IMP-27-04: выгрузка CSV реестра в процессе (кнопка «CSV» в шапке)
+  const [exporting, setExporting] = useState(false);
   // IMP-26-09: триггер принудительной перезагрузки (после синка) — стр. 1, replace
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -195,6 +258,19 @@ export default function AreasView({
     setPage(1);
   };
 
+  // IMP-27-03: клик по заголовку — тот же ключ → toggle направления, новый → key + asc;
+  // setPage(1) даёт replace-перезагрузку (эффект [load, page] перезапустится сам,
+  // «Показать ещё» продолжит ту же сортировку — тайбрейк byLk на бэке детерминирован)
+  const onSortChange = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((prevDir) => (prevDir === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+    setPage(1);
+  };
+
   const load = useCallback(
     async (targetPage: number) => {
       // IMP-26-10: предыдущий запрос отменяем — быстрая печать поиска больше не даёт гонок
@@ -208,7 +284,10 @@ export default function AreasView({
         params.set('take', String(PAGE_TAKE));
         if (appliedQ) params.set('q', appliedQ);
         if (city !== ALL_CITIES) params.set('city', city);
-        const d = await api<AreasResponse>(`/api/bots/${botId}/mytko/areas?${params.toString()}`, {
+        // IMP-27-03: серверная сортировка реестра (контракт 27-BE2)
+        params.set('sort', sortKey);
+        params.set('dir', sortDir);
+        const d = await api<AreasListData>(`/api/bots/${botId}/mytko/areas?${params.toString()}`, {
           signal: ac.signal,
         });
         if (ac.signal.aborted) return;
@@ -222,6 +301,10 @@ export default function AreasView({
         });
         setTotal(d.total ?? d.items?.length ?? 0); // честный total из ответа API
         setMeta({ areasSyncedAt: d.areasSyncedAt, areasCount: d.areasCount });
+        // IMP-27-03: эхо применённой бэком сортировки (fallback 'address'/'asc' для старых
+        // ответов без полей); обычно совпадает с отправленным → setState без ререндера
+        setSortKey(d.sort === 'lkCode' ? 'lkCode' : 'address');
+        setSortDir(d.dir === 'desc' ? 'desc' : 'asc');
         setError(false);
       } catch {
         // IMP-26-10: отмена (AbortError) — не ошибка, error-state не показываем
@@ -236,7 +319,7 @@ export default function AreasView({
         }
       }
     },
-    [botId, appliedQ, city]
+    [botId, appliedQ, city, sortKey, sortDir]
   );
 
   useEffect(() => {
@@ -277,6 +360,53 @@ export default function AreasView({
     }
   };
 
+  // IMP-27-04: экспорт реестра КП в CSV — raw fetch с ручным Authorization (эталон
+  // orders-view exportCsv): api() неприменим — делает res.json(), прячет headers/blob.
+  const exportAreasCsv = useCallback(async () => {
+    setExporting(true);
+    try {
+      // экспорт уважает активные фильтры поиска и города
+      const params = new URLSearchParams();
+      if (appliedQ) params.set('q', appliedQ);
+      if (city !== ALL_CITIES) params.set('city', city);
+      const token = getAuthToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`/api/bots/${botId}/mytko/areas/export?${params.toString()}`, {
+        headers,
+      });
+      if (!res.ok) {
+        // rate-limit экспорта (5/мин) → 429 JSON; понятный тост вместо generic
+        if (res.status === 429) {
+          toast({ title: 'Слишком много выгрузок — подождите минуту', variant: 'destructive' });
+          return; // finally снимет exporting
+        }
+        throw new Error(`export areas ${res.status}`);
+      }
+      // same-origin — заголовок доступен; '1' = отфильтрованный реестр больше капа 12000
+      const truncated = res.headers.get('X-Truncated') === '1';
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `kp-registry-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      if (truncated)
+        toast({
+          title: 'Выгружены первые 12000 площадок — сужьте поиск',
+          variant: 'destructive',
+        });
+      else toast({ title: 'CSV реестра выгружен' });
+    } catch {
+      toast({ title: 'Не удалось выгрузить CSV реестра', variant: 'destructive' });
+    } finally {
+      setExporting(false);
+    }
+  }, [botId, appliedQ, city, toast]); // повтор клика защищает disabled={exporting || syncing}
+
   // IMP-26-09: кап отрисовки — накопленное свыше RENDER_CAP не рендерим (честная подпись над списком)
   const overCap = areas.length > RENDER_CAP;
   const visibleAreas = overCap ? areas.slice(0, RENDER_CAP) : areas;
@@ -306,20 +436,38 @@ export default function AreasView({
           </p>
         </div>
         {meta != null && meta.areasSyncedAt !== null && (
-          <Button
-            variant="outline"
-            className="min-h-11 shrink-0 sm:min-h-9"
-            onClick={() => void syncAreas()}
-            disabled={syncing}
-          >
-            {syncing ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            ) : (
-              <RotateCcw className="h-4 w-4" aria-hidden />
-            )}
-            <span className="hidden sm:inline">Обновить реестр</span>
-            <span className="sm:hidden">Обновить</span>
-          </Button>
+          <>
+            {/* IMP-27-04: экспорт CSV реестра — перед «Обновить», уважает фильтры q/city */}
+            <Button
+              variant="outline"
+              className="min-h-11 shrink-0 sm:min-h-9"
+              onClick={() => void exportAreasCsv()}
+              disabled={exporting || syncing}
+              aria-label="Экспорт реестра КП в CSV"
+            >
+              {exporting ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <Download className="h-4 w-4" aria-hidden />
+              )}
+              <span className="hidden sm:inline">CSV</span>
+            </Button>
+            {/* MIN-2 (27-REV): симметрия с кнопкой CSV — во время экспорта синк недоступен */}
+            <Button
+              variant="outline"
+              className="min-h-11 shrink-0 sm:min-h-9"
+              onClick={() => void syncAreas()}
+              disabled={exporting || syncing}
+            >
+              {syncing ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <RotateCcw className="h-4 w-4" aria-hidden />
+              )}
+              <span className="hidden sm:inline">Обновить реестр</span>
+              <span className="sm:hidden">Обновить</span>
+            </Button>
+          </>
         )}
       </div>
 
@@ -478,12 +626,19 @@ export default function AreasView({
                   </caption>
                   <thead>
                     <tr className="border-b bg-muted/50 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
-                      <th scope="col" className="px-4 py-2.5 font-medium">
-                        Код КП
-                      </th>
-                      <th scope="col" className="px-4 py-2.5 font-medium">
-                        Адрес
-                      </th>
+                      {/* IMP-27-03: сортировка серверная — только lkCode и address */}
+                      <SortableTh
+                        label="Код КП"
+                        active={sortKey === 'lkCode'}
+                        dir={sortDir}
+                        onSort={() => onSortChange('lkCode')}
+                      />
+                      <SortableTh
+                        label="Адрес"
+                        active={sortKey === 'address'}
+                        dir={sortDir}
+                        onSort={() => onSortChange('address')}
+                      />
                       <th scope="col" className="px-4 py-2.5 font-medium">
                         Координаты
                       </th>
@@ -499,7 +654,10 @@ export default function AreasView({
                           {a.lkCode}
                         </td>
                         <td className="px-4 py-2.5">
-                          {a.address ?? <span className="text-muted-foreground">—</span>}
+                          {/* IMP-27-03: длинные адреса не растягивают таблицу — truncate + title */}
+                          <div className="max-w-[420px] truncate" title={a.address ?? undefined}>
+                            {a.address ?? <span className="text-muted-foreground">—</span>}
+                          </div>
                         </td>
                         <td className="px-4 py-2.5">
                           <CoordsCell area={a} />

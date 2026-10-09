@@ -417,3 +417,44 @@
 - Reviewer: 0 critical / 0 major / 5 minor — MINOR-1..4 закрыты, MINOR-5 задокументирован. Попутно закрыт «экспорт с курсором» честной батчевой пагинацией (курсор как API-фича признан избыточным: SQLite, 9 заявок, кап 5000).
 - Браузерная верификация: автоназначение (план «Тест В25 → городской округ Великий Новгород → 1» → Применить → crewId в БД; пустой план → без диалога), фокус КП (реестр → карта заявок, KpDialog открыт, слой форс-включён «КП: 15», камера на Дубецкой ул. зум 16), MINOR-4 (возврат на карту без повторного перелёта), «Показать ещё» 100→200, экспорт ?type=waste (6 строк) и диапазон дат (9 строк), lat/lng 999/500 → 400 (POST и PATCH), валидная точка сохранена (manual), rate-limit 5/мин → 429, closedAt: close → установлен, inbound → reopen + closedAt=null + меню доставлено, мобайл 390px dark: noHScroll:true, легенда/чипы с dark-парами.
 - ⏭ Бэклог 27: TOCTOU-транзакция persist (MINOR-5), X-Truncated в UI экспорта (заголовок не показывается пользователю), сортировка кликами по заголовкам реестра, экспорт CSV реестра КП, автоназначение при создании заявки сценарием (opt-in поле в инспекторе createOrder), reverse-prompting практики (proactive-agent-lite v2) в планировании волн.
+
+---
+
+# Волна 27 (2026-10-09) — бэклог 26→27: TOCTOU-транзакция, сортировка/экспорт реестра КП, автоназначение сценарием
+
+Контекст: бэклог волны 26 (MINOR-5 persist-TOCTOU, X-Truncated в UI, сортировка реестра, CSV-экспорт КП, автоназначение при создании заявки сценарием). Конвейер chat.md: аудит 2×Explore (27-A1 движок/сценарии, 27-A2 реестр/UI) → инфра (csvCell → src/lib/csv.ts) → 4 параллельных батча (BE1/BE2/FE1/FE2) + параллельный Reviewer → 3 minor закрыты интегратором → браузерная верификация.
+
+## A. Бэкенд
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-27-01 | persistBotMessages: перечитка fresh-статуса + createMany в интерактивной db.$transaction (maxWait 2000/timeout 5000, tx.* внутри, closedInFlight → сброс после коммита); P2034 fail-closed (целевое, задокументировано); REV-5б-семантика и 15 call sites целы — окно MINOR-5 закрыто | ✅ |
+| IMP-27-03 | GET mytko/areas: серверная сортировка ?sort={address,lkCode}&dir={asc,desc} (белые списки, невалид → дефолт, парс ПОСЛЕ near/bbox — sort=dist не конфликтует); null-address последними в обеих dir, тайбрейк byLk всегда asc (детерминизм «Показать ещё»); эхо sort/dir в мете list-ответа | ✅ |
+| IMP-27-04 | НОВЫЙ GET mytko/areas/export: CSV реестра КП из кэша (один массив ~11k), q/city-фильтры как list, rateLimit areas-csv:5/мин (отдельный бакет), кап 12000 (ровно — не усечение) + X-Truncated: 1, csvCell из lib/csv, BOM+\r\n, filename kp-registry-YYYYMMDD.csv | ✅ |
+
+## B. Движок и сценарии
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-27-05 | Автоназначение экипажа при создании заявки сценарием (opt-in): flow-types autoAssignCrew?: boolean, flow-validate (не-boolean → fail, undefined валиден), flow-engine проброс === true; orders.ts: findActiveCrewByCity (active, city not null, name asc, точный матч по normalizeCityName — 1:1 с auto-assign роутом) + подбор ДО INSERT (crewId сразу в create — окна «заявка без экипажа» нет); тихий фейл (нет экипажа → заявка без экипажа + console.warn); инспектор: Switch «Экипаж автоматически» (проверено E2E: заявка №10 → экипаж «Тест В25» назначен автоматически) | ✅ |
+
+## C. Фронт
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-27-02 | exportCsv заявок: X-Truncated → тост «Выгружены последние 5000 заявок — сужьте фильтры» (destructive), 429 → «Слишком много выгрузок — подождите минуту»; ФИКС stale-closure: typeFilter/crewFilter в deps useCallback (экспорт после смены фильтра больше не отдаёт старый набор) | ✅ |
+| IMP-27-03-UI | Реестр КП: кликабельные заголовки «Код КП»/«Адрес» (SortableTh: aria-sort ascending/descending, иконки ArrowUpDown/ArrowUp/ArrowDown, тач ≥44px, MIN-1 aria-label описывает действие toggle), смена сортировки → setPage(1) replace, «Показать ещё» продолжает сортировку; эхо-синк с fallback | ✅ |
+| IMP-27-04-UI | Кнопка «CSV» в шапке реестра (Download/Loader2, тач ≥44px, disabled exporting||syncing, MIN-2 симметрия на «Обновить реестр»), raw fetch с q/city-фильтрами, тосты успех/429/X-Truncated «Выгружены первые 12000 площадок» | ✅ |
+| Инфра | csvCell вынесен в src/lib/csv.ts (байт-в-байт прежний гвард IMP-25-03), orders/export импортирует — контракт BOM/X-Truncated/429/Content-Disposition не изменился | ✅ |
+
+## D. Ревью (27-REV, параллельно) + фиксы интегратора
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| — | 0 critical / 0 major / 3 minor (.wave27/REV.report.md); zones/tsc/lint/dev.log зелёные | ✅ |
+| MIN-1 | aria-label активной колонки описывает ДЕЙСТВИЕ после клика (toggle dir), не состояние | ✅ |
+| MIN-2 | «Обновить реестр» disabled={exporting || syncing} — симметрия с CSV | ✅ |
+| MIN-3 | Снапшот БД закоммичен по практике волны 26 | ✅ |
+| N-1 (info) | Каждая bot-реплика теперь в транзакции (+1 обёртка) — контролировать inboundErrors в /api/health | 📝 |
+| N-2 (info) | Экспорт КП v1: sort/dir не принимаются, updatedAt/status нет (нет в select кэша) — осознанные упрощения | 📝 |
+
+## Итог волны 27
+- 9 IMP (бэк 3, движок 1, фронт 3, инфра 1, ревью-фиксы 2) + закрыт MINOR-5 волны 26.
+- Браузерная верификация: сортировка lkCode asc/desc (53900000→53900002 / 53910951→53910949), address desc, aria-sort, «Показать ещё» 100→200 с сохранением сортировки и дедупом; экспорт КП (тост, BOM, q-фильтр 372 строки, filename, no-store), rate-limit 429 на 6-й вызов + тост; экспорт заявок ?type=waste=6 строк (контракт не изменился); автоназначение E2E: свитч в инспекторе → сохранение в БД → диалог тест-чата (город/адрес/имя/дата/телефон) → заявка №10 с экипажем «Тест В25» (точный матч normalizeCityName, один INSERT); транзакционный persist живым входящим через demo-webhook (user+2 bot в БД, dev.log чист); мобайл 390px dark noHScroll:true (CSV h=44), десктоп light — таблица/иконки/кнопки.
+- ⏭ Бэклог 28: duplicate-key warning «web» на дашборде (2 web-канала у бота — ключ по type), рефакторинг crews/auto-assign на findActiveCrewByCity, updatedAt в select кэша КП (сортировка по дате + колонка в CSV), «2 Issues» — React Flow dev-warning (косметика), reverse-prompting практики (proactive-agent-lite v2) в планировании волн.

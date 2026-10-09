@@ -397,25 +397,45 @@ export async function processInbound(channelId: string, msg: InboundMessage): Pr
       // закрытый ДО сообщения, не перечитываем — такой диалог штатно отвечает и
       // переоткрывается ниже (finish): новое сообщение посетителя — продолжение
       // общения, и closedAt у него сбрасывается reopen-гвардом.
-      if (conv.status !== 'closed') {
-        const fresh = await db.conversation.findUnique({
-          where: { id: conv.id },
-          select: { status: true },
-        });
-        if (fresh && fresh.status === 'closed') {
-          messages.length = 0;
-          return;
-        }
+      // IMP-27-01: перечитка статуса и createMany атомарны (интерактивная
+      // $transaction, эталон — crews/auto-assign:144) — окно MINOR-5 (TOCTOU
+      // между findUnique и createMany, close-роут мог влететь в промежуток)
+      // закрыто: если fresh-статус 'closed', createMany не выполняется вовсе.
+      // P2034 (SQLITE_BUSY_SNAPSHOT при гонке с close) СПЕЦИАЛЬНО не обрабатываем:
+      // fail-closed (запрос падает, реплики не пишутся в закрытый диалог) вместо
+      // тихой устаревшей записи; движковые error-сайты (BE22-01а) ретраят persist
+      // — messages к тому моменту ещё не очищены.
+      // Внутри callback только tx.*; messages.length/replies — ПОСЛЕ коммита,
+      // чтобы реплики не оказались «доставлены, но не записаны».
+      let closedInFlight = false;
+      await db.$transaction(
+        async (tx) => {
+          if (conv.status !== 'closed') {
+            const fresh = await tx.conversation.findUnique({
+              where: { id: conv.id },
+              select: { status: true },
+            });
+            if (fresh && fresh.status === 'closed') {
+              closedInFlight = true;
+              return;
+            }
+          }
+          await tx.message.createMany({
+            data: messages.map((m) => ({
+              conversationId: conv.id,
+              role: 'bot',
+              text: m.text,
+              nodeId: m.nodeId ?? '__bot', // IMP-25-11: реальный nodeId или спец-маркер
+              orderId: orderId ?? null,
+            })),
+          });
+        },
+        { maxWait: 2000, timeout: 5000 }
+      );
+      if (closedInFlight) {
+        messages.length = 0;
+        return;
       }
-      await db.message.createMany({
-        data: messages.map((m) => ({
-          conversationId: conv.id,
-          role: 'bot',
-          text: m.text,
-          nodeId: m.nodeId ?? '__bot', // IMP-25-11: реальный nodeId или спец-маркер
-          orderId: orderId ?? null,
-        })),
-      });
       for (const m of messages) replies.push(m.text);
     };
 
