@@ -77,7 +77,8 @@ const STATUS_FILTERS: StatusFilter[] = ['all', 'new', 'in_review', 'resolved'];
 /** Скелетон карточки обращения */
 function ComplaintCardSkeleton() {
   return (
-    <div className="rounded-xl border bg-card p-3 sm:p-4" aria-hidden>
+    // IMP-28-FEC: скелетон карточки полупрозрачный под общим градиентным фоном
+    <div className="rounded-xl border bg-card/60 p-3 sm:p-4" aria-hidden>
       <div className="flex flex-wrap items-center gap-1.5">
         <Skeleton className="h-4 w-12" />
         <Skeleton className="h-4 w-28 rounded-full" />
@@ -93,8 +94,9 @@ function ComplaintCardSkeleton() {
 /** Пустое состояние: иконка в квадрате + заголовок + пояснение (как в inbox-view) */
 function EmptyState({ icon: Icon, title, hint }: { icon: LucideIcon; title: string; hint: string }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+    // IMP-28-FEC: EmptyState — glass-CTA (симметрично inbox-view)
+    <div className="glass m-3 flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-2xl p-8 text-center sm:m-4">
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20 dark:ring-primary/30">
         <Icon className="h-6 w-6" aria-hidden />
       </div>
       <div className="max-w-[300px]">
@@ -310,7 +312,8 @@ const ComplaintCard = memo(function ComplaintCard({
   }, [complaint.address, complaint.areaLkCode]);
 
   return (
-    <article className="rounded-xl border bg-card p-3 sm:p-4">
+    // IMP-28-FEC: карточка обращения — стекло с hover-подъёмом (glass-hover)
+    <article className="glass glass-hover rounded-2xl p-3 sm:p-4">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <span className="text-sm font-bold tabular-nums">№{complaint.number}</span>
         <Badge
@@ -429,9 +432,10 @@ const ComplaintCard = memo(function ComplaintCard({
           </button>
         )}
         {complaint.areaLkCode && (
+          // IMP-28-FEC: чип КП — primary-tint по гайду вместо фиксированных emerald (не скейлятся в dark)
           <Badge
             variant="outline"
-            className="h-5 px-1.5 text-[10px] bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30"
+            className="h-5 px-1.5 text-[10px] bg-primary/10 text-primary border-primary/30 dark:bg-primary/15"
             title={complaint.areaAddress ?? 'Контейнерная площадка'}
           >
             КП {complaint.areaLkCode}
@@ -504,7 +508,8 @@ const ComplaintCard = memo(function ComplaintCard({
                 'disabled:pointer-events-none',
                 complaint.status === s
                   ? 'border-transparent bg-primary text-primary-foreground'
-                  : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                  : // IMP-28-FEC: неактивный чип статуса — полупрозрачный на стекле карточки, hover green-tint
+                    'bg-background/50 text-muted-foreground hover:bg-primary/10 hover:text-foreground dark:bg-white/5 dark:hover:bg-primary/15'
               )}
             >
               {COMPLAINT_STATUS_LABELS[s]}
@@ -1068,7 +1073,8 @@ export default function ComplaintsView({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Шапка */}
-      <div className="flex items-center gap-2 border-b bg-background px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+      {/* IMP-28-FEC: хедер view — стеклянная полоса (glass-strong) вместо bg-background */}
+      <div className="flex items-center gap-2 border-b glass-strong px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
         <Button
           variant="ghost"
           size="icon"
@@ -1095,7 +1101,8 @@ export default function ComplaintsView({
       </div>
 
       {/* Фильтры: чипы статусов (со счётчиками) + тип обращения */}
-      <div className="flex flex-wrap items-center gap-1.5 border-b bg-background px-2.5 py-2 sm:px-4">
+      {/* IMP-28-FEC: фильтр-бар прозрачный — лента читается поверх общего градиента */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b px-2.5 py-2 sm:px-4">
         {chips.map((f) => (
           <button
             key={f.key}
@@ -1107,7 +1114,8 @@ export default function ComplaintsView({
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
               statusFilter === f.key
                 ? 'border border-transparent bg-primary text-primary-foreground'
-                : 'border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                : // IMP-28-FEC: неактивный чип — полупрозрачный, hover green-tint
+                  'border bg-background/50 text-muted-foreground hover:bg-primary/10 hover:text-foreground dark:bg-white/5 dark:hover:bg-primary/15'
             )}
           >
             {f.label}
@@ -1117,7 +1125,10 @@ export default function ComplaintsView({
                   'ml-1.5 inline-flex items-center rounded-full px-1.5 text-[10px] tabular-nums',
                   f.accent && statusFilter !== f.key
                     ? 'bg-amber-100 font-semibold text-amber-800 dark:bg-amber-500/20 dark:text-amber-300'
-                    : cn('opacity-80', statusFilter === f.key && 'bg-white/20')
+                    : // IMP-28-FEC: счётчик на активном чипе — затемняющая капсула:
+                      // bg-white/20 высветлял подложку и ронял контраст белого текста с новым primary (4.6:1);
+                      // black/10 в light углубляет фон, white/15 в dark высветляет под тёмный текст
+                      cn('opacity-80', statusFilter === f.key && 'bg-black/10 dark:bg-white/15')
                 )}
               >
                 {f.count}

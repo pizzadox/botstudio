@@ -248,7 +248,8 @@ export default function ChannelsView({
       </div>
 
       {bot.status !== 'published' && (
-        <Alert className="border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10">
+        /* IMP-28-FEB: amber-alert — tint-стекло (500/10-15) */
+        <Alert className="border-amber-500/30 bg-amber-500/10 dark:border-amber-500/30 dark:bg-amber-500/15">
           <Info className="h-4 w-4 text-amber-600 dark:text-amber-400" />
           <AlertTitle className="text-amber-800 dark:text-amber-300">Бот ещё не опубликован</AlertTitle>
           <AlertDescription className="text-amber-700 dark:text-amber-300/80">
@@ -329,13 +330,15 @@ export default function ChannelsView({
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {ch.type === 'max' ? (
-                    <div className="rounded-lg border bg-muted/40 p-2.5 text-[11px] leading-relaxed text-muted-foreground">
+                    /* IMP-28-FEB: вложение карточки канала — стекло */
+                    <div className="glass rounded-xl p-2.5 text-[11px] leading-relaxed text-muted-foreground">
                       <span className="font-medium text-foreground">Вебхук не нужен.</span> Сообщения из MAX
                       принимаются автоматически (long polling). Нажмите «Проверить» — студия свяжется с MAX и
                       покажет имя бота.
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-2">
+                    /* IMP-28-FEB: вебхук-поле — стеклянное вложение */
+                    <div className="glass flex items-center gap-2 rounded-xl p-2">
                       <code className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
                         {webhookUrl(ch)}
                       </code>
@@ -365,11 +368,12 @@ export default function ChannelsView({
                       <span
                         className={cn(
                           'inline-flex max-w-full items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium',
+                          // IMP-28-FEB: статус-чипы — tint-паттерн с dark-парами вместо фикс-палитр
                           ch.lastStatus.startsWith('OK')
-                            ? 'border-emerald-200 bg-emerald-100 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300'
+                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400'
                             : ch.lastStatus.startsWith('Ошибка')
-                              ? 'border-rose-200 bg-rose-100 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-300'
-                              : 'border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/15 dark:text-slate-300'
+                              ? 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400'
+                              : 'border-slate-500/30 bg-slate-500/10 text-slate-700 dark:bg-slate-500/15 dark:text-slate-400'
                         )}
                       >
                         <span
@@ -561,7 +565,8 @@ export default function ChannelsView({
             className="font-mono text-[11px] leading-relaxed text-muted-foreground"
           />
           {/* IMP-23-TAB-05: пошаговая инструкция подключения виджета */}
-          <ol className="list-decimal space-y-1.5 rounded-lg border bg-muted/40 p-3 pl-8 text-xs leading-relaxed text-muted-foreground">
+          {/* IMP-28-FEB: код-инструкция — стеклянное вложение */}
+          <ol className="glass list-decimal space-y-1.5 rounded-xl p-3 pl-8 text-xs leading-relaxed text-muted-foreground">
             <li>
               Бот должен быть <span className="font-medium text-foreground">опубликован</span> —
               иначе посетитель увидит «Не опубликован».
@@ -1219,22 +1224,25 @@ function MytkoCard({ botId }: { botId: string }) {
       <CardHeader className="pb-3">
         <div className="flex min-w-0 items-start justify-between gap-2">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+            {/* IMP-28-FEB: тайл MyTKO — фирменный primary-tint (как у соседних секций) */}
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
               <Truck className="h-5 w-5" />
             </div>
             <div className="min-w-0">
               <CardTitle className="flex items-center gap-2 text-base">
                 Интеграция MyTKO
                 {cfg.tokenMasked ? (
+                  /* IMP-28-FEB: чип «синхронизировано» — tint-паттерн */
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400"
                     title={`Токен получен: ${cfg.tokenMasked}`}
                   >
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" /> синхронизировано
                   </span>
                 ) : (
+                  /* IMP-28-FEB: чип «нет токена» — tint-паттерн */
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
                     title="Токен ещё не получен — введите логин и пароль и нажмите «Войти и получить токен»"
                   >
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" /> нет токена
@@ -1260,9 +1268,10 @@ function MytkoCard({ botId }: { botId: string }) {
       {(cfg.enabled || loadError) && (
         <CardContent className="space-y-4">
           {loadError && (
+            /* IMP-28-FEB: alert ошибки загрузки MyTKO — tint-стекло */
             <div
               role="alert"
-              className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300"
+              className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
             >
               <AlertTriangle
                 className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
@@ -1567,7 +1576,8 @@ function MytkoCard({ botId }: { botId: string }) {
               </Button>
               <div role="status" aria-live="polite" className="min-w-0">
                 {connectionName && (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-1 text-[11px] font-medium text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300">
+                  /* IMP-28-FEB: чип подключения — tint-паттерн */
+                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
                     <Check className="h-3 w-3" aria-hidden /> {connectionName}
                   </span>
                 )}

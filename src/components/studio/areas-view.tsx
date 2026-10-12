@@ -195,8 +195,9 @@ function EmptyState({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+    // IMP-28-FEC: EmptyState — glass-CTA (симметрично inbox-view), кнопка-CTA внутри на стекле
+    <div className="glass m-3 flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-2xl p-8 text-center sm:m-4">
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20 dark:ring-primary/30">
         <Icon className="h-6 w-6" aria-hidden />
       </div>
       <div className="max-w-[320px]">
@@ -416,7 +417,8 @@ export default function AreasView({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {/* Шапка */}
-      <div className="flex items-center gap-2 border-b bg-background px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+      {/* IMP-28-FEC: хедер view — стеклянная полоса (glass-strong); статистика/фильтры ниже — прозрачные */}
+      <div className="flex items-center gap-2 border-b glass-strong px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
         <Button
           variant="ghost"
           size="icon"
@@ -472,7 +474,8 @@ export default function AreasView({
       </div>
 
       {/* Шапка-статистика */}
-      <div className="border-b bg-background px-3 py-2.5 sm:px-4">
+      {/* IMP-28-FEC: полоса статистики прозрачная поверх общего градиента */}
+      <div className="border-b px-3 py-2.5 sm:px-4">
         {loading && meta == null ? (
           <div className="flex gap-2" aria-hidden>
             <Skeleton className="h-6 w-40" />
@@ -510,7 +513,8 @@ export default function AreasView({
       </div>
 
       {/* Панель фильтров */}
-      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2 sm:px-4">
+      {/* IMP-28-FEC: полоса фильтров прозрачная поверх общего градиента */}
+      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 sm:px-4">
         <div className="relative min-w-0 flex-1 sm:max-w-xs">
           <Search
             className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
@@ -619,13 +623,15 @@ export default function AreasView({
                   Показаны первые {RENDER_CAP} из {total} найденных — уточните поиск
                 </p>
               )}
-              <div className="hidden overflow-x-auto rounded-xl border bg-card md:block">
+              {/* IMP-28-FEC: таблица — стеклянная панель (glass даёт кромку вместо border) */}
+              <div className="glass hidden overflow-x-auto rounded-2xl md:block">
                 <table className="w-full text-sm">
                   <caption className="sr-only">
                     Контейнерные площадки MyTKO: код, адрес, координаты
                   </caption>
                   <thead>
-                    <tr className="border-b bg-muted/50 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                    {/* IMP-28-FEC: шапка таблицы — полупрозрачный зелёный tint */}
+                    <tr className="border-b bg-primary/10 text-left text-[11px] uppercase tracking-wide text-muted-foreground dark:bg-primary/15">
                       {/* IMP-27-03: сортировка серверная — только lkCode и address */}
                       <SortableTh
                         label="Код КП"
@@ -649,7 +655,8 @@ export default function AreasView({
                   </thead>
                   <tbody className="divide-y">
                     {visibleAreas.map((a) => (
-                      <tr key={a.lkCode} className="transition-colors hover:bg-muted/40">
+                      // IMP-28-FEC: строка — hover green-tint (в паре с table.tsx)
+                      <tr key={a.lkCode} className="transition-colors hover:bg-primary/5 dark:hover:bg-primary/10">
                         <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs font-semibold">
                           {a.lkCode}
                         </td>
@@ -680,7 +687,8 @@ export default function AreasView({
               {/* Карточки (мобильный) */}
               <div className="space-y-2 md:hidden">
                 {visibleAreas.map((a) => (
-                  <article key={a.lkCode} className="rounded-xl border bg-card p-3">
+                  // IMP-28-FEC: мобильная карточка — стекло
+                  <article key={a.lkCode} className="glass rounded-2xl p-3">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-mono text-xs font-semibold">{a.lkCode}</span>
                       {/* IMP-26-08: фокус на карте заявок (без координат — disabled) + OSM */}
@@ -703,7 +711,8 @@ export default function AreasView({
 
               {/* IMP-26-09: merge-пагинация — счётчик + «Показать ещё» вместо постраничных кнопок */}
               <div className="mt-4 flex flex-col items-center gap-2">
-                <p className="text-center text-xs text-muted-foreground tabular-nums">
+                {/* IMP-28-FEC: счётчик — стеклянная капсула в паре с полупрозрачной outline-кнопкой */}
+                <p className="glass rounded-full px-3 py-1 text-center text-xs text-muted-foreground tabular-nums">
                   {/* IMP-26-REV-3: «Загружено», не «Показано» — рендер может быть ограничен капом (note выше) */}
                   Загружено {areas.length} из {total}
                 </p>

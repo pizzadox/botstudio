@@ -23,7 +23,8 @@ function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
   return (
     <thead
       data-slot="table-header"
-      className={cn("[&_tr]:border-b", className)}
+      // IMP-28-DS: полупрозрачный фон шапки (muted теперь затонирован зелёным)
+      className={cn("bg-muted/40 [&_tr]:border-b", className)}
       {...props}
     />
   )
@@ -56,8 +57,9 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   return (
     <tr
       data-slot="table-row"
+      // IMP-28-DS: hover строки — полупрозрачный зелёный tint (был серый muted/50)
       className={cn(
-        "hover:bg-muted/50 data-[state=selected]:bg-muted border-b transition-colors",
+        "hover:bg-primary/5 dark:hover:bg-primary/10 data-[state=selected]:bg-muted border-b transition-colors",
         className
       )}
       {...props}

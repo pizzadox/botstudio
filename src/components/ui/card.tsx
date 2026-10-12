@@ -6,8 +6,10 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card"
+      // IMP-28-DS: Card — стеклянная карточка (glass-утилита: --glass-bg/border/blur/shadow),
+      // скругление поднято до rounded-2xl; API Card* не менялся
       className={cn(
-        "bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm",
+        "glass text-card-foreground flex flex-col gap-6 rounded-2xl py-6",
         className
       )}
       {...props}

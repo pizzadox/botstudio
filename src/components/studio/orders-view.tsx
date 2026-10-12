@@ -1132,9 +1132,13 @@ function OrdersMap({
               aria-pressed={kpEnabled}
               title="Контейнерные площадки реестра MyTKO в текущей области карты"
               className={cn(
-                'flex h-11 shrink-0 items-center gap-1.5 rounded-lg border bg-background/95 px-3 text-xs font-medium shadow-sm backdrop-blur transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:px-2.5',
+                // IMP-28-FED: оверлей карты — glass-strong (гайд w28 §2); dark-пара обязательна:
+                // стиль карты liberty всегда светлый, белёсое стекло dark поверх него не читается
+                'flex h-11 shrink-0 items-center gap-1.5 rounded-lg glass-strong px-3 text-xs font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:px-2.5 dark:bg-background/95 dark:backdrop-blur',
                 kpEnabled &&
-                  'border-teal-500/50 bg-teal-500/10 text-teal-700 hover:bg-teal-500/15 dark:text-teal-300'
+                  // IMP-28-FED: «!» — активный тинт поверх шорткатов background/border утилиты glass
+                  // (custom @utility в CSS идёт после core-классов, проверено компиляцией globals.css)
+                  'border-teal-500/50! bg-teal-500/10! text-teal-700 hover:bg-teal-500/15! dark:text-teal-300'
               )}
             >
               <MapPinned className="h-3.5 w-3.5" aria-hidden />
@@ -1145,7 +1149,8 @@ function OrdersMap({
                 /* IMP-25-19: ошибка bbox-загрузки КП — не глотаем, даём «Повторить» */
                 <div
                   role="alert"
-                  className="flex items-center gap-1.5 rounded-lg border border-destructive/40 bg-background/95 px-2 py-1.5 text-xs shadow-sm backdrop-blur"
+                  /* IMP-28-FED: glass-strong + dark-фон 95% (карта светлая в обеих темах); «!» — красная кромка поверх glass-бордера */
+                  className="flex items-center gap-1.5 rounded-lg glass-strong border-destructive/40! px-2 py-1.5 text-xs dark:bg-background/95 dark:backdrop-blur"
                 >
                   <WifiOff className="h-3.5 w-3.5 shrink-0 text-destructive" aria-hidden />
                   <span className="shrink-0">Не удалось загрузить КП</span>
@@ -1167,7 +1172,8 @@ function OrdersMap({
                 <div
                   role="status"
                   title="КП появляются на карте при масштабе улиц"
-                  className="max-w-[210px] rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs leading-snug shadow-sm backdrop-blur"
+                  /* IMP-28-FED: glass-strong + dark-фон 95% (карта светлая) */
+                  className="max-w-[210px] rounded-lg glass-strong px-2.5 py-1.5 text-xs leading-snug dark:bg-background/95 dark:backdrop-blur"
                 >
                   Приблизьте карту
                   {kpTotal > 0 ? (
@@ -1188,7 +1194,8 @@ function OrdersMap({
                       ? `Показаны ${kpAreas.length} из ${kpTotal} — ${kpSortOk ? 'ближайшие к центру кадра' : 'первые по коду в кадре'}`
                       : 'КП в текущей области карты'
                   }
-                  className="max-w-[230px] rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur"
+                  /* IMP-28-FED: glass-strong + dark-фон 95% (карта светлая) */
+                  className="max-w-[230px] rounded-lg glass-strong px-2.5 py-1.5 text-xs dark:bg-background/95 dark:backdrop-blur"
                 >
                   КП: <b className="tabular-nums">{kpTotal}</b>
                   {/* IMP-25-18: честная подпись, когда точки в кадре обрезаны */}
@@ -1203,7 +1210,8 @@ function OrdersMap({
           </div>
         )}
         {/* Легенда */}
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-lg border bg-background/95 px-2.5 py-1.5 text-[10px] leading-tight shadow-sm backdrop-blur sm:text-[11px]">
+        {/* IMP-28-FED: легенда — glass-strong + dark-фон 95% (карта светлая в обеих темах) */}
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-lg glass-strong px-2.5 py-1.5 text-[10px] leading-tight sm:text-[11px] dark:bg-background/95 dark:backdrop-blur">
           <span className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> отходы
           </span>
@@ -1255,7 +1263,8 @@ function OrdersMap({
         <div
           role="status"
           aria-label={`Точек на карте: ${visible.length}`}
-          className="rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur"
+          /* IMP-28-FED: glass-strong + dark-фон 95% (карта светлая) */
+          className="rounded-lg glass-strong px-2.5 py-1.5 text-xs dark:bg-background/95 dark:backdrop-blur"
         >
           <MapPin className="mr-1 inline h-3 w-3 text-primary" aria-hidden />
           На карте: <b className="tabular-nums">{visible.length}</b>
@@ -1266,8 +1275,9 @@ function OrdersMap({
             onClick={() => setListOpen((v) => !v)}
             aria-expanded={listOpen}
             className={cn(
-              'flex items-center gap-1 rounded-lg border bg-background/95 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur transition-colors hover:bg-muted',
-              listOpen && 'bg-muted'
+              // IMP-28-FED: glass-strong + dark-фон 95% (карта светлая в dark тоже)
+              'flex items-center gap-1 rounded-lg glass-strong px-2.5 py-1.5 text-xs transition-colors hover:bg-muted dark:bg-background/95 dark:backdrop-blur',
+              listOpen && 'bg-muted!' // IMP-28-FED: «!» — открытое состояние поверх glass-фона
             )}
           >
             <List className="h-3 w-3 text-primary" />
@@ -1280,7 +1290,8 @@ function OrdersMap({
       </div>
       {/* Разворачиваемый список точек: клик — перелёт к маркеру */}
       {listOpen && (
-        <div className="absolute inset-x-2.5 top-12 z-20 flex max-h-[62%] flex-col overflow-hidden rounded-xl border bg-background/95 shadow-lg backdrop-blur sm:inset-x-auto sm:left-3 sm:top-12 sm:w-[340px]">
+        /* IMP-28-FED: список точек — glass-strong + dark-фон 95% (карта светлая) */
+        <div className="absolute inset-x-2.5 top-12 z-20 flex max-h-[62%] flex-col overflow-hidden rounded-xl glass-strong sm:inset-x-auto sm:left-3 sm:top-12 sm:w-[340px] dark:bg-background/95 dark:backdrop-blur">
           <div className="flex items-center justify-between border-b px-3 py-2 text-[11px] font-medium text-muted-foreground">
             <span>Точки на карте ({visible.length}) — нажмите для перехода</span>
             <button
@@ -1484,7 +1495,8 @@ function OrderChat({
         ref={scrollRef}
         aria-live="polite"
         onScroll={handleScroll}
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/30 p-3"
+        /* IMP-28-FED: лента чата — прозрачное вложение bg-background/50 вместо bg-muted/30 (blur на большом скролл-контейнере не нужен) */
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-background/50 p-3"
       >
         {/* FE22-06: до первого ответа fetchMessages — скелетон (3 пузыря-заглушки),
             пустое состояние — только после реального пустого ответа сервера */}
@@ -1670,7 +1682,7 @@ function OrderDetailSkeleton() {
       <span className="sr-only">Загрузка заявки…</span>
       {/* Левая колонка: клиент + данные заявки (сетка как у реальной карточки) */}
       <div className="min-h-0 space-y-4 border-b p-4 md:border-b-0 md:border-r md:overflow-hidden">
-        <div className="space-y-2 rounded-xl border bg-muted/30 p-3">
+        <div /* IMP-28-FED: вложенная панель — glass (гайд w28 §5) */ className="glass space-y-2 rounded-xl p-3">
           <Skeleton className="h-4 w-36" />
           <Skeleton className="h-5 w-3/4" />
           <Skeleton className="h-4 w-1/2" />
@@ -2054,7 +2066,8 @@ function OrderDetailDialog({
             {/* Левая колонка: клиент + данные заявки */}
             <div className="min-h-0 space-y-4 border-b p-4 md:border-b-0 md:border-r md:overflow-y-auto">
               {/* Клиент */}
-              <div className="rounded-xl border bg-muted/30 p-3">
+              {/* IMP-28-FED: клиент-карточка — glass-вложение вместо bg-muted/30 (гайд w28 §5) */}
+              <div className="glass rounded-xl p-3">
                 <div className="flex items-center justify-between gap-2">
                   <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <User className="h-3.5 w-3.5" /> Карточка клиента
@@ -2999,7 +3012,8 @@ function CrewsManagerDialog({
           </DialogDescription>
         </DialogHeader>
         <form
-          className="space-y-2 rounded-xl border bg-muted/30 p-3"
+          /* IMP-28-FED: форма создания экипажа — glass-вложение (гайд w28 §5) */
+          className="glass space-y-2 rounded-xl p-3"
           onSubmit={(e) => {
             e.preventDefault();
             void create();
@@ -3287,7 +3301,8 @@ function KpDialog({
               </div>
             )}
             {dist != null && selectedOrder && (
-              <div className="rounded-lg border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+              /* IMP-28-FED: дистанция до заявки — glass-вложение */
+              <div className="glass rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground">
                 До заявки №{selectedOrder.number}:{' '}
                 <b className="tabular-nums text-foreground">≈ {fmtDistanceM(dist)}</b>
               </div>
@@ -3623,9 +3638,12 @@ const OrderRow = memo(
          РЯДОМ с кнопкой строки (checkbox внутри button — невалидный HTML) */
       <div
         className={cn(
-          'flex w-full items-center gap-1 rounded-xl border bg-card p-1.5 shadow-sm transition-[box-shadow,background-color] hover:bg-muted/60 hover:shadow-md',
-          order.status === 'new' && 'border-amber-300/70 dark:border-amber-500/40',
-          selected && 'border-primary/50 bg-primary/5'
+          // IMP-28-FED: стеклянная карточка + glass-hover подъём (гайд w28 §2). Хвостовой «!»
+          // у статусов new/selected обязателен: custom @utility glass объявляет шорткаты
+          // background/border и в CSS идёт позже core-утилит (проверено компиляцией globals.css).
+          'flex w-full items-center gap-1 rounded-xl glass glass-hover p-1.5 hover:bg-muted/60',
+          order.status === 'new' && 'border-amber-300/70! dark:border-amber-500/40!',
+          selected && 'border-primary/50! bg-primary/5!'
         )}
       >
         <label className="flex h-11 w-7 shrink-0 cursor-pointer items-center justify-center sm:h-9">
@@ -4256,7 +4274,8 @@ export default function OrdersView({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Хедер */}
-      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2.5 sm:px-4 sm:py-3">
+      {/* IMP-28-FED: шапка раздела — плотное стекло (гайд w28 §5); border-b оставлен для кромки */}
+      <div className="flex flex-wrap items-center gap-2 glass-strong border-b px-3 py-2.5 sm:px-4 sm:py-3">
         <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onBack} aria-label="Назад к дашборду">
           <ChevronLeft className="h-4 w-4" />
         </Button>
@@ -4303,7 +4322,8 @@ export default function OrdersView({
       )}
 
       {/* Фильтры */}
-      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2 sm:px-4">
+      {/* IMP-28-FED: фильтр-бар — плотное стекло (гайд w28 §5); border-b оставлен для кромки */}
+      <div className="flex flex-wrap items-center gap-2 glass-strong border-b px-3 py-2 sm:px-4">
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
           <TabsList className="h-9">
             <TabsTrigger value="map" className="text-xs">
@@ -4438,7 +4458,8 @@ export default function OrdersView({
               />
             </div>
             {withoutGeo.length > 0 && (
-              <div className="rounded-xl border bg-background p-2.5">
+              /* IMP-28-FED: панель без-гео — фирменный primary-тинт в тон bulk-бару (гайд w28 §4.5) */
+              <div className="rounded-xl border border-primary/30 bg-primary/5 p-2.5 dark:bg-primary/10">
                 <div className="mb-1.5 text-xs font-medium text-muted-foreground">
                   Без координат — укажите точку на карте:
                 </div>
@@ -4447,7 +4468,8 @@ export default function OrdersView({
                     <button
                       key={o.id}
                       onClick={() => placeRequest(o.id)}
-                      className="rounded-full border px-2.5 py-1.5 text-xs transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                      /* IMP-28-FED: чипы — primary-тинт по гайду (§4.5), тач-таргеты сохранены */
+                      className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-xs text-primary transition-colors hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 dark:bg-primary/15 dark:hover:bg-primary/20"
                       aria-label={`Указать точку заявки №${o.number} на карте`}
                     >
                       <Crosshair className="mr-1 inline h-3 w-3" aria-hidden />№{o.number} ·{' '}

@@ -61,13 +61,15 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-br from-emerald-50 via-background to-teal-50 dark:from-emerald-950/40 dark:via-background dark:to-teal-950/40">
+    // IMP-28-FEA: фон прозрачный — декоративные зелёные пятна body::before (новый body-фон) выступают декором экрана
+    <div className="min-h-screen flex flex-col">
       <main className="flex-1 flex items-center justify-center p-4 sm:p-6 lg:p-8">
         <div className="w-full max-w-4xl grid lg:grid-cols-2 gap-8 items-center">
           {/* Брендовая часть */}
           <div className="hidden lg:block space-y-8">
             <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-lg shadow-emerald-600/20">
+              {/* IMP-28-FEA: тень логотипа на primary-токене вместо хардкода emerald */}
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-lg shadow-primary/25">
                 <Bot className="h-6 w-6" />
               </div>
               <div>
@@ -103,7 +105,14 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
               </div>
               <div className="text-xl font-bold tracking-tight">BotStudio</div>
             </div>
-            <div className="rounded-xl border bg-card p-6 shadow-sm">
+            {/* IMP-28-FEA: витринная карточка формы — выразительное стекло (glass) + rounded-2xl, тень из glass-переменных */}
+            <div className="glass rounded-2xl p-6">
+              {/* IMP-28-FEA: декоративная логотип-плашка на витринной карточке (desktop, aria-hidden) */}
+              <div aria-hidden="true" className="hidden lg:flex justify-center mb-5">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-lg shadow-primary/25">
+                  <Bot className="h-6 w-6" />
+                </div>
+              </div>
               {/* IMP-FE21-11: при смене вкладки сбрасываем ошибку и видимость пароля */}
               <Tabs
                 defaultValue="login"

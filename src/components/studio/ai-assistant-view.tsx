@@ -306,7 +306,8 @@ export default function AiAssistantView({
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+              {/* IMP-28-FEB: строка-вложение — стекло */}
+              <div className="glass flex items-center justify-between gap-3 rounded-xl p-3">
                 <div className="min-w-0">
                   <Label htmlFor="ai-enabled" className="text-sm font-medium">
                     Включить ИИ-ассистента
@@ -362,7 +363,8 @@ export default function AiAssistantView({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                  {/* IMP-28-FEB: строка-вложение — стекло */}
+                  <div className="glass flex items-center justify-between gap-3 rounded-xl p-3">
                     <div className="min-w-0">
                       <Label htmlFor="ai-reask" className="text-sm font-medium">
                         Показывать меню после ответа
@@ -378,7 +380,8 @@ export default function AiAssistantView({
                     />
                   </div>
 
-                  <div className="rounded-lg border bg-muted/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+                  {/* IMP-28-FEB: инфо-вложение — стекло */}
+                  <div className="glass rounded-xl p-3 text-[11px] leading-relaxed text-muted-foreground">
                     <b className="text-foreground">Как это работает:</b> вопрос клиента не попадает
                     на кнопку сценария → ассистент отвечает по базе знаний → клиент возвращается в
                     меню. Просит живого человека → диалог уходит оператору. В блоках «ИИ-ответ»

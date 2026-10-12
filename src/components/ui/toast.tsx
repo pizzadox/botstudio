@@ -25,13 +25,22 @@ const ToastViewport = React.forwardRef<
 ToastViewport.displayName = ToastPrimitives.Viewport.displayName
 
 const toastVariants = cva(
-  "group pointer-events-auto relative flex w-full items-center justify-between space-x-2 overflow-hidden rounded-md border p-4 pr-6 shadow-lg transition-all data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-right-full data-[state=open]:slide-in-from-top-full data-[state=open]:sm:slide-in-from-bottom-full",
+  "group pointer-events-auto relative flex w-full items-center justify-between space-x-2 overflow-hidden rounded-lg border p-4 pr-6 shadow-lg backdrop-blur-md transition-all data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-right-full data-[state=open]:slide-in-from-top-full data-[state=open]:sm:slide-in-from-bottom-full",
   {
     variants: {
+      // IMP-28-DS: варианты success/warning/info (деструктив/default — стеклянные);
+      // у всех полупрозрачный фон + backdrop-blur, dark-пары обязательны
       variant: {
-        default: "border bg-background text-foreground",
+        default:
+          "border-border/60 bg-background/80 text-foreground dark:border-white/10 dark:bg-card/80",
+        success:
+          "border-primary/30 bg-primary/10 text-foreground dark:border-primary/30 dark:bg-primary/15",
+        warning:
+          "border-amber-500/40 bg-amber-500/10 text-foreground dark:border-amber-400/30 dark:bg-amber-400/10",
+        info:
+          "border-teal-500/40 bg-teal-500/10 text-foreground dark:border-teal-400/30 dark:bg-teal-400/10",
         destructive:
-          "destructive group border-destructive bg-destructive text-destructive-foreground",
+          "destructive group border-destructive bg-destructive/95 text-destructive-foreground dark:bg-destructive/90",
       },
     },
     defaultVariants: {

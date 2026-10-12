@@ -28,11 +28,11 @@ const WIDGET_HTML = `<!doctype html>
 <title>Чат поддержки</title>
 <style>
   html, body { margin:0; padding:0; background:transparent; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; }
-  .bs-launcher { position:fixed; right:16px; bottom:calc(16px + env(safe-area-inset-bottom, 0px)); width:56px; height:56px; border-radius:9999px; border:0; background:#0f172a; color:#fff; cursor:pointer; box-shadow:0 8px 24px rgba(15,23,42,.35); z-index:2147483647; display:flex; align-items:center; justify-content:center; padding:0; }
-  .bs-launcher:focus-visible { outline:2px solid #0f172a; outline-offset:3px; }
-  .bs-panel { position:fixed; right:16px; bottom:calc(80px + env(safe-area-inset-bottom, 0px)); width:360px; max-width:calc(100vw - 32px); height:480px; max-height:calc(100dvh - 96px - env(safe-area-inset-bottom, 0px)); background:#fff; color:#0f172a; border-radius:16px; border:1px solid #e2e8f0; box-shadow:0 16px 48px rgba(15,23,42,.22); display:none; flex-direction:column; overflow:hidden; z-index:2147483647; }
+  .bs-launcher { position:fixed; right:16px; bottom:calc(16px + env(safe-area-inset-bottom, 0px)); width:56px; height:56px; border-radius:9999px; border:0; background:#0e241a; color:#fff; cursor:pointer; box-shadow:0 8px 24px rgba(14,36,26,.4); z-index:2147483647; display:flex; align-items:center; justify-content:center; padding:0; } /* IMP-28-FED: лаунчер — зелёно-графит #0e241a (тон dark-темы студии) вместо slate-900 */
+  .bs-launcher:focus-visible { outline:2px solid #059669; outline-offset:3px; } /* IMP-28-FED: фокус — фирменный зелёный */
+  .bs-panel { position:fixed; right:16px; bottom:calc(80px + env(safe-area-inset-bottom, 0px)); width:360px; max-width:calc(100vw - 32px); height:480px; max-height:calc(100dvh - 96px - env(safe-area-inset-bottom, 0px)); background:#fff; color:#0e241a; border-radius:16px; border:1px solid #e6f2ec; box-shadow:0 16px 48px rgba(14,36,26,.28); display:none; flex-direction:column; overflow:hidden; z-index:2147483647; } /* IMP-28-FED: текст/борд/тень тонированы в зелёный, читаемость не тронута */
   .bs-panel.bs-open { display:flex; }
-  .bs-head { background:#0f172a; color:#fff; padding:12px 14px; display:flex; align-items:center; gap:10px; flex:none; }
+  .bs-head { background:#0e241a; color:#fff; padding:12px 14px; display:flex; align-items:center; gap:10px; flex:none; } /* IMP-28-FED: шапка — зелёно-графит */
   .bs-avatar { width:34px; height:34px; border-radius:9999px; background:rgba(255,255,255,.15); display:flex; align-items:center; justify-content:center; flex:none; }
   .bs-title { font-size:14px; font-weight:600; line-height:1.25; }
   .bs-status { display:flex; align-items:center; gap:5px; font-size:11px; opacity:.85; margin-top:2px; }
@@ -42,21 +42,21 @@ const WIDGET_HTML = `<!doctype html>
   .bs-row { display:flex; }
   .bs-row.me { justify-content:flex-end; }
   .bs-bubble { max-width:85%; padding:8px 12px; border-radius:16px; font-size:14px; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; }
-  .bs-bot { background:#fff; border:1px solid #e2e8f0; border-bottom-left-radius:6px; }
-  .bs-me { background:#0f172a; color:#fff; border-bottom-right-radius:6px; }
+  .bs-bot { background:#fff; border:1px solid #e6f2ec; border-bottom-left-radius:6px; } /* IMP-28-FED: бордер пузыря тонирован */
+  .bs-me { background:#0e241a; color:#fff; border-bottom-right-radius:6px; } /* IMP-28-FED: пузырь пользователя — зелёно-графит */
   .bs-sys { align-self:center; display:flex; align-items:center; gap:5px; font-size:11px; color:#b45309; text-align:center; max-width:95%; }
   .bs-chips { display:flex; flex-wrap:wrap; gap:6px; }
-  .bs-chip { border:1px solid #cbd5e1; background:#fff; color:#0f172a; border-radius:9999px; min-height:44px; padding:8px 14px; font-size:13px; cursor:pointer; font-family:inherit; }
-  .bs-chip:hover { background:#f1f5f9; }
+  .bs-chip { border:1px solid #d2e7db; background:#fff; color:#0e241a; border-radius:9999px; min-height:44px; padding:8px 14px; font-size:13px; cursor:pointer; font-family:inherit; } /* IMP-28-FED: чипы — зелёный бордер/текст */
+  .bs-chip:hover { background:#e9f4ee; } /* IMP-28-FED: hover — зеленоватый */
   .bs-chip:disabled { opacity:.5; cursor:default; }
-  .bs-foot { flex:none; display:flex; gap:8px; padding:10px; padding-bottom:calc(10px + env(safe-area-inset-bottom, 0px)); border-top:1px solid #e2e8f0; background:#fff; }
-  .bs-input { flex:1; min-width:0; border:1px solid #cbd5e1; border-radius:12px; padding:10px 12px; font-size:14px; font-family:inherit; outline:none; color:#0f172a; background:#fff; }
-  .bs-input:focus { border-color:#0f172a; }
+  .bs-foot { flex:none; display:flex; gap:8px; padding:10px; padding-bottom:calc(10px + env(safe-area-inset-bottom, 0px)); border-top:1px solid #e6f2ec; background:#fff; } /* IMP-28-FED: бордер футера тонирован */
+  .bs-input { flex:1; min-width:0; border:1px solid #d2e7db; border-radius:12px; padding:10px 12px; font-size:14px; font-family:inherit; outline:none; color:#0e241a; background:#fff; } /* IMP-28-FED: инпут — зелёный бордер/текст */
+  .bs-input:focus { border-color:#059669; } /* IMP-28-FED: фокус — фирменный зелёный */
   .bs-input:disabled { opacity:.6; }
-  .bs-send { flex:none; width:44px; height:44px; border:0; border-radius:12px; background:#0f172a; color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  .bs-send { flex:none; width:44px; height:44px; border:0; border-radius:12px; background:#0e241a; color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center; } /* IMP-28-FED: кнопка-отправка — зелёно-графит */
   .bs-send:disabled { opacity:.5; cursor:default; }
   .bs-dots { display:inline-flex; gap:4px; padding:4px 0; }
-  .bs-dots span { width:6px; height:6px; border-radius:9999px; background:#94a3b8; animation:bsbounce 1.2s infinite ease-in-out; }
+  .bs-dots span { width:6px; height:6px; border-radius:9999px; background:#94b8a6; animation:bsbounce 1.2s infinite ease-in-out; } /* IMP-28-FED: точки «печатает» — зелёно-серые */
   .bs-dots span:nth-child(2) { animation-delay:.15s; }
   .bs-dots span:nth-child(3) { animation-delay:.3s; }
   .bs-skel { opacity:.5; animation:bsfade 1.4s infinite ease-in-out; }

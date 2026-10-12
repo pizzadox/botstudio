@@ -320,7 +320,8 @@ function ProfileDialog({
         </DialogHeader>
 
         {/* Имя и логин — только показ (редактирования профиля нет) */}
-        <div className="flex items-center gap-3 rounded-xl border bg-muted/40 p-3">
+        {/* IMP-28-FEA: карточка профиля — лёгкое стекло вместо border+bg-muted/40 */}
+        <div className="flex items-center gap-3 rounded-xl glass p-3">
           <div
             aria-hidden="true"
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary text-base font-bold uppercase"
@@ -626,8 +627,41 @@ export default function AppRoot() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Диалог «Профиль» (смена пароля)
   const [profileOpen, setProfileOpen] = useState(false);
+  // IMP-28-FIX: зеркало id выбранного бота для refreshBots (без замыкания на state)
+  const currentBotIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    currentBotIdRef.current = currentBot?.id ?? null;
+  }, [currentBot]);
 
-  const refreshBots = useCallback(() => setBotsVersion((v) => v + 1), []);
+  const refreshBots = useCallback(() => {
+    setBotsVersion((v) => v + 1);
+    // IMP-28-FIX: после create/rename/delete (onBotsChanged) сверяем currentBot со
+    // списком: если выбранный бот удалён — сбрасываем выбор (иначе инбокс/редактор
+    // продолжают поллить /api/bots/<удалённый>/… 404, сайдбар показывает призрака),
+    // а при переименовании — подтягиваем свежее имя/статус в сайдбар
+    void api<{ bots: BotListItem[] }>('/api/bots')
+      .then((bd) => {
+        const prevId = currentBotIdRef.current;
+        if (!prevId) return;
+        const fresh = bd.bots.find((b) => b.id === prevId);
+        if (fresh) {
+          setCurrentBot((prev) =>
+            prev && (prev.name !== fresh.name || prev.status !== fresh.status) ? fresh : prev
+          );
+        } else {
+          setCurrentBot(null);
+          setView((v) => (BOT_VIEWS.includes(v) ? 'dashboard' : v));
+          try {
+            window.localStorage.removeItem(BOT_LS_KEY);
+          } catch {
+            /* ignore */
+          }
+        }
+      })
+      .catch(() => {
+        /* сеть — оставляем как есть, есть штатные 401-обработчики */
+      });
+  }, []);
   const onTotals = useCallback(
     (t: { newOrders: number; openConvs: number; complaints: number }) => setBadges(t),
     []
@@ -827,9 +861,12 @@ export default function AppRoot() {
 
   if (loading) {
     return (
-      <div aria-busy="true" className="min-h-screen flex flex-col items-center justify-center gap-3 bg-background">
-        <div aria-hidden="true" className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground animate-pulse">
-          <Bot className="h-7 w-7" />
+      // IMP-28-FEA: стеклянный экран загрузки — пульсирующий логотип в glass-кружке на фоне body::before
+      <div aria-busy="true" className="min-h-screen flex flex-col items-center justify-center gap-4">
+        <div aria-hidden="true" className="glass flex h-20 w-20 items-center justify-center rounded-full">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/25 animate-pulse">
+            <Bot className="h-7 w-7" />
+          </div>
         </div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Загрузка студии…

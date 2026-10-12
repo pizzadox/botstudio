@@ -117,8 +117,9 @@ const DEFAULT_NODE_COLOR = '#94a3b8';
 // IMP-F25: скелетон загрузки канваса — композиция повторяет форму реальной карточки узла
 function FlowCardSkeleton({ className }: { className?: string }) {
   return (
-    <div className={cn('w-56 rounded-lg border bg-card shadow-sm sm:w-60', className)}>
-      <div className="flex items-center gap-2 rounded-t-[7px] border-b bg-muted/40 p-2.5">
+    // IMP-28-FEB: скелетон синхронизирован с полупрозрачным узлом (flow-node)
+    <div className={cn('w-56 rounded-lg border bg-card/85 shadow-sm sm:w-60 dark:bg-card/90', className)}>
+      <div className="flex items-center gap-2 rounded-t-[7px] border-b bg-muted/50 p-2.5 dark:bg-muted/40">
         <Skeleton className="h-7 w-7 shrink-0 rounded-full" />
         <div className="min-w-0 flex-1 space-y-1">
           <Skeleton className="h-2.5 w-3/4" />
@@ -632,7 +633,8 @@ function EditorInner({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Хедер редактора */}
-      <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2">
+      {/* IMP-28-FEB: хедер — плотное стекло glass-strong вместо bg-background */}
+      <div className="flex flex-wrap items-center gap-2 glass-strong border-b px-3 py-2">
         {/* Группа: навигация и имя бота */}
         <div className="flex min-w-0 items-center gap-1">
           <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onBack} aria-label="Назад к дашборду">
@@ -694,7 +696,8 @@ function EditorInner({
       <div className="relative flex min-h-0 flex-1">
         {/* Палитра (десктоп) — при ошибке загрузки скрываем полностью */}
         {isDesktop && !loadError && (
-          <div className="w-56 shrink-0 border-r bg-muted/30 xl:w-60">
+          /* IMP-28-FEB: колонка палитры — полупрозрачное стекло вместо bg-muted/30 */
+          <div className="w-56 shrink-0 glass xl:w-60">
             {loading ? <PaletteSkeleton /> : <NodePalette onAdd={addNodeCenter} className="h-full" />}
           </div>
         )}
@@ -741,7 +744,8 @@ function EditorInner({
           )}
           {nodes.length === 0 && !loading && !loadError && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div className="rounded-xl border bg-card/95 px-6 py-4 text-center text-sm text-muted-foreground shadow-lg backdrop-blur">
+              {/* IMP-28-FEB: пустое состояние — утилита glass вместо bg-card/95 + backdrop-blur */}
+              <div className="glass rounded-xl px-6 py-4 text-center text-sm text-muted-foreground">
                 <Sparkles aria-hidden="true" className="mx-auto mb-2 h-5 w-5 text-primary" />
                 Перетащите блок из палитры
                 <br />
@@ -804,7 +808,8 @@ function EditorInner({
       </Sheet>
 
       {/* Сохранение на мобильных */}
-      <div className="border-t bg-background px-3 py-1.5 text-center sm:hidden">
+      {/* IMP-28-FEB: мобильный статус-бар — стеклянная полоса */}
+      <div className="glass-strong border-t px-3 py-1.5 text-center sm:hidden">
         {saveIndicator}
       </div>
     </div>

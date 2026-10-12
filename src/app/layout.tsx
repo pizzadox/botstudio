@@ -27,8 +27,9 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+    // IMP-28-DS: themeColor под фон «Emerald Glass» (светлый зелёно-белый / тёмный зелёно-графит)
+    { media: "(prefers-color-scheme: light)", color: "#f7fbf9" },
+    { media: "(prefers-color-scheme: dark)", color: "#07120d" },
   ],
 };
 

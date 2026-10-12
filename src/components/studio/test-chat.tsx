@@ -242,7 +242,8 @@ export default function TestChat({
   const lastBotWithButtons = [...items].reverse().find((i) => i.role === 'bot' && i.buttons?.length);
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    // IMP-28-FEB: корень чата прозрачный (стекло даёт колонка-обёртка/Sheet)
+    <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b p-3">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
           <Bot className="h-4 w-4" aria-hidden />
@@ -275,7 +276,8 @@ export default function TestChat({
       </div>
 
       {conversationId && (
-        <div className="border-b bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+        // IMP-28-FEB: янтарный баннер оператора — tint-паттерн 500/10-15 с dark-парой
+        <div className="border-b bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
           <div className="flex items-start gap-2">
             <Headset className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
             <div className="min-w-0 flex-1">
@@ -295,20 +297,22 @@ export default function TestChat({
         </div>
       )}
 
+      {/* IMP-28-FEB: лента — лёгкая стеклянная подложка без blur (скорость скролла) */}
       <div
         ref={scrollRef}
         aria-live="polite"
         aria-label="История сообщений тестового чата"
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-muted/40 p-3 sm:p-4"
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-card/60 p-3 sm:p-4 dark:bg-white/5"
       >
         {items.map((m, i) => (
           <div key={m.id ?? `local-${i}`} className={cn('flex min-w-0', m.role === 'user' ? 'justify-end' : 'justify-start')}>
+            {/* IMP-28-FEB: пузырь бота — стекло; пузырь пользователя (bg-primary) не тронут */}
             <div
               className={cn(
                 'max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
                 m.role === 'user'
                   ? 'rounded-br-md bg-primary text-primary-foreground'
-                  : 'rounded-br-md border bg-card'
+                  : 'rounded-br-md glass'
               )}
             >
               {m.operator && (
@@ -322,7 +326,8 @@ export default function TestChat({
         ))}
         {typing && (
           <div className="flex justify-start">
-            <div className="flex items-center gap-1 rounded-2xl rounded-br-md border bg-card px-3 py-2.5">
+            {/* IMP-28-FEB: typing-пузырь — стекло */}
+            <div className="glass flex items-center gap-1 rounded-2xl rounded-br-md px-3 py-2.5">
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:0ms]" />
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
               <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />
@@ -348,13 +353,15 @@ export default function TestChat({
       </div>
 
       {lastBotWithButtons?.buttons && (
-        <div className="flex flex-wrap gap-2 border-t bg-background p-2.5">
+        // IMP-28-FEB: фон строки чипов прозрачен (следствие прозрачного корня :245)
+        <div className="flex flex-wrap gap-2 border-t p-2.5">
           {lastBotWithButtons.buttons.map((b) => (
+            // IMP-28-FEB: чипы — tint выразительнее (primary/10-15 по гайду)
             <button
               key={b.id}
               onClick={() => send(b.text)}
               disabled={typing}
-              className="rounded-full border border-primary/40 bg-primary/5 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
+              className="rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 dark:bg-primary/15"
             >
               {b.text}
             </button>

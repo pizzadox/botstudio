@@ -87,7 +87,8 @@ export default function NodeInspector({
   const d = node.data;
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    // IMP-28-FEB: корень инспектора прозрачный (стекло даёт обёртка-колонка/Sheet)
+    <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b p-3">
         <div
           className={cn(
@@ -145,7 +146,8 @@ export default function NodeInspector({
           )}
 
           {node.type === 'message' && (
-            <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+            /* IMP-28-FEB: вложенная группа «Создать заявку» — стекло */
+            <div className="glass space-y-3 rounded-xl p-3">
               <div className="flex items-center justify-between">
                 <Label className="flex items-center gap-1 text-sm font-medium">
                   <ClipboardList className="h-3.5 w-3.5" aria-hidden /> Создать заявку
@@ -306,7 +308,8 @@ export default function NodeInspector({
 
           {/* IMP-25-28: редактор жалобной ветки — createComplaint на message-узле */}
           {node.type === 'message' && (
-            <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
+            /* IMP-28-FEB: вложенная группа «Создать жалобу» — стекло */
+            <div className="glass space-y-3 rounded-xl p-3">
               <div className="flex items-center justify-between">
                 <Label className="flex items-center gap-1 text-sm font-medium">
                   <MessageCircleWarning className="h-3.5 w-3.5" aria-hidden /> Создать жалобу
@@ -517,7 +520,8 @@ export default function NodeInspector({
                 <p className="text-[11px] text-muted-foreground">
                   Каждая кнопка — отдельная точка соединения снизу блока: тяните связь к следующему шагу.
                 </p>
-                <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+                {/* IMP-28-FEB: вложенная группа переменной выбора — стекло */}
+                <div className="glass space-y-2 rounded-xl p-3">
                   <Label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
                     <MousePointerClick className="h-3 w-3" aria-hidden /> Сохранить выбор кнопки в переменную
                   </Label>

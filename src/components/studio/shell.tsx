@@ -80,7 +80,8 @@ function ThemeToggle({ className }: { className?: string }) {
       title="Переключить тёмную тему"
       onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
       className={cn(
-        'flex shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        // IMP-28-FEA: ghost-hover тумблера темы — зелёный tint вместо серого (dark-пара)
+        'flex shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-primary/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         className
       )}
     >
@@ -117,10 +118,11 @@ function MobileMoreMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
+        {/* IMP-28-FEA: ghost-hover триггера «Ещё» — зелёный tint вместо серого (dark-пара) */}
         <button
           type="button"
           aria-label="Ещё"
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-primary/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <MoreVertical className="h-4 w-4" aria-hidden="true" />
         </button>
@@ -224,9 +226,11 @@ export default function Shell({
 
   return (
     <TooltipProvider delayDuration={350}>
-      <div className="h-dvh overflow-hidden flex flex-col bg-muted/40">
+      {/* IMP-28-FEA: корень прозрачный — декоративный градиентный фон body::before виден сквозь всё приложение */}
+      <div className="h-dvh overflow-hidden flex flex-col">
         {/* Мобильный хедер */}
-        <header className="md:hidden flex items-center justify-between border-b bg-background px-3 py-2">
+        {/* IMP-28-FEA: стеклянный мобильный хедер — glass-strong + чёткая нижняя кромка (шаблон design-doc) */}
+        <header className="md:hidden flex items-center justify-between glass-strong border-b px-3 py-2">
           <div className="flex min-w-0 items-center gap-2">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
               <Bot className="h-4 w-4" />
@@ -246,7 +250,8 @@ export default function Shell({
                       'relative flex h-10 w-10 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                       view === n.key
                         ? 'bg-primary text-primary-foreground shadow-sm'
-                        : 'text-muted-foreground hover:bg-muted'
+                        // IMP-28-FEA: hover неактивных — зелёный tint вместо серого (dark-пара)
+                        : 'text-muted-foreground hover:bg-primary/10 dark:hover:bg-primary/15'
                     )}
                   >
                     <n.icon className="h-4 w-4" />
@@ -272,9 +277,11 @@ export default function Shell({
 
         <div className="flex flex-1 min-h-0">
           {/* Десктопный сайдбар */}
-          <aside className="hidden md:flex h-full w-60 shrink-0 flex-col border-r bg-background">
+          {/* IMP-28-FEA: плотное стекло сайдбара (glass-strong), белёсый border-r (light/dark пара из --glass-strong-border) */}
+          <aside className="hidden md:flex h-full w-60 shrink-0 flex-col glass-strong border-r">
             <div className="flex items-center gap-3 px-5 py-5">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-emerald-600/20">
+              {/* IMP-28-FEA: тень логотипа на primary-токене вместо хардкода emerald */}
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-primary/25">
                 <Bot className="h-5 w-5" />
               </div>
               <div>
@@ -295,7 +302,8 @@ export default function Shell({
                           'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                           view === n.key
                             ? 'bg-primary text-primary-foreground shadow-sm'
-                            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                            // IMP-28-FEA: hover неактивных — зелёный tint вместо серого (dark-пара)
+                            : 'text-muted-foreground hover:bg-primary/10 dark:hover:bg-primary/15 hover:text-foreground'
                         )}
                       >
                         <n.icon className="h-4 w-4" />
@@ -322,7 +330,8 @@ export default function Shell({
                   type="button"
                   onClick={onOpenPalette}
                   aria-label="Палитра команд (Ctrl+K)"
-                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  // IMP-28-FEA: ghost-hover палитры — зелёный tint вместо серого (dark-пара)
+                  className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-primary/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <Search className="h-4 w-4" aria-hidden="true" />
                   <span className="flex-1 text-left">Палитра команд</span>
@@ -337,7 +346,8 @@ export default function Shell({
             )}
 
             {currentBot && (
-              <div className="mx-3 mb-3 min-w-0 rounded-xl border bg-muted/50 p-3">
+              // IMP-28-FEA: карточка «Текущий бот» — лёгкое стекло вместо border+bg-muted/50
+              <div className="mx-3 mb-3 min-w-0 rounded-xl glass p-3">
                 <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <Bot className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   Текущий бот
@@ -360,7 +370,8 @@ export default function Shell({
                   type="button"
                   onClick={onOpenProfile}
                   aria-label="Профиль"
-                  className="min-w-0 flex-1 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  // IMP-28-FEA: ghost-hover имени профиля — зелёный tint вместо серого (dark-пара)
+                  className="min-w-0 flex-1 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-primary/10 dark:hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <div className="truncate text-sm font-medium">{user.name ?? user.username}</div>
                   <div className="truncate text-xs text-muted-foreground">@{user.username}</div>
@@ -374,7 +385,8 @@ export default function Shell({
                     <button
                       aria-label="Выйти"
                       onClick={onLogout}
-                      className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      // IMP-28-FEA: ghost-hover «Выйти» — зелёный tint вместо серого (dark-пара)
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-primary/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <LogOut className="h-4 w-4" />
                     </button>

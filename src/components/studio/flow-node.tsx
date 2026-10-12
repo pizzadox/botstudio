@@ -112,9 +112,10 @@ export const FlowCard = memo(function FlowCard({ data, selected }: NodeProps<Flo
   const hiddenButtons = buttons.slice(6);
 
   return (
+    // IMP-28-FEB: полупрозрачный узел БЕЗ backdrop-blur (перф React Flow, 70+ узлов): bg-card/85, dark /90
     <div
       className={cn(
-        'relative w-56 rounded-lg border bg-card shadow-sm transition-shadow sm:w-60',
+        'relative w-56 rounded-lg border bg-card/85 shadow-sm transition-shadow sm:w-60 dark:bg-card/90',
         selected ? 'ring-2 ring-primary ring-offset-1 ring-offset-background' : 'hover:shadow-md'
       )}
     >
@@ -122,7 +123,8 @@ export const FlowCard = memo(function FlowCard({ data, selected }: NodeProps<Flo
         <Handle type="target" position={Position.Top} className={cn(HANDLE_CLS, '!bg-slate-400', '-top-1.5')} />
       )}
 
-      <div className="flex items-center gap-2 rounded-t-[7px] border-b bg-muted/40 p-2.5">
+      {/* IMP-28-FEB: шапка узла согласована с полупрозрачным телом (тонированная полоса) */}
+      <div className="flex items-center gap-2 rounded-t-[7px] border-b bg-muted/50 p-2.5 dark:bg-muted/40">
         <div
           className={cn(
             'flex h-7 w-7 shrink-0 items-center justify-center rounded-full',

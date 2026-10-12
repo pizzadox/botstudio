@@ -176,12 +176,13 @@ export default function Dashboard({
     }
   };
 
+  // IMP-28-FEA: иконки-чипы статистики — tint-паттерн bg-*-500/10 + text-*-700 (dark-пары) вместо фиксированных bg-*-100, hue variety сохранена
   const statCards = [
-    { label: 'Ботов', value: stats?.bots ?? 0, icon: Bot, color: 'text-emerald-600 bg-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-400' },
-    { label: 'Активных каналов', value: stats?.activeChannels ?? 0, icon: Cable, color: 'text-teal-600 bg-teal-100 dark:bg-teal-500/15 dark:text-teal-400' },
-    { label: 'Диалогов', value: stats?.conversations ?? 0, icon: MessagesSquare, color: 'text-amber-600 bg-amber-100 dark:bg-amber-500/15 dark:text-amber-400' },
-    { label: 'Сообщений', value: stats?.messages ?? 0, icon: Inbox, color: 'text-violet-600 bg-violet-100 dark:bg-violet-500/15 dark:text-violet-400' },
-    { label: 'Ждут оператора', value: stats?.needsOperator ?? 0, icon: Headset, color: 'text-rose-600 bg-rose-100 dark:bg-rose-500/15 dark:text-rose-400' },
+    { label: 'Ботов', value: stats?.bots ?? 0, icon: Bot, color: 'bg-emerald-500/10 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400' },
+    { label: 'Активных каналов', value: stats?.activeChannels ?? 0, icon: Cable, color: 'bg-teal-500/10 text-teal-700 dark:bg-teal-500/15 dark:text-teal-400' },
+    { label: 'Диалогов', value: stats?.conversations ?? 0, icon: MessagesSquare, color: 'bg-amber-500/10 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400' },
+    { label: 'Сообщений', value: stats?.messages ?? 0, icon: Inbox, color: 'bg-violet-500/10 text-violet-700 dark:bg-violet-500/15 dark:text-violet-400' },
+    { label: 'Ждут оператора', value: stats?.needsOperator ?? 0, icon: Headset, color: 'bg-rose-500/10 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400' },
   ];
 
   return (
@@ -277,14 +278,16 @@ export default function Dashboard({
       {/* Обзор: кликабельные сводки (IMP-FE22-21). needsOperator приходит из
           stats этого же дашборда, newOrders — из notifications-totals app-root. */}
       <div className="grid gap-3 sm:grid-cols-2">
+        {/* IMP-28-FEA: обзорные тайлы — стекло + плавный подъём (glass-hover) вместо border/bg-card + hover:shadow-sm */}
         <button
           type="button"
           onClick={() => onOpenView?.('orders')}
           aria-label={`Новых заявок: ${newOrders}. Открыть раздел «Заявки»`}
-          className="rounded-xl border bg-card p-4 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="glass glass-hover rounded-xl p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">
+            {/* IMP-28-FEA: чип иконки — tint-паттерн с dark-парой */}
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400">
               <Inbox className="h-5 w-5" aria-hidden="true" />
             </div>
             <div className="min-w-0">
@@ -297,10 +300,11 @@ export default function Dashboard({
           type="button"
           onClick={() => onOpenView?.('inbox')}
           aria-label={`Требуют внимания: ${stats?.needsOperator ?? 0}. Открыть раздел «Входящие»`}
-          className="rounded-xl border bg-card p-4 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="glass glass-hover rounded-xl p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400">
+            {/* IMP-28-FEA: чип иконки — tint-паттерн с dark-парой */}
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/10 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400">
               <Headset className="h-5 w-5" aria-hidden="true" />
             </div>
             <div className="min-w-0">
@@ -323,7 +327,8 @@ export default function Dashboard({
             ))}
           </div>
         ) : bots.length === 0 ? (
-          <Card className="border-dashed">
+          // IMP-28-FEA: пустое состояние — glass-CTA с пунктиром (!border-dashed пробивает border из glass-утилиты)
+          <Card className="!border-dashed">
             <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
                 <Bot className="h-6 w-6" aria-hidden="true" />
@@ -343,9 +348,10 @@ export default function Dashboard({
               // IMP-FE21-19: контейнер больше не role="button" (внутри есть свои
               // кнопки — вложенность ломает скринридер). Тело осталось кликабельным,
               // а явная кнопка — имя бота в заголовке.
+              // IMP-28-FEA: glass-hover — плавный подъём карточки бота (Card уже стекло)
               <Card
                 key={bot.id}
-                className="cursor-pointer transition-shadow hover:shadow-md"
+                className="cursor-pointer glass-hover"
                 onClick={() => onOpenBot(bot, 'editor')}
               >
                 <CardHeader className="pb-3">
@@ -415,6 +421,7 @@ export default function Dashboard({
                       ))
                     )}
                     {bot.mytko && (
+                      // IMP-28-FEA: бейджи MyTKO — tint-паттерн с dark-парами вместо фиксированных bg-*-100
                       <Badge
                         variant="outline"
                         title={
@@ -424,8 +431,8 @@ export default function Dashboard({
                         }
                         className={
                           bot.mytko.hasToken
-                            ? 'border-emerald-200 bg-emerald-100 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300'
-                            : 'border-amber-200 bg-amber-100 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300'
+                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400'
+                            : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-400'
                         }
                       >
                         MyTKO {bot.mytko.hasToken ? '✓' : '…'}
@@ -442,20 +449,22 @@ export default function Dashboard({
                         .map((c) => `${SOURCE_LABELS[c.type] ?? c.type}: ${c.lastStatus}`)
                         .join('\n');
                       return (
+                        // IMP-28-FEA: бейдж статуса каналов — tint-паттерн с dark-парами вместо фиксированных bg-*-100
                         <Badge
                           variant="outline"
                           title={title}
                           className={
                             hasError
-                              ? 'border-rose-200 bg-rose-100 text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-300'
-                              : 'border-emerald-200 bg-emerald-100 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300'
+                              ? 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-400'
+                              : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400'
                           }
                         >
                           <span
                             aria-hidden="true"
                             className={cn(
                               'h-1.5 w-1.5 rounded-full',
-                              hasError ? 'bg-rose-500' : 'bg-emerald-500'
+                              // IMP-28-FEA: точки статуса — dark-пары (ярче в тёмной теме)
+                              hasError ? 'bg-rose-500 dark:bg-rose-400' : 'bg-emerald-500 dark:bg-emerald-400'
                             )}
                           />
                           <span className="sr-only">Каналы: </span>

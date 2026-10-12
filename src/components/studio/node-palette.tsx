@@ -40,6 +40,7 @@ export default function NodePalette({
         const meta = NODE_META[type];
         const Icon = NODE_ICONS[type];
         return (
+          // IMP-28-FEB: стеклянный чип палитры + hover green-tint (гайд §5; min-h-11 сохранён)
           <button
             key={type}
             draggable
@@ -47,7 +48,7 @@ export default function NodePalette({
             onClick={() => onAdd(type)}
             title={`${meta.title} — ${meta.description}`}
             aria-label={`${meta.title}: ${meta.description}`}
-            className="group flex min-h-11 w-full cursor-grab items-center gap-2.5 rounded-lg border bg-card p-2 text-left transition-colors hover:border-primary/40 hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:cursor-grabbing active:bg-primary/5 active:ring-1 active:ring-primary/30"
+            className="group glass glass-hover flex min-h-11 w-full cursor-grab items-center gap-2.5 rounded-lg p-2 text-left hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:cursor-grabbing active:bg-primary/10 active:ring-1 active:ring-primary/30 dark:hover:bg-primary/15 dark:active:bg-primary/15"
           >
             <div
               className={cn(
@@ -80,18 +81,20 @@ export default function NodePalette({
 /** Компактная палитра для мобильных (горизонтальная лента) */
 export function NodePaletteStrip({ onAdd }: { onAdd: (type: FlowNodeType) => void }) {
   return (
-    <div className="flex gap-2 overflow-x-auto border-b bg-background p-2 lg:hidden">
+    // IMP-28-FEB: мобильная лента палитры — плотное стекло вместо bg-background
+    <div className="glass-strong flex gap-2 overflow-x-auto border-b p-2 lg:hidden">
       {ORDER.map((type) => {
         const meta = NODE_META[type];
         const Icon = NODE_ICONS[type];
         return (
+          // IMP-28-FEB: мобильный чип — тот же стеклянный паттерн, что на десктопе
           <button
             key={type}
             draggable
             onDragStart={(e) => handleDragStart(e, type)}
             onClick={() => onAdd(type)}
             aria-label={`Добавить блок «${meta.title}»`}
-            className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border bg-card px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:bg-primary/5 active:ring-1 active:ring-primary/30"
+            className="glass glass-hover flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:bg-primary/10 active:ring-1 active:ring-primary/30 dark:hover:bg-primary/15 dark:active:bg-primary/15"
           >
             <Icon className={cn('h-3.5 w-3.5', meta.color, NODE_DARK[type].text)} aria-hidden />
             {meta.title}

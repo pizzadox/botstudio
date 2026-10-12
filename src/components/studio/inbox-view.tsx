@@ -192,8 +192,9 @@ function timeAgo(iso: string): string {
 /** Пустое состояние: иконка в квадрате + заголовок + пояснение */
 function EmptyState({ icon: Icon, title, hint }: { icon: LucideIcon; title: string; hint: string }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
+    // IMP-28-FEC: EmptyState — glass-CTA: стеклянная карточка поверх общего градиента
+    <div className="glass m-3 flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-2xl p-8 text-center sm:m-4">
+      <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20 dark:ring-primary/30">
         <Icon className="h-6 w-6" aria-hidden />
       </div>
       <div className="max-w-[280px]">
@@ -260,9 +261,12 @@ const ConversationRow = memo(function ConversationRow({
       onClick={() => onSelect(id)}
       aria-current={selected ? 'true' : undefined}
       className={cn(
-        'flex w-full min-w-0 flex-col gap-1 py-3 pl-3 pr-12 text-left transition-colors hover:bg-muted/60',
+        // IMP-28-FEC: hover green-tint по гайду; selected усилен до primary/10 (dark /15);
+        // hover == selected по силе, чтобы выбранная строка не «проседала» под hover;
+        // unread tint bg-primary/[0.04] сохранён
+        'flex w-full min-w-0 flex-col gap-1 py-3 pl-3 pr-12 text-left transition-colors hover:bg-primary/10 dark:hover:bg-primary/15',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-        selected && 'bg-primary/5',
+        selected && 'bg-primary/10 dark:bg-primary/15',
         unread && status === 'open' && 'bg-primary/[0.04]'
       )}
     >
@@ -422,11 +426,13 @@ const MessageBubble = memo(function MessageBubble({ m }: { m: ChatMessage }) {
       <div
         className={cn(
           'max-w-[85%] space-y-0.5 rounded-2xl px-3.5 py-2 text-sm leading-snug sm:max-w-[75%]',
+          // IMP-28-FEC: user — primary-tint стекло (читаемее нейтрального и отличимо от бот-пузыря),
+          // операторский bg-primary не тронут, бот — стеклянный пузырь вместо border bg-card
           m.role === 'user'
-            ? 'rounded-bl-md bg-muted'
+            ? 'rounded-bl-md border border-primary/20 bg-primary/10 dark:border-primary/30 dark:bg-primary/15'
             : isOperator
               ? 'rounded-br-md bg-primary text-primary-foreground'
-              : 'rounded-br-md border bg-card'
+              : 'rounded-br-md glass'
         )}
       >
         {isOperator && (
@@ -621,7 +627,8 @@ function ConversationOrdersPanel({
   };
 
   return (
-    <div className="border-b bg-background px-4 py-2">
+    // IMP-28-FEC: панель вложений прозрачная — стеклянные строки-панели внутри
+    <div className="border-b px-4 py-2">
       <button
         className="flex w-full items-center gap-1.5 rounded text-left text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         onClick={() => setOpen((v) => !v)}
@@ -636,7 +643,8 @@ function ConversationOrdersPanel({
         {open && loaded && orders.length > 0 && (
           <div className="mt-2 max-h-56 space-y-1.5 overflow-y-auto pr-1">
             {orders.map((o) => (
-              <div key={o.id} className="rounded-lg border p-2">
+              // IMP-28-FEC: вложенная панель заявки — стекло
+              <div key={o.id} className="glass rounded-lg p-2">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="text-xs font-semibold tabular-nums">№{o.number}</span>
                   <Badge
@@ -715,7 +723,8 @@ function ConversationOrdersPanel({
         {cmpOpen && cmpLoaded && complaints.length > 0 && (
           <div className="mt-2 max-h-48 space-y-1.5 overflow-y-auto pr-1">
             {complaints.map((c) => (
-              <div key={c.id} className="rounded-lg border p-2">
+              // IMP-28-FEC: вложенная панель жалобы — стекло
+              <div key={c.id} className="glass rounded-lg p-2">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="text-xs font-semibold tabular-nums">№{c.number}</span>
                   <Badge variant="outline" className="h-4 px-1 text-[9px]" title="Тип обращения">
@@ -1315,7 +1324,8 @@ export default function InboxView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b bg-background px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+      {/* IMP-28-FEC: хедер view — стеклянная полоса (glass-strong) вместо bg-background */}
+      <div className="flex items-center gap-2 border-b glass-strong px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
         <Button
           variant="ghost"
           size="icon"
@@ -1375,9 +1385,12 @@ export default function InboxView({
 
       <div className="grid min-h-0 flex-1 md:grid-cols-[340px_1fr]">
         {/* Список диалогов */}
-        <div className={cn('flex min-h-0 flex-col border-r', selected && 'hidden md:flex')}>
+        {/* IMP-28-FEC: колонка списка — стеклянная панель (glass даёт кромку вместо border-r),
+            строки читаются поверх общего градиентного фона; mobile-swap hidden md:flex сохранён */}
+        <div className={cn('glass flex min-h-0 flex-col', selected && 'hidden md:flex')}>
           {/* Фильтры: все / нужен оператор / новые / закрытые + поиск */}
-          <div className="flex flex-wrap items-center gap-1.5 border-b bg-background px-2.5 py-2 sm:px-3">
+          {/* IMP-28-FEC: фильтр-бар прозрачный поверх стеклянной панели */}
+          <div className="flex flex-wrap items-center gap-1.5 border-b px-2.5 py-2 sm:px-3">
             {(
               [
                 { key: 'all', label: 'Все', count: conversations.length },
@@ -1396,7 +1409,8 @@ export default function InboxView({
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
                   filter === f.key
                     ? 'border border-transparent bg-primary text-primary-foreground'
-                    : 'border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                    : // IMP-28-FEC: неактивный чип — полупрозрачный, hover green-tint
+                      'border bg-background/50 text-muted-foreground hover:bg-primary/10 hover:text-foreground dark:bg-white/5 dark:hover:bg-primary/15'
                 )}
               >
                 {f.label}
@@ -1496,7 +1510,8 @@ export default function InboxView({
             />
           ) : (
             <>
-              <div className="flex flex-wrap items-center gap-2 border-b bg-background px-4 py-2.5">
+              {/* IMP-28-FEC: хедер чата — плотное стекло */}
+              <div className="flex flex-wrap items-center gap-2 border-b glass-strong px-4 py-2.5">
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1581,7 +1596,8 @@ export default function InboxView({
               </div>
 
               <form
-                className="flex items-end gap-2 border-t bg-background p-3"
+                // IMP-28-FEC: панель ответа — плотное стекло (sticky-полоса, как хедер чата)
+                className="flex items-end gap-2 border-t glass-strong p-3"
                 onSubmit={(e) => {
                   e.preventDefault();
                   sendReply();
