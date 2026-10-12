@@ -26,6 +26,9 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
+  // viewportFit=cover — активирует env(safe-area-inset-*) в iOS Safari
+  // (используется в orders-view и test-chat: pb-[env(safe-area-inset-bottom)] и т.п.)
+  viewportFit: "cover",
   themeColor: [
     // IMP-28-DS: themeColor под фон «Emerald Glass» (светлый зелёно-белый / тёмный зелёно-графит)
     { media: "(prefers-color-scheme: light)", color: "#f7fbf9" },

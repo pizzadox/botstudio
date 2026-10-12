@@ -665,7 +665,8 @@ function ConversationOrdersPanel({
                     onValueChange={(v) => patch(o.id, { status: v })}
                     disabled={savingId === o.id}
                   >
-                    <SelectTrigger className="h-7 w-[130px] text-[11px]" aria-label="Статус заявки">
+                    {/* IMP-29-INT: data-[size=default] примитива бьёт plain h-11 — оверрайд тем же вариантом */}
+                    <SelectTrigger className="data-[size=default]:h-11 w-[130px] text-[11px] sm:data-[size=default]:h-7" aria-label="Статус заявки">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -677,7 +678,7 @@ function ConversationOrdersPanel({
                     </SelectContent>
                   </Select>
                   <Input
-                    className="h-7 w-[120px] flex-1 text-[11px] sm:w-[140px]"
+                    className="h-11 w-[120px] flex-1 sm:h-7 sm:w-[140px] sm:text-[11px]"
                     // IMP-25-27: controlled — значение живёт в синхронизации с поллингом
                     value={assigneeDrafts[o.id] ?? o.assignee ?? ''}
                     placeholder="Исполнитель…"
@@ -810,6 +811,8 @@ export default function InboxView({
   const visibleListRef = useRef<ConversationListItem[]>([]);
   /** Зеркало messages для «Скопировать переписку» без зависимостей колбэка (FE22-25) */
   const messagesRef = useRef<ChatMessage[]>([]);
+  /** Синхронный гвард double-submit ответа оператора: setState не защищает от двух кликов в одном кадре */
+  const replyInFlightRef = useRef(false);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -1052,6 +1055,8 @@ export default function InboxView({
           prev.map((o) => (o.id === tmpId ? { ...o, status: 'error' as const } : o))
         );
         toast({ title: 'Не удалось отправить', variant: 'destructive' });
+      } finally {
+        replyInFlightRef.current = false;
       }
     },
     [toast]
@@ -1059,7 +1064,7 @@ export default function InboxView({
 
   const sendReply = async () => {
     const t = reply.trim();
-    if (!t || !selectedId) return;
+    if (!t || !selectedId || replyInFlightRef.current) return;
     const convId = selectedId;
     const tmpId = `tmp-${Date.now()}`;
     setOptimistic((prev) => [...prev, { id: tmpId, convId, text: t, status: 'sending' }]);
@@ -1072,6 +1077,7 @@ export default function InboxView({
     });
     writeLS(`bstudio.inbox.draft.${convId}`, '');
     setSending(true);
+    replyInFlightRef.current = true;
     await deliverReply(convId, tmpId, t);
     setSending(false);
   };
@@ -1079,7 +1085,8 @@ export default function InboxView({
   /** Повторная отправка тем же текстом (IMP-F02) */
   const retryReply = (tmpId: string) => {
     const msg = optimistic.find((o) => o.id === tmpId);
-    if (!msg || msg.status === 'sending') return;
+    if (!msg || msg.status === 'sending' || replyInFlightRef.current) return;
+    replyInFlightRef.current = true;
     setOptimistic((prev) =>
       prev.map((o) => (o.id === tmpId ? { ...o, status: 'sending' as const } : o))
     );
@@ -1329,7 +1336,7 @@ export default function InboxView({
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 shrink-0 sm:h-9 sm:w-9"
+          className="h-11 w-11 sm:h-9 sm:w-9 shrink-0"
           onClick={onBack}
           aria-label="Назад"
         >
@@ -1387,7 +1394,10 @@ export default function InboxView({
         {/* Список диалогов */}
         {/* IMP-28-FEC: колонка списка — стеклянная панель (glass даёт кромку вместо border-r),
             строки читаются поверх общего градиентного фона; mobile-swap hidden md:flex сохранён */}
-        <div className={cn('glass flex min-h-0 flex-col', selected && 'hidden md:flex')}>
+        {/* IMP-29-INT: min-w-0 — grid-item без него раздувает auto-трек до ширины
+            nowrap-превью строки (truncate не уменьшает min-content), список уходил
+            за экран на мобиле (панель 1625px при вьюпорте 390) */}
+        <div className={cn('glass flex min-h-0 min-w-0 flex-col', selected && 'hidden md:flex')}>
           {/* Фильтры: все / нужен оператор / новые / закрытые + поиск */}
           {/* IMP-28-FEC: фильтр-бар прозрачный поверх стеклянной панели */}
           <div className="flex flex-wrap items-center gap-1.5 border-b px-2.5 py-2 sm:px-3">
@@ -1405,7 +1415,7 @@ export default function InboxView({
                 onClick={() => setFilter(f.key)}
                 aria-pressed={filter === f.key}
                 className={cn(
-                  'h-8 rounded-full px-3 text-xs font-medium transition-colors',
+                  'h-11 sm:h-8 rounded-full px-3 text-xs font-medium transition-colors',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
                   filter === f.key
                     ? 'border border-transparent bg-primary text-primary-foreground'
@@ -1427,7 +1437,7 @@ export default function InboxView({
                 aria-hidden
               />
               <Input
-                className="h-8 pl-7 text-xs"
+                className="h-11 sm:h-8 pl-7 sm:text-xs"
                 placeholder="Поиск по имени…"
                 aria-label="Поиск диалогов"
                 value={query}
@@ -1462,7 +1472,13 @@ export default function InboxView({
               />
             )
           ) : (
-            <ScrollArea className="min-h-0 flex-1">
+            // IMP-29-INT: Radix ScrollArea ставит inline display:table на viewport И
+            // на внутренний content-wrapper — таблица раздувается до min-content
+            // nowrap-превью строк: панель списка уходила за экран на мобиле
+            // (1625px при 390), тап по строке промахивался мимо вьюпорта.
+            // Блочный режим = truncate работает. Общий ui/scroll-area не тронут:
+            // таблице реестра КП table-режим нужен.
+            <ScrollArea className="min-h-0 flex-1 [&>[data-slot=scroll-area-viewport]]:!block [&>[data-slot=scroll-area-viewport]>div]:!block">
               <div className="divide-y">
                 {visibleList.map((c) => (
                   <div key={c.id} className="relative">
@@ -1515,7 +1531,7 @@ export default function InboxView({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 md:hidden"
+                  className="h-11 w-11 md:hidden"
                   onClick={() => setSelectedId(null)}
                   aria-label="К списку диалогов"
                 >

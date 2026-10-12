@@ -106,6 +106,8 @@ type Tab = 'map' | 'active' | 'archive';
 
 const ACTIVE_STATUSES = ['new', 'assigned', 'in_progress'];
 const ARCHIVE_STATUSES = ['completed', 'cancelled'];
+// Кап отрисовки списочного таба (по образцу areas-view IMP-26-09): сотни glass-строк = сотни backdrop-filter
+const RENDER_CAP = 200;
 
 /** Цвет маркера на карте */
 function markerColor(order: OrderDto): string {
@@ -1382,6 +1384,8 @@ function OrderChat({
   /** Ключ активной заявки — защита от гонки: ответ старого запроса не должен
    *  попасть в чат новой заявки при быстром переключении карточек */
   const activeKeyRef = useRef('');
+  /** Синхронный гвард double-submit: setState не защищает от двух кликов в одном кадре */
+  const sendInFlightRef = useRef(false);
 
   // Поллинг с дедуп-слиянием по id (IMP-F11): первая загрузка — полная история,
   // далее ?take=50. Слияние защитает и бэкенд без поддержки ?take, и гонки ответов.
@@ -1462,6 +1466,7 @@ function OrderChat({
         setPending((p) => p.map((x) => (x.tmpId === tmpId ? { ...x, status: 'error' } : x)));
         toast({ title: 'Не удалось отправить', variant: 'destructive' });
       } finally {
+        sendInFlightRef.current = false;
         setSending(false);
       }
     },
@@ -1470,8 +1475,9 @@ function OrderChat({
 
   const send = () => {
     const t = text.trim();
-    if (!t) return;
+    if (!t || sendInFlightRef.current) return;
     const tmpId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    sendInFlightRef.current = true;
     setSending(true);
     setText('');
     setPending((p) => [...p, { tmpId, text: t, status: 'sending' }]);
@@ -1479,6 +1485,8 @@ function OrderChat({
   };
 
   const retry = (m: PendingMessage) => {
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setPending((p) => p.map((x) => (x.tmpId === m.tmpId ? { ...x, status: 'sending' } : x)));
     setSending(true);
     void sendMessage(m.text, m.tmpId);
@@ -1658,7 +1666,7 @@ function CopyButton({
       aria-label={`Копировать: ${label}`}
       title={`Копировать: ${label}`}
       className={cn(
-        'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        'flex h-11 w-11 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         className
       )}
     >
@@ -2026,7 +2034,7 @@ function OrderDetailDialog({
                 onClick={copyOrderText}
                 aria-label="Скопировать заявку"
                 title="Скопировать заявку"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex h-11 w-11 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Copy className="h-3.5 w-3.5" aria-hidden />
               </button>
@@ -2044,7 +2052,7 @@ function OrderDetailDialog({
                 }
                 aria-label="Открыть диалог клиента"
                 title="Открыть диалог клиента"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex h-11 w-11 sm:h-8 sm:w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <MessageCircle className="h-3.5 w-3.5" aria-hidden />
               </button>
@@ -2410,7 +2418,7 @@ function OrderDetailDialog({
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-8"
+                      className="h-11 sm:h-8"
                       onClick={() => onPlaceRequest(order.id)}
                     >
                       <Crosshair className="h-3.5 w-3.5" />
@@ -2420,7 +2428,7 @@ function OrderDetailDialog({
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8"
+                        className="h-11 sm:h-8"
                         onClick={() => onShowOnMap(order.id)}
                       >
                         <MapPin className="h-3.5 w-3.5" /> Показать на карте
@@ -2430,7 +2438,7 @@ function OrderDetailDialog({
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8"
+                        className="h-11 sm:h-8"
                         disabled={geoLoading || saving}
                         onClick={() => setConfirmGeo(true)}
                       >
@@ -2440,7 +2448,7 @@ function OrderDetailDialog({
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8"
+                        className="h-11 sm:h-8"
                         disabled={geoLoading || saving || !address.trim()}
                         onClick={runGeocode}
                       >
@@ -2459,13 +2467,13 @@ function OrderDetailDialog({
                         Точка установлена вручную. Пересчитать координаты по адресу?
                       </span>
                       <span className="flex shrink-0 gap-1.5 sm:ml-auto">
-                        <Button size="sm" className="h-7" onClick={runGeocode}>
+                        <Button size="sm" className="h-11 sm:h-7" onClick={runGeocode}>
                           Заменить
                         </Button>
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-7"
+                          className="h-11 sm:h-7"
                           onClick={() => setConfirmGeo(false)}
                         >
                           Оставить
@@ -4271,12 +4279,16 @@ export default function OrdersView({
     };
   }, [orders, typeFilter, dateFilter, search, crewFilter, tab]);
 
+  // Кап отрисовки списочного таба (по образцу areas-view): рендерим не больше RENDER_CAP glass-строк
+  const overCap = listOrders.length > RENDER_CAP;
+  const visibleOrders = overCap ? listOrders.slice(0, RENDER_CAP) : listOrders;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Хедер */}
       {/* IMP-28-FED: шапка раздела — плотное стекло (гайд w28 §5); border-b оставлен для кромки */}
       <div className="flex flex-wrap items-center gap-2 glass-strong border-b px-3 py-2.5 sm:px-4 sm:py-3">
-        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onBack} aria-label="Назад к дашборду">
+        <Button variant="ghost" size="icon" className="h-11 w-11 sm:h-8 sm:w-8 shrink-0" onClick={onBack} aria-label="Назад к дашборду">
           <ChevronLeft className="h-4 w-4" />
         </Button>
         <MapPin className="h-5 w-5 shrink-0 text-primary" aria-hidden />
@@ -4299,11 +4311,11 @@ export default function OrdersView({
               обновлено {fmtAgo(lastSyncAt, nowTs)}
             </span>
           )}
-          <Button variant="outline" size="sm" className="h-8" onClick={load} aria-label="Обновить список заявок">
+          <Button variant="outline" size="sm" className="h-11 sm:h-8" onClick={load} aria-label="Обновить список заявок">
             <RefreshCw className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Обновить</span>
           </Button>
-          <Button size="sm" className="h-8" onClick={() => setNewOpen(true)}>
+          <Button size="sm" className="h-11 sm:h-8" onClick={() => setNewOpen(true)}>
             <Plus className="h-4 w-4" aria-hidden /> <span className="hidden sm:inline">Новая</span> Заявка
           </Button>
         </div>
@@ -4325,7 +4337,8 @@ export default function OrdersView({
       {/* IMP-28-FED: фильтр-бар — плотное стекло (гайд w28 §5); border-b оставлен для кромки */}
       <div className="flex flex-wrap items-center gap-2 glass-strong border-b px-3 py-2 sm:px-4">
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
-          <TabsList className="h-9">
+          {/* IMP-29-INT: триггер наследует высоту списка минус p-1 — на мобиле список 52px даёт тап ~44px */}
+          <TabsList className="h-[52px] sm:h-9">
             <TabsTrigger value="map" className="text-xs">
               <MapPin className="mr-1 h-3.5 w-3.5" /> Карта
             </TabsTrigger>
@@ -4339,7 +4352,8 @@ export default function OrdersView({
           </TabsList>
         </Tabs>
         <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as 'all' | 'waste' | 'kgm')}>
-          <SelectTrigger className="h-9 w-[140px] sm:w-[150px]">
+          {/* IMP-29-INT: data-[size=default] у примитива бьёт plain h-11 (специфичность) — оверрайдим тем же вариантом */}
+          <SelectTrigger className="data-[size=default]:h-11 w-[140px] sm:data-[size=default]:h-9 sm:w-[150px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -4350,7 +4364,7 @@ export default function OrdersView({
         </Select>
         {/* IMP-25-21: фильтр по экипажу */}
         <Select value={crewFilter} onValueChange={setCrewFilter}>
-          <SelectTrigger className="h-9 w-[140px] sm:w-[160px]" aria-label="Фильтр по экипажу">
+          <SelectTrigger className="data-[size=default]:h-11 w-[140px] sm:data-[size=default]:h-9 sm:w-[160px]" aria-label="Фильтр по экипажу">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -4379,7 +4393,7 @@ export default function OrdersView({
               onClick={() => setDateFilter(d.v)}
               aria-pressed={dateFilter === d.v}
               className={cn(
-                'h-8 rounded-full px-2.5 text-xs font-medium transition-colors',
+                'h-11 sm:h-8 rounded-full px-3 sm:px-2.5 text-xs font-medium transition-colors',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
                 dateFilter === d.v
                   ? 'border border-transparent bg-primary text-primary-foreground'
@@ -4394,7 +4408,7 @@ export default function OrdersView({
         <Button
           variant="outline"
           size="sm"
-          className="h-8"
+          className="h-11 sm:h-8"
           onClick={exportCsv}
           disabled={exporting}
           aria-label="Экспорт заявок в CSV"
@@ -4409,7 +4423,7 @@ export default function OrdersView({
         {tab === 'map' && (
           <Label
             htmlFor="orders-show-completed"
-            className="flex cursor-pointer select-none items-center gap-1.5 text-xs font-normal text-muted-foreground"
+            className="flex h-11 cursor-pointer select-none items-center gap-1.5 text-xs font-normal text-muted-foreground sm:h-4"
           >
             <Checkbox
               id="orders-show-completed"
@@ -4571,18 +4585,26 @@ export default function OrdersView({
                 )}
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
-                {listOrders.map((o) => (
-                  <OrderRow
-                    key={o.id}
-                    order={o}
-                    onOpen={openOrder}
-                    mytkoEnabled={mytkoEnabled}
-                    selected={selectedIds.has(o.id)} // IMP-25-20
-                    onToggleSelect={toggleSelectOrder} // IMP-25-20
-                  />
-                ))}
-              </div>
+              <>
+                {/* Честный кап отрисовки: подпись над списком (по образцу areas-view) */}
+                {overCap && (
+                  <p role="note" className="mb-3 text-center text-xs text-muted-foreground">
+                    Показаны первые {RENDER_CAP} из {listOrders.length} заявок — уточните фильтры
+                  </p>
+                )}
+                <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                  {visibleOrders.map((o) => (
+                    <OrderRow
+                      key={o.id}
+                      order={o}
+                      onOpen={openOrder}
+                      mytkoEnabled={mytkoEnabled}
+                      selected={selectedIds.has(o.id)} // IMP-25-20
+                      onToggleSelect={toggleSelectOrder} // IMP-25-20
+                    />
+                  ))}
+                </div>
+              </>
             )}
           </div>
         )}

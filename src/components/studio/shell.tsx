@@ -237,7 +237,7 @@ export default function Shell({
             </div>
             <span className="hidden font-bold sm:inline">BotStudio</span>
           </div>
-          <nav aria-label="Разделы студии" className="flex items-center gap-0.5">
+          <nav aria-label="Разделы студии" className="flex items-center gap-0">
             {/* На мобиле показываем только первые иконки; остальные — в «Ещё»-меню (IMP-23-TAB-02) */}
             {NAV.filter((n) => !n.mobileInMore).map((n) => (
               <Tooltip key={n.key}>
@@ -247,7 +247,7 @@ export default function Shell({
                     aria-current={view === n.key ? 'page' : undefined}
                     onClick={() => onViewChange(n.key)}
                     className={cn(
-                      'relative flex h-10 w-10 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      'relative flex h-11 w-11 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                       view === n.key
                         ? 'bg-primary text-primary-foreground shadow-sm'
                         // IMP-28-FEA: hover неактивных — зелёный tint вместо серого (dark-пара)
@@ -261,7 +261,7 @@ export default function Shell({
                 <TooltipContent side="bottom">{n.label}</TooltipContent>
               </Tooltip>
             ))}
-            <div aria-hidden="true" className="mx-1 h-5 w-px bg-border" />
+            <div aria-hidden="true" className="mx-0.5 h-5 w-px bg-border" />
             {/* «Ещё»-меню вместо отдельной кнопки «Выйти» — тема/палитра/профиль/выход (IMP-FE21-02, IMP-FE22-23)
                 + разделы, не поместившиеся в хедер (IMP-23-TAB-02) */}
             <MobileMoreMenu

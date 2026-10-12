@@ -111,7 +111,9 @@ export interface NotificationDto {
     botId: string;
     botName: string;
   }[];
-  totals: { newOrders: number; openConvs: number };
+  // IMP-29-B2: + unreadConvs — открытые, но не прочитанные оператором диалоги
+  // (бейдж «Входящие»; openConvs остаётся для совместимости читателей)
+  totals: { newOrders: number; openConvs: number; unreadConvs: number };
   /** IMP-23-TAB-01: новые жалобы для бейджа вкладки «Обращения» (с волны 23) */
   complaints?: number;
 }

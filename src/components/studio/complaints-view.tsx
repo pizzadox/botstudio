@@ -1256,7 +1256,7 @@ export default function ComplaintsView({
 
       {/* Добавить вручную */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="max-h-[92dvh] overflow-y-auto sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Добавить обращение</DialogTitle>
             <DialogDescription>

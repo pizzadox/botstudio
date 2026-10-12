@@ -50,7 +50,17 @@ function csvDate(d: Date | null | undefined): string {
 }
 
 /** CSV-выгрузка заявок бота. GET ?status=&from=&to= → text/csv (UTF-8 + BOM для Excel). */
-export async function GET(req: NextRequest, { params }: Params) {
+// IMP-29-B2: обёртка try/catch — сбой БД/выгрузки отдаёт JSON 500 вместо plain-text
+export async function GET(req: NextRequest, ctx: Params) {
+  try {
+    return await ordersExport(req, ctx);
+  } catch (err) {
+    console.error('[orders export]', err);
+    return NextResponse.json({ error: 'Не удалось выгрузить CSV' }, { status: 500 });
+  }
+}
+
+async function ordersExport(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });

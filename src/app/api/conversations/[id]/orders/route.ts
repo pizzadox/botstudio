@@ -9,7 +9,17 @@ type Params = { params: Promise<{ id: string }> };
  * Заявки, связанные с диалогом: созданные в нём (conversationId)
  * или оставленные этим же клиентом в боте (externalUserId).
  */
-export async function GET(req: NextRequest, { params }: Params) {
+// IMP-29-B2: обёртка try/catch — сбой БД отдаёт JSON 500 вместо plain-text
+export async function GET(req: NextRequest, ctx: Params) {
+  try {
+    return await conversationOrders(req, ctx);
+  } catch (err) {
+    console.error('[conversation orders]', err);
+    return NextResponse.json({ error: 'Не удалось получить заявки диалога' }, { status: 500 });
+  }
+}
+
+async function conversationOrders(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });

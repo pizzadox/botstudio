@@ -11,7 +11,17 @@ const MAX_TAKE = 500;
  *  Select только нужных скаляров — БЕЗ тяжёлого поля state (JSON состояния
  *  движка): инбокс его не читает, а на 100 диалогов это заметный оверхед.
  *  ?take=N (дефолт 100, максимум 500) — фронт может запросить больше истории. */
-export async function GET(req: NextRequest, { params }: Params) {
+// IMP-29-B2: обёртка try/catch — сбой БД отдаёт JSON 500 вместо plain-text
+export async function GET(req: NextRequest, ctx: Params) {
+  try {
+    return await conversationsList(req, ctx);
+  } catch (err) {
+    console.error('[conversations list]', err);
+    return NextResponse.json({ error: 'Не удалось получить диалоги' }, { status: 500 });
+  }
+}
+
+async function conversationsList(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });
@@ -57,10 +67,16 @@ export async function GET(req: NextRequest, { params }: Params) {
   return NextResponse.json({
     conversations: conversations.map((c) => {
       const last = c.messages[0] ?? null;
-      // Непрочитано оператором: была активность после последнего открытия диалога
+      // IMP-29-INT: непрочитано оператором = есть сообщения НОВЕЕ последнего
+      // чтения. Прежнее `updatedAt > operatorReadAt` всегда было истинно:
+      // Prisma @updatedAt вычисляется на исполнении на несколько мс позже
+      // явного new Date() в update, т.е. сама запись о прочтении перезаряжала
+      // флаг «непрочитан» (бейдж/чип «новое» не сбрасывались никогда).
+      // Диалог без сообщений и с прочитанным статусом — не непрочитан.
       const unread =
         c.status === 'open' &&
-        (!c.operatorReadAt || new Date(c.updatedAt) > new Date(c.operatorReadAt));
+        (!c.operatorReadAt ||
+          (last ? new Date(last.createdAt) > new Date(c.operatorReadAt) : false));
       return {
         id: c.id,
         source: c.source,

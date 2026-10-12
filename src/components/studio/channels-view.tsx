@@ -232,7 +232,7 @@ export default function ChannelsView({
     <div className="flex-1 min-h-0 overflow-y-auto space-y-6 p-4 sm:p-6 lg:p-8">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">
+          <Button variant="ghost" size="icon" className="h-11 w-11 sm:h-8 sm:w-8" onClick={onBack} aria-label="Назад">
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <div>
@@ -345,7 +345,7 @@ export default function ChannelsView({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 shrink-0"
+                        className="h-11 w-11 sm:h-7 sm:w-7 shrink-0"
                         onClick={() => copy(webhookUrl(ch))}
                         aria-label="Скопировать URL вебхука"
                       >
@@ -549,7 +549,8 @@ export default function ChannelsView({
 
       {/* Код для сайта (IMP-FE22-17): readOnly-сниппет + копирование */}
       <Dialog open={!!codeChannel} onOpenChange={(o) => !o && setCodeChannel(null)}>
-        <DialogContent>
+        {/* IMP-29-B2: max-h+scroll — длинная инструкция достижима на низких экранах (29-A1 P2) */}
+        <DialogContent className="max-h-[92dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Код для сайта</DialogTitle>
             <DialogDescription>
@@ -562,7 +563,7 @@ export default function ChannelsView({
             value={codeChannel ? embedSnippet(codeChannel) : ''}
             onFocus={(e) => e.currentTarget.select()}
             aria-label="Код для вставки на сайт"
-            className="font-mono text-[11px] leading-relaxed text-muted-foreground"
+            className="font-mono text-xs sm:text-[11px] leading-relaxed text-muted-foreground" /* IMP-29-B2: sm-фолбэк — iOS не зумит readonly-поле */
           />
           {/* IMP-23-TAB-05: пошаговая инструкция подключения виджета */}
           {/* IMP-28-FEB: код-инструкция — стеклянное вложение */}
@@ -726,7 +727,16 @@ function DemoChat({ secret }: { secret: string }) {
       const d = await api<{
         messages: { id: string; role: string; text: string; buttons?: { id: string; text: string }[] }[];
       }>(`/api/webhook/demo/${secret}?conversationId=${convRef.current}`);
-      setMessages((prev) => (d.messages.length > prev.length ? d.messages : prev));
+      // IMP-29-B2: merge-по-id (append-only, как mergeMessages инбокса) вместо
+      // сравнения длин: после неудачной отправки локальная лента длиннее серверной
+      // (err-пузырь), старая проверка «d.messages.length > prev.length» навсегда
+      // глотала ответы оператора. Локальные optimistic/err-пузыри сохраняются.
+      setMessages((prev) => {
+        const known = new Set(prev.map((m) => m.id));
+        const fresh = d.messages.filter((m) => !known.has(m.id));
+        if (!fresh.length) return prev;
+        return [...prev, ...fresh];
+      });
     } catch {
       /* ignore */
     }
@@ -766,7 +776,8 @@ function DemoChat({ secret }: { secret: string }) {
     setTyping(true);
     setNotice(null);
     setInput('');
-    setMessages((prev) => [...prev, { id: `local-${Date.now()}`, role: 'user', text: t }]);
+    const localId = `local-${Date.now()}`;
+    setMessages((prev) => [...prev, { id: localId, role: 'user', text: t }]);
     scrollToBottom();
     try {
       const d = await api<{
@@ -787,6 +798,10 @@ function DemoChat({ secret }: { secret: string }) {
       setPubState('published');
       scrollToBottom();
     } catch (e) {
+      // IMP-29-B2: откат optimistic-пузыря при ЛЮБОЙ неудаче (эталон — error-статус
+      // optimistic в инбоксе): фантом «local-…» делает локальную ленту длиннее
+      // серверной и ломает сверку ответов оператора. Ошибка видна err-пузырем/notice.
+      setMessages((prev) => prev.filter((m) => m.id !== localId));
       // IMP-FE22-15: статус приходит аддитивным полем от api() (FE22-15а)
       const status = (e as { status?: number }).status;
       const msg = e instanceof Error ? e.message : '';
@@ -1237,7 +1252,7 @@ function MytkoCard({ botId }: { botId: string }) {
                     className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400"
                     title={`Токен получен: ${cfg.tokenMasked}`}
                   >
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" /> синхронизировано
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 dark:bg-emerald-400" /> синхронизировано
                   </span>
                 ) : (
                   /* IMP-28-FEB: чип «нет токена» — tint-паттерн */
@@ -1245,7 +1260,7 @@ function MytkoCard({ botId }: { botId: string }) {
                     className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
                     title="Токен ещё не получен — введите логин и пароль и нажмите «Войти и получить токен»"
                   >
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" /> нет токена
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500 dark:bg-amber-400" /> нет токена
                   </span>
                 )}
               </CardTitle>

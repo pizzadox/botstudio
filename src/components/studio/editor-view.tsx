@@ -637,7 +637,7 @@ function EditorInner({
       <div className="flex flex-wrap items-center gap-2 glass-strong border-b px-3 py-2">
         {/* Группа: навигация и имя бота */}
         <div className="flex min-w-0 items-center gap-1">
-          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onBack} aria-label="Назад к дашборду">
+          <Button variant="ghost" size="icon" className="h-11 w-11 sm:h-8 sm:w-8 shrink-0" onClick={onBack} aria-label="Назад к дашборду">
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <Input
@@ -756,8 +756,9 @@ function EditorInner({
         </div>
 
         {/* Инспектор (широкие экраны) */}
+        {/* P2-1 w28: обёртка получила фон glass — корень инспектора прозрачен, канвас просвечивал */}
         {isWide && selectedNode && (
-          <div className="w-80 shrink-0 border-l">
+          <div className="glass w-80 shrink-0 border-l">
             <NodeInspector
               node={selectedNode}
               onChange={(patch) => updateNode(selectedNode.id, patch)}
@@ -769,7 +770,7 @@ function EditorInner({
 
         {/* Тест-чат (десктоп) */}
         {isDesktop && testOpen && (
-          <div className="w-80 shrink-0 border-l xl:w-96">
+          <div className="glass w-80 shrink-0 border-l xl:w-96">
             <TestChat botId={bot.id} onClose={() => setTestOpen(false)} onOpenInbox={onOpenInbox} />
           </div>
         )}

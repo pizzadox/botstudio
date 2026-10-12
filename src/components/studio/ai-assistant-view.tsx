@@ -269,7 +269,7 @@ export default function AiAssistantView({
       {/* Заголовок */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onBack} aria-label="Назад">
+          <Button variant="ghost" size="icon" className="h-11 w-11 sm:h-8 sm:w-8" onClick={onBack} aria-label="Назад">
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <div className="min-w-0">
@@ -354,7 +354,7 @@ export default function AiAssistantView({
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-7 text-[11px] text-muted-foreground"
+                          className="h-11 sm:h-7 text-[11px] text-muted-foreground"
                           onClick={() => setCfg((c) => ({ ...c, prompt: DEFAULT_PROMPT }))}
                         >
                           <RotateCcw className="h-3 w-3" /> Шаблон
@@ -467,7 +467,7 @@ export default function AiAssistantView({
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7"
+                      className="h-11 w-11 sm:h-7 sm:w-7"
                       onClick={() => setEditing(null)}
                       aria-label="Отменить редактирование"
                     >
@@ -537,7 +537,7 @@ export default function AiAssistantView({
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8"
+                            className="h-11 w-11 sm:h-8 sm:w-8"
                             aria-label={`Изменить запись «${k.title}»`}
                             onClick={() =>
                               setEditing({ id: k.id, title: k.title, content: k.content })
@@ -548,7 +548,7 @@ export default function AiAssistantView({
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            className="h-11 w-11 sm:h-8 sm:w-8 text-muted-foreground hover:text-destructive"
                             aria-label={`Удалить запись «${k.title}»`}
                             onClick={() => setDeleteTarget(k)}
                           >
@@ -578,7 +578,7 @@ export default function AiAssistantView({
                     : 'Включите ассистента, чтобы проверять ответы нейросети'}
                 </CardDescription>
               </div>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={resetChat} aria-label="Сбросить чат">
+              <Button variant="ghost" size="icon" className="h-11 w-11 sm:h-8 sm:w-8" onClick={resetChat} aria-label="Сбросить чат">
                 <RotateCcw className="h-4 w-4" />
               </Button>
             </div>
@@ -668,11 +668,11 @@ export default function AiAssistantView({
                 <span>Диалог передан оператору</span>
                 <div className="flex gap-1.5">
                   {onOpenInbox && (
-                    <Button size="sm" variant="outline" className="h-7" onClick={onOpenInbox}>
+                    <Button size="sm" variant="outline" className="h-11 sm:h-7" onClick={onOpenInbox}>
                       Открыть
                     </Button>
                   )}
-                  <Button size="sm" variant="ghost" className="h-7" onClick={resetChat}>
+                  <Button size="sm" variant="ghost" className="h-11 sm:h-7" onClick={resetChat}>
                     Сбросить
                   </Button>
                 </div>

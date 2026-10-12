@@ -495,3 +495,41 @@
 P2-бэклог (IMP-28-XX): обёртки инспектора/тест-чата editor-view без фона; blur-фри вариант сотен стеклянных строк реестра КП; dragstart на glass-hover чипах палитры; leading/trailing-«!» унификация; mode-only chmod-диффы вне зон.
 
 Верификация: agent-browser — вход demo/demo123, дашборд, конструктор (канвас 9 узлов), заявки+карта (glass-оверлеи), инбокс (диалоги), обращения, реестр КП, тосты (создание/удаление бота, автозакрытие 5с), AlertDialog удаления, виджет /w (новый hex); десктоп 1440 + мобайл 390px; light+dark. tsc=0, lint=0, dev.log чист, консоль браузера чиста.
+
+---
+
+# Волна 29 — Senior-аудит, адаптив экранов, честные бейджи уведомлений
+
+Дата: 2026-10-12 · Коммит: wave 29 · Верификация: agent-browser 1280/1600/390/375, light+dark, консоль чиста, tsc=0, lint=0
+
+## A. Аудит (29-A1/A2/A3, research-only, 3 агента)
+| ID | Находка | Статус |
+|----|---------|--------|
+| AUD-29-1 | Адаптив: 18 дефектов — диалоги без max-h/скролла, тач-таргеты 24–37px (orders/inbox/ai-assistant/channels/editor/dashboard/login), viewportFit:'cover' отсутствует, CardFooter без flex-wrap, iOS-зум на text-[11px] | ✅ закрыты |
+| AUD-29-2 | Бейджи сайдбара = статусные COUNT'ы (open/new), связи «просмотрено → сайдбар» не существовало: /api/notifications не читал operatorReadAt | ✅ закрыто |
+| AUD-29-3 | P1: виджет/DemoChat — optimistic-пузырь не откатывался при ошибке + count-поллинг ломал ленту после сбоя; 12 API-роутов без try/catch; double-submit; остатки P2-бэклога w28 | ✅ закрыты |
+
+## B. Батчи (29-B1 адаптив, 29-B2 логика) + Reviewer (APPROVE, P0/P1/P2=0)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-29-01 | Тач-батч h-11 sm:h-* по orders (хедер/чипы дат/гео-кнопки/копии/TabsList), inbox (селект статуса, «Исполнитель», чипы/поиск/«Назад»), ai-assistant (8 мест), editor/test-chat/node-inspector (кресты Sheet), dashboard («Меню бота»), channels (back/копия), login (глаз-тоггл) | ✅ |
+| IMP-29-02 | Диалоги «Добавить обращение» и «Код для сайта» — max-h-[92dvh] overflow-y-auto (форма доступна в ландшафте/с клавиатурой) | ✅ |
+| IMP-29-03 | viewport export viewportFit:'cover' — safe-area insets ожили в браузерном Safari | ✅ |
+| IMP-29-04 | RENDER_CAP=200 в списке заявок (было до 500 стеклянных строк = сотни backdrop-filter) + подпись «Показаны первые N» | ✅ |
+| IMP-29-05 | Double-submit ref-гварды: inbox sendReply/retryReply, orders OrderChat, NotificationsWatcher in-flight | ✅ |
+| IMP-29-06 | Бейдж «Входящие» → unreadConvs (непрочитанные открытые диалоги всех ботов), totals+типы+app-root; openConvs сохранён | ✅ |
+| IMP-29-07 | Виджет/DemoChat: откат optimistic-пузыря при 429/!ok/catch; поллинг merge-по-id вместо сравнения длин; after-курсор demo-GET (gte + клиентский дедуп); SECRET encodeURIComponent; bs-input 16px (iOS-зум) | ✅ |
+| IMP-29-08 | try/catch на 13 API-хендлерах (JSON 500 вместо plain-text; 401/404 коды сохранены); удалён hello-world /api/route.ts; since-клэмп сервером | ✅ |
+| IMP-29-09 | P2-бэклог w28: glass-обёртки инспектора/тест-чата editor-view (P2-1), trailing-«!» dashboard (P2-4), dark-пары точек MyTKO (P2-6) | ✅ |
+| IMP-29-10 | shell.tsx: иконки мобильной навигации 44×44 (расчёт влезания 375px: 369px) | ✅ |
+
+## C. Интеграционные находки верификации (поверх батчей)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-29-11 | P0-ФИКС БЕЙДЖЕЙ: Prisma @updatedAt вычисляется позже явного new Date() в том же update (мс-перекос) → `updatedAt > operatorReadAt` всегда истинно, запись о прочтении перезаряжала «непрочитанность» (бейдж не пропадал, чип «новое» в инбоксе не сбрасывался — пре-существующий баг). Новая семантика: непрочитанность = есть сообщения новее operatorReadAt (notifications: groupBy max(createdAt); инбокс: last.createdAt). Подтверждено браузерно: 2→1→0 при чтении, возврат при новом сообщении виджета | ✅ |
+| IMP-29-12 | Виджет: sendBtn оставался disabled навсегда после первой отправки (снимался только 429-циклом; Enter блокирован) — refreshInput учитывает текст/sending/cooldown + input-слушатель; pending-пузырь приглушён opacity .6 | ✅ |
+| IMP-29-13 | P1: список инбокса на мобиле 1625px при вьюпорте 390 — Radix ScrollArea (viewport+wrapper display:table inline) раздувается до min-content nowrap-превью; тап по строке промахивался. Фикс: block-оверрайд viewport на этом ScrollArea (ui-примитив не тронут), строка 388px, тап работает | ✅ |
+| IMP-29-14 | Селекты «Все типы»/«Фильтр по экипажу»/«Статус заявки»: data-[size=default]:h-9 примитива бьёт plain h-11 (специфичность) — оверрайд data-[size=default]:h-11 sm:…:h-9/h-7; TabsList заявок h-[52px] sm:h-9; Label чекбокса h-11 | ✅ |
+| IMP-29-15 | Пуш волн 26–28 (cf30cb2..94e8fc9) по токену пользователя | ✅ |
+
+Уроки волны: (1) колонка↔колонка через @updatedAt поле ненадёжна (мс-перекос записи) — сравнивать с бизнес-данными (последнее сообщение); (2) Radix ScrollArea display:table — для вертикальных truncate-списков нужен block-оверрайд; (3) data-[size] варианты shadcn выше plain h-* по специфичности; (4) agent-browser stale-refs между поллами имитируют «некликабельность» — перепроверять elementFromPoint.

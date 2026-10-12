@@ -50,7 +50,7 @@ const WIDGET_HTML = `<!doctype html>
   .bs-chip:hover { background:#e9f4ee; } /* IMP-28-FED: hover — зеленоватый */
   .bs-chip:disabled { opacity:.5; cursor:default; }
   .bs-foot { flex:none; display:flex; gap:8px; padding:10px; padding-bottom:calc(10px + env(safe-area-inset-bottom, 0px)); border-top:1px solid #e6f2ec; background:#fff; } /* IMP-28-FED: бордер футера тонирован */
-  .bs-input { flex:1; min-width:0; border:1px solid #d2e7db; border-radius:12px; padding:10px 12px; font-size:14px; font-family:inherit; outline:none; color:#0e241a; background:#fff; } /* IMP-28-FED: инпут — зелёный бордер/текст */
+  .bs-input { flex:1; min-width:0; border:1px solid #d2e7db; border-radius:12px; padding:10px 12px; font-size:16px; font-family:inherit; outline:none; color:#0e241a; background:#fff; } /* IMP-28-FED: инпут — зелёный бордер/текст */ /* IMP-29-B2: 16px — iOS не зумит поле при фокусе (<16px вызывает автозум) */
   .bs-input:focus { border-color:#059669; } /* IMP-28-FED: фокус — фирменный зелёный */
   .bs-input:disabled { opacity:.6; }
   .bs-send { flex:none; width:44px; height:44px; border:0; border-radius:12px; background:#0e241a; color:#fff; cursor:pointer; display:flex; align-items:center; justify-content:center; } /* IMP-28-FED: кнопка-отправка — зелёно-графит */
@@ -144,9 +144,12 @@ const WIDGET_HTML = `<!doctype html>
     return n;
   }
 
-  function bubbleRow(role, text) {
+  function bubbleRow(role, text, pending) {
     var row = el('div', role === 'user' ? 'bs-row me' : 'bs-row');
-    row.appendChild(el('div', role === 'user' ? 'bs-bubble bs-me' : 'bs-bubble bs-bot', text));
+    var b = el('div', role === 'user' ? 'bs-bubble bs-me' : 'bs-bubble bs-bot', text);
+    // IMP-29-B2 (P3-2): optimistic-пузырь приглушён до подтверждения сервером
+    if (pending) b.style.opacity = '0.6';
+    row.appendChild(b);
     return row;
   }
 
@@ -196,7 +199,7 @@ const WIDGET_HTML = `<!doctype html>
     var i, m;
     for (i = 0; i < messages.length; i++) {
       m = messages[i];
-      msgs.appendChild(bubbleRow(m.role, m.text));
+      msgs.appendChild(bubbleRow(m.role, m.text, m.pending));
     }
     if (noticeText) msgs.appendChild(noticeRow(noticeText));
     if (typing) msgs.appendChild(typingRow());
@@ -236,9 +239,13 @@ const WIDGET_HTML = `<!doctype html>
 
   function refreshInput() {
     input.disabled = cooldown > 0;
-    sendBtn.disabled = cooldown > 0;
+    // IMP-29-INT: кнопка = есть непустой текст, не отправляем, не в кулдауне.
+    // Прежде disabled выставлялся только в send() и снимался лишь циклом 429-
+    // кулдауна — после первой же отправки кнопка оставалась неактивной навсегда.
+    sendBtn.disabled = cooldown > 0 || sending || !(input.value || '').trim();
     input.placeholder = cooldown > 0 ? 'Подождите ' + cooldown + 'с…' : 'Сообщение…';
   }
+  input.addEventListener('input', refreshInput);
 
   function startCooldown(sec) {
     cooldown = sec;
@@ -262,10 +269,21 @@ const WIDGET_HTML = `<!doctype html>
       var res = await fetch('/api/webhook/demo/' + SECRET + '?conversationId=' + encodeURIComponent(convId) + '&after=' + encodeURIComponent(lastMsgId()));
       if (!res.ok) return;
       var d = await res.json();
-      if (d && d.messages && d.messages.length > messages.length) {
-        messages = d.messages;
-        typing = false;
-        render();
+      // IMP-29-B2: merge-по-id (append-only, как студийные чаты — mergeMessages
+      // инбокса) вместо сравнения длин: после отката неудачного optimistic-пузыря
+      // локальная лента длиннее серверного среза, старая проверка
+      // «d.messages.length > messages.length» навсегда глотала ответы оператора.
+      if (d && d.messages && d.messages.length) {
+        var known = {}, fresh = [], i;
+        for (i = 0; i < messages.length; i++) known[messages[i].id] = true;
+        for (i = 0; i < d.messages.length; i++) {
+          if (!known[d.messages[i].id]) fresh.push(d.messages[i]);
+        }
+        if (fresh.length) {
+          messages = messages.concat(fresh);
+          typing = false;
+          render();
+        }
       }
     } catch (e) { /* тихо: следующий тик повторит */ }
   }
@@ -284,12 +302,14 @@ const WIDGET_HTML = `<!doctype html>
     sending = true;
     typing = true;
     noticeText = null;
-    messages.push({ id: 'u' + Date.now(), role: 'user', text: text });
+    var optimisticId = 'u' + Date.now();
+    messages.push({ id: optimisticId, role: 'user', text: text, pending: true });
     input.value = '';
-    sendBtn.disabled = true;
+    refreshInput(); // IMP-29-INT: учтёт sending+пустой инпут (было жёсткое disabled=true)
     render();
     try {
-      var res = await fetch('/api/webhook/demo/' + SECRET, {
+      // IMP-29-B2: SECRET в POST-URL закодирован (как в poll/boot)
+      var res = await fetch('/api/webhook/demo/' + encodeURIComponent(SECRET), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: text, conversationId: convId || undefined, visitorId: visitorId || undefined })
@@ -298,9 +318,13 @@ const WIDGET_HTML = `<!doctype html>
       try { d = await res.json(); } catch (e) { d = {}; }
       typing = false;
       if (res.status === 429) {
+        // IMP-29-B2: откат optimistic-пузыря при неудаче (эталон — error-статус
+        // optimistic в инбоксе): фантом ломал сверку ленты с сервером
+        messages = messages.filter(function (m) { return m.id !== optimisticId; });
         noticeText = (d && d.error) || 'Слишком часто, подождите минуту';
         startCooldown(60);
       } else if (!res.ok) {
+        messages = messages.filter(function (m) { return m.id !== optimisticId; });
         noticeText = (d && d.error) || 'Не удалось отправить';
         if (res.status === 409 && d && d.error && /публик|publish/i.test(d.error)) setStatus('unpublished');
       } else {
@@ -311,9 +335,12 @@ const WIDGET_HTML = `<!doctype html>
       }
     } catch (e) {
       typing = false;
+      // IMP-29-B2: сетевой сбой — пузырь тоже откатывается
+      messages = messages.filter(function (m) { return m.id !== optimisticId; });
       noticeText = 'Нет связи';
     }
     sending = false;
+    refreshInput(); // IMP-29-INT: вернуть кнопку после завершения отправки
     render();
   }
 

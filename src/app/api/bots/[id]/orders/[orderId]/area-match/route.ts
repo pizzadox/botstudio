@@ -12,7 +12,17 @@ import { matchAreasFor } from '@/lib/area-match';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, ctx: Params) {
+  // IMP-29-B2: обёртка try/catch — сбой БД/матчера отдаёт JSON 500 вместо plain-text
+  try {
+    return await orderAreaMatch(req, ctx);
+  } catch (err) {
+    console.error('[area-match order]', err);
+    return NextResponse.json({ error: 'Не удалось подобрать КП' }, { status: 500 });
+  }
+}
+
+async function orderAreaMatch(req: NextRequest, { params }: Params) {
   const { id, orderId } = await params;
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });

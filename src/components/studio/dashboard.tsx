@@ -327,8 +327,8 @@ export default function Dashboard({
             ))}
           </div>
         ) : bots.length === 0 ? (
-          // IMP-28-FEA: пустое состояние — glass-CTA с пунктиром (!border-dashed пробивает border из glass-утилиты)
-          <Card className="!border-dashed">
+          // IMP-28-FEA: пустое состояние — glass-CTA с пунктиром (border-dashed! пробивает border из glass-утилиты)
+          <Card className="border-dashed!">
             <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
                 <Bot className="h-6 w-6" aria-hidden="true" />
@@ -382,7 +382,7 @@ export default function Dashboard({
                     <div onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Меню бота">
+                          <Button variant="ghost" size="icon" className="h-11 w-11 sm:h-8 sm:w-8" aria-label="Меню бота">
                             <MoreVertical className="h-4 w-4" aria-hidden="true" />
                           </Button>
                         </DropdownMenuTrigger>
@@ -474,7 +474,7 @@ export default function Dashboard({
                     })()}
                   </div>
                 </CardContent>
-                <CardFooter className="gap-2 border-t pt-3">
+                <CardFooter className="flex-wrap gap-2 border-t pt-3">
                   <Button
                     size="sm"
                     className="flex-1"

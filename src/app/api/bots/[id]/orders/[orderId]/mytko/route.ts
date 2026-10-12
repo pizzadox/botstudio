@@ -11,7 +11,17 @@ type Params = { params: Promise<{ id: string; orderId: string }> };
  * по адресу заявки. Результат пишется в заявку (mytkoStatus / mytkoInfo / mytkoError)
  * и показывается бейджем во всех разделах.
  */
-export async function POST(req: NextRequest, { params }: Params) {
+// IMP-29-B2: обёртка try/catch — сбой внешнего API/БД отдаёт JSON 500 вместо plain-text
+export async function POST(req: NextRequest, ctx: Params) {
+  try {
+    return await mytkoSync(req, ctx);
+  } catch (err) {
+    console.error('[mytko sync]', err);
+    return NextResponse.json({ error: 'Не удалось синхронизировать заявку с MyTKO' }, { status: 500 });
+  }
+}
+
+async function mytkoSync(req: NextRequest, { params }: Params) {
   const { id, orderId } = await params;
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });

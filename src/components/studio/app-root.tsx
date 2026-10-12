@@ -446,7 +446,12 @@ function NotificationsWatcher({
   onTotals,
   onOpenTarget,
 }: {
-  onTotals: (t: { newOrders: number; openConvs: number; complaints: number }) => void;
+  onTotals: (t: {
+    newOrders: number;
+    openConvs: number;
+    complaints: number;
+    unreadConvs: number; // IMP-29-B2: бейдж «Входящие» = непрочитанные, а не все открытые
+  }) => void;
   onOpenTarget: (t: NotificationTarget) => void;
 }) {
   const { toast } = useToast();
@@ -455,10 +460,13 @@ function NotificationsWatcher({
   // IMP-FE21-24: подряд идущие сбои поллинга; с 3-го — один тост «нет связи»
   const failStreakRef = useRef(0);
   const offlineShownRef = useRef(false);
+  // IMP-29-B2: in-flight гвард — при зависшем запросе следующий тик пропускается,
+  // вместо накопления параллельных fetch (интервалы/cleanup не тронуты)
+  const pollInFlightRef = useRef(false);
 
   useEffect(() => {
     let stopped = false;
-    const poll = async () => {
+    const pollOnce = async () => {
       try {
         const d = await api<NotificationsResponse>(
           `/api/notifications?since=${encodeURIComponent(sinceRef.current)}`
@@ -473,6 +481,7 @@ function NotificationsWatcher({
           newOrders: d.totals.newOrders,
           openConvs: d.totals.openConvs,
           complaints: d.complaints ?? 0,
+          unreadConvs: d.totals.unreadConvs, // IMP-29-B2: бейдж «Входящие»
         });
 
         const freshOrders = d.newOrders.filter((o) => !shownRef.current.has(`order:${o.id}`));
@@ -576,6 +585,17 @@ function NotificationsWatcher({
         }
       }
     };
+    // IMP-29-B2: обёртка с ref-гвардом поверх прежнего тела pollOnce —
+    // параллельные тики не копятся, интервалы/visibility/cleanup прежние
+    const poll = async () => {
+      if (pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
+      try {
+        await pollOnce();
+      } finally {
+        pollInFlightRef.current = false;
+      }
+    };
     poll();
     // Поллинг ставится на паузу, пока вкладка скрыта (document.hidden) —
     // экономим батарею и трафик; при возврате — немедленный тик + рестарт.
@@ -615,8 +635,8 @@ export default function AppRoot() {
   const [view, setView] = useState<ViewKey>('dashboard');
   const [currentBot, setCurrentBot] = useState<BotListItem | null>(null);
   const [botsVersion, setBotsVersion] = useState(0);
-  // IMP-23-TAB-02: + complaints для бейджа «Обращения»
-  const [badges, setBadges] = useState({ newOrders: 0, openConvs: 0, complaints: 0 });
+  // IMP-23-TAB-02: + complaints для бейджа «Обращения»; IMP-29-B2: + unreadConvs
+  const [badges, setBadges] = useState({ newOrders: 0, openConvs: 0, complaints: 0, unreadConvs: 0 });
   // Фокус из уведомления: открыть раздел и подсветить нужную заявку/диалог
   const [orderFocus, setOrderFocus] = useState<string | null>(null);
   const [chatFocus, setChatFocus] = useState<string | null>(null);
@@ -663,7 +683,12 @@ export default function AppRoot() {
       });
   }, []);
   const onTotals = useCallback(
-    (t: { newOrders: number; openConvs: number; complaints: number }) => setBadges(t),
+    (t: {
+      newOrders: number;
+      openConvs: number;
+      complaints: number;
+      unreadConvs: number; // IMP-29-B2
+    }) => setBadges(t),
     []
   );
 
@@ -885,7 +910,10 @@ export default function AppRoot() {
       view={view}
       onViewChange={setView}
       currentBot={currentBot}
-      badges={{ inbox: badges.openConvs, orders: badges.newOrders, complaints: badges.complaints }}
+      // IMP-29-B2: бейдж «Входящие» — непрочитанные диалоги (operatorReadAt),
+      // а не все открытые: просмотр диалога теперь сбрасывает бейдж ≤12с.
+      // shell.tsx Badge скрывает бейдж при 0 (if (!count) return null).
+      badges={{ inbox: badges.unreadConvs, orders: badges.newOrders, complaints: badges.complaints }}
       onOpenPalette={() => setPaletteOpen(true)}
       onOpenProfile={() => setProfileOpen(true)}
       onLogout={logout}

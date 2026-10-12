@@ -147,9 +147,26 @@ export async function GET(req: NextRequest, { params }: Params) {
   });
   if (!conversation) return noStoreJson({ messages: [] });
 
+  // IMP-29-B2: параметр after (клиент виджета шлёт его с самого первого дня —
+  // id последнего известного ему сообщения) теперь работает: отдаём только
+  // хвост с момента якоря. gte, а не gt — сообщения в той же миллисекунде не
+  // теряются (клиент дедуплицирует по id). Неизвестный якорь (optimistic
+  // 'u…' id или сброс истории) → фильтра нет, отдаём последние take как раньше.
+  const afterId = req.nextUrl.searchParams.get('after');
+  const where: { conversationId: string; createdAt?: { gte: Date } } = {
+    conversationId: conversation.id,
+  };
+  if (afterId) {
+    const anchor = await db.message.findUnique({
+      where: { id: afterId },
+      select: { createdAt: true },
+    });
+    if (anchor) where.createdAt = { gte: anchor.createdAt };
+  }
+
   const messages = (
     await db.message.findMany({
-      where: { conversationId: conversation.id },
+      where,
       orderBy: { createdAt: 'desc' },
       take: parseTake(req, 100),
     })

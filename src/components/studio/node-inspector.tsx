@@ -108,7 +108,7 @@ export default function NodeInspector({
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8"
+          className="h-11 w-11 sm:h-8 sm:w-8"
           onClick={onClose}
           aria-label="Закрыть"
           aria-keyshortcuts="Escape"

@@ -13,7 +13,17 @@ const MAX_KEYBOARD_ROWS = 8;
 type Params = { params: Promise<{ id: string }> };
 
 /** Закрыть обращение: снять флаг «нужен оператор» и вернуть управление боту */
-export async function POST(req: NextRequest, { params }: Params) {
+// IMP-29-B2: обёртка try/catch — сбой БД/доставки отдаёт JSON 500 вместо plain-text
+export async function POST(req: NextRequest, ctx: Params) {
+  try {
+    return await closeConversation(req, ctx);
+  } catch (err) {
+    console.error('[conversation close]', err);
+    return NextResponse.json({ error: 'Не удалось закрыть диалог' }, { status: 500 });
+  }
+}
+
+async function closeConversation(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });

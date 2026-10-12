@@ -27,7 +27,17 @@ const HEADERS = ['Код КП', 'Адрес', 'Широта', 'Долгота'] 
 const EXPORT_CAP = 12000;
 
 /** CSV-выгрузка реестра КП бота. GET ?q=&city= → text/csv (UTF-8 + BOM для Excel). */
-export async function GET(req: NextRequest, { params }: Params) {
+// IMP-29-B2: обёртка try/catch — сбой БД/кэша отдаёт JSON 500 вместо plain-text
+export async function GET(req: NextRequest, ctx: Params) {
+  try {
+    return await areasExport(req, ctx);
+  } catch (err) {
+    console.error('[areas export]', err);
+    return NextResponse.json({ error: 'Не удалось выгрузить CSV' }, { status: 500 });
+  }
+}
+
+async function areasExport(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });

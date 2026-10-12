@@ -123,7 +123,17 @@ export async function PUT(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+// IMP-29-B2: обёртка try/catch — сбой БД отдаёт JSON 500 вместо plain-text
+export async function DELETE(req: NextRequest, ctx: Params) {
+  try {
+    return await botDelete(req, ctx);
+  } catch (err) {
+    console.error('[bots delete]', err);
+    return NextResponse.json({ error: 'Не удалось удалить бота' }, { status: 500 });
+  }
+}
+
+async function botDelete(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const { bot, error } = await ownedBot(req, id);
   if (error === 'auth') return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });

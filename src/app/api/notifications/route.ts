@@ -7,12 +7,27 @@ import { getSessionUser } from '@/lib/auth';
  * пользователя с момента `since` + счётчики для бейджей навигации.
  */
 export async function GET(req: NextRequest) {
+  try {
+    return await notificationsHandler(req);
+  } catch (err) {
+    console.error('[notifications]', err);
+    return NextResponse.json({ error: 'Не удалось получить уведомления' }, { status: 500 });
+  }
+}
+
+async function notificationsHandler(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });
 
   const sinceParam = req.nextUrl.searchParams.get('since');
-  const since = sinceParam ? new Date(sinceParam) : new Date(Date.now() - 60 * 1000);
-  const validSince = Number.isNaN(since.getTime()) ? new Date(Date.now() - 60 * 1000) : since;
+  // IMP-29-B2: клэмп курсора серверными часами — первый тик берет since
+  // с часов браузера; ушедшие вперёд часы «проглатывали» новые события
+  // (фильтр createdAt > будущего момента не находит ничего до их догоняния).
+  const serverNow = new Date();
+  const fallbackSince = new Date(serverNow.getTime() - 60 * 1000);
+  const since = sinceParam ? new Date(sinceParam) : fallbackSince;
+  const validSince =
+    Number.isNaN(since.getTime()) || since > serverNow ? fallbackSince : since;
 
   const bots = await db.bot.findMany({ where: { userId: user.id }, select: { id: true, name: true } });
   const botIds = bots.map((b) => b.id);
@@ -22,7 +37,8 @@ export async function GET(req: NextRequest) {
       newOrders: [],
       newChats: [],
       newComplaints: [], // IMP-25-15
-      totals: { newOrders: 0, openConvs: 0, complaints: 0 }, // IMP-23-BE-03
+      // IMP-29-B2: + unreadConvs — диалоги открытые, но не прочитанные оператором
+      totals: { newOrders: 0, openConvs: 0, complaints: 0, unreadConvs: 0 }, // IMP-23-BE-03
       complaints: 0, // IMP-23-BE-03: счётчик новых жалоб (фронт читает optional)
     });
   }
@@ -35,7 +51,38 @@ export async function GET(req: NextRequest) {
   // (курсор-время ответа меньше времени их создания).
   const now = new Date().toISOString();
 
-  const [newOrders, newChats, newComplaints, totalNewOrders, totalOpenConvs, totalNewComplaints] =
+  // IMP-29-B2 + IMP-29-INT: unreadConvs — открытые диалоги всех ботов юзера,
+  // где непрочитанность = есть СООБЩЕНИЯ новее operatorReadAt. Прежнее
+  // `updatedAt > operatorReadAt` всегда было истинно: Prisma @updatedAt
+  // вычисляется на исполнение позже явного new Date() в update, т.е. сама
+  // запись о прочтении перезаряжала флаг и бейдж не сбрасывался никогда.
+  // Колонка-колонка сравнивается в JS (findMany/groupBy, масштаб ок) вместо
+  // $queryRaw — без ловушек формата DateTime SQLite. Счётчик глотает ошибку
+  // в 0 (null), чтобы сбой одного COUNT не ронял весь ответ watcher'у.
+  const unreadConvsPromise = Promise.all([
+    db.conversation.findMany({
+      where: { bot: { userId: user.id }, status: 'open' },
+      select: { id: true, operatorReadAt: true },
+    }),
+    db.message.groupBy({
+      by: ['conversationId'],
+      _max: { createdAt: true },
+      where: { conversation: { bot: { userId: user.id }, status: 'open' } },
+    }),
+  ])
+    .then(([convs, lastMsgRows]) => {
+      const lastMsgAt = new Map(
+        lastMsgRows.map((r) => [r.conversationId, r._max.createdAt] as const)
+      );
+      return convs.reduce((n, c) => {
+        if (c.operatorReadAt === null) return n + 1;
+        const lastAt = lastMsgAt.get(c.id);
+        return lastAt && lastAt > c.operatorReadAt ? n + 1 : n;
+      }, 0);
+    })
+    .catch(() => null);
+
+  const [newOrders, newChats, newComplaints, totalNewOrders, totalOpenConvs, totalNewComplaints, unreadConvs] =
     await Promise.all([
       db.order.findMany({
         where: { botId: { in: botIds }, createdAt: { gt: validSince } },
@@ -69,6 +116,8 @@ export async function GET(req: NextRequest) {
       db.conversation.count({ where: { botId: { in: botIds }, status: 'open' } }),
       // IMP-23-BE-03: новые жалобы по ботам пользователя — бейдж реестра жалоб
       db.complaint.count({ where: { botId: { in: botIds }, status: 'new' } }),
+      // IMP-29-B2: непрочитанные диалоги (null при сбое счётчика → 0 ниже)
+      unreadConvsPromise,
     ]);
 
   // IMP-25-15: description в уведомлении обрезается до ~80 символов
@@ -95,7 +144,12 @@ export async function GET(req: NextRequest) {
       botId: c.botId,
       botName: botName(c.botId),
     })),
-    totals: { newOrders: totalNewOrders, openConvs: totalOpenConvs, complaints: totalNewComplaints },
+    totals: {
+      newOrders: totalNewOrders,
+      openConvs: totalOpenConvs,
+      complaints: totalNewComplaints,
+      unreadConvs: unreadConvs ?? 0, // IMP-29-B2: дефолт 0 — бейдж не «зависает» при сбое
+    },
     complaints: totalNewComplaints, // IMP-23-BE-03: аддитивное поле (фронт читает optional)
   });
   res.headers.set('Cache-Control', 'no-store');

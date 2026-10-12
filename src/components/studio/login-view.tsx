@@ -171,7 +171,7 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                           aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
                           aria-pressed={showPassword}
                           onClick={() => setShowPassword((v) => !v)}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          className="absolute right-2 top-1/2 -mr-2 -translate-y-1/2 touch-manipulation rounded-md p-2 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           {showPassword ? (
                             <EyeOff className="h-4 w-4" aria-hidden="true" />
@@ -268,7 +268,7 @@ export default function LoginView({ onLogin }: { onLogin: (u: SessionUser) => vo
                           aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
                           aria-pressed={showPassword}
                           onClick={() => setShowPassword((v) => !v)}
-                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          className="absolute right-2 top-1/2 -mr-2 -translate-y-1/2 touch-manipulation rounded-md p-2 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           {showPassword ? (
                             <EyeOff className="h-4 w-4" aria-hidden="true" />

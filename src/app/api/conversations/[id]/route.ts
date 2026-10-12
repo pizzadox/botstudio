@@ -18,7 +18,17 @@ async function ownedConversation(req: NextRequest, id: string) {
   return { conversation };
 }
 
-export async function GET(req: NextRequest, { params }: Params) {
+export async function GET(req: NextRequest, ctx: Params) {
+  // IMP-29-B2: обёртка try/catch — сбой БД отдаёт JSON 500 вместо plain-text
+  try {
+    return await conversationGet(req, ctx);
+  } catch (err) {
+    console.error('[conversation get]', err);
+    return NextResponse.json({ error: 'Не удалось получить диалог' }, { status: 500 });
+  }
+}
+
+async function conversationGet(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const { conversation, error } = await ownedConversation(req, id);
   if (error === 'auth') return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });
@@ -70,7 +80,17 @@ export async function GET(req: NextRequest, { params }: Params) {
   return res;
 }
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, ctx: Params) {
+  // IMP-29-B2: обёртка try/catch — сбой БД отдаёт JSON 500 вместо plain-text
+  try {
+    return await conversationDelete(req, ctx);
+  } catch (err) {
+    console.error('[conversation delete]', err);
+    return NextResponse.json({ error: 'Не удалось удалить диалог' }, { status: 500 });
+  }
+}
+
+async function conversationDelete(req: NextRequest, { params }: Params) {
   const { id } = await params;
   const { conversation, error } = await ownedConversation(req, id);
   if (error === 'auth') return NextResponse.json({ error: 'Требуется авторизация' }, { status: 401 });

@@ -230,7 +230,17 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 }
 
 /** Удаление жалобы */
-export async function DELETE(req: NextRequest, { params }: Params) {
+// IMP-29-B2: обёртка try/catch — сбой БД отдаёт JSON 500 вместо plain-text
+export async function DELETE(req: NextRequest, ctx: Params) {
+  try {
+    return await complaintDelete(req, ctx);
+  } catch (err) {
+    console.error('[complaints delete]', err);
+    return NextResponse.json({ error: 'Не удалось удалить жалобу' }, { status: 500 });
+  }
+}
+
+async function complaintDelete(req: NextRequest, { params }: Params) {
   const { id, complaintId } = await params;
   const loaded = await loadOwnedComplaint(req, id, complaintId);
   if ('error' in loaded) {

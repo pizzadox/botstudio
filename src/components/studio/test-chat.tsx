@@ -263,14 +263,14 @@ export default function TestChat({
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8"
+          className="h-11 w-11 sm:h-8 sm:w-8"
           title="Сбросить диалог"
           aria-label="Сбросить диалог"
           onClick={reset}
         >
           <RotateCcw className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose} aria-label="Закрыть чат">
+        <Button variant="ghost" size="icon" className="h-11 w-11 sm:h-8 sm:w-8" onClick={onClose} aria-label="Закрыть чат">
           <X className="h-4 w-4" />
         </Button>
       </div>
