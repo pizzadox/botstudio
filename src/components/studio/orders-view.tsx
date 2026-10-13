@@ -774,13 +774,17 @@ function OrdersMap({
    * «Spiderfy» совпадающих точек: несколько заявок с одним адресом геокодятся
    * в идентичные координаты и ложатся маркерами друг на друга — видна только
    * одна. Группируем их по округлённым координатам и раскладываем кружком
-   * с ПОСТОЯННЫМ пиксельным радиусом (пересчёт на каждом move/zoom), чтобы
-   * все точки были видны и кликабельны на любом масштабе карты.
+   * с ПОСТОЯННЫМ пиксельным радиусом через Marker.setOffset — смещение в
+   * ЭКРАННЫХ пикселях maplibre применяет при проекции на каждом кадре, поэтому
+   * раскладка стабильна на ЛЮБОМ зуме без пересчётов.
+   *
+   * Регрессия (исправлено): раньше смещение задавалось в гео-координатах
+   * (px→градусы по зуму на момент вызова) и пересчитывалось только на moveend —
+   * при зуме маркеры оставались якоренными в старой гео-позиции, визуально
+   * разлетались вдвое и рывком возвращались после анимации («точки меняют
+   * адрес при приближении/удалении»).
    */
   const spreadMarkers = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
     // группы совпадающих координат (6 знаков ≈ 0.1 м — попадают и «почти равные»)
     const groups = new Map<string, string[]>();
     for (const [id, c] of baseCoordsRef.current) {
@@ -790,9 +794,6 @@ function OrdersMap({
       else groups.set(key, [id]);
     }
 
-    const zoom = map.getZoom();
-    // пикселей на градус долготы в Web Mercator (тайл MapLibre = 512px!)
-    const pxPerDegLng = 512 * Math.pow(2, zoom) / 360;
     const SPREAD_PX = 44; // диаметр раскладки вокруг истинной точки
 
     for (const ids of groups.values()) {
@@ -801,17 +802,18 @@ function OrdersMap({
         const marker = markersRef.current.get(id);
         const base = baseCoordsRef.current.get(id);
         if (!marker || !base) return;
+        // синхронизация базовой позиции: координаты заявки могли измениться
+        // (режим «укажите точку на карте», ручной ввод lat/lng) — идемпотентно
+        marker.setLngLat([base.lng, base.lat]);
         if (n === 1) {
-          marker.setLngLat([base.lng, base.lat]);
+          marker.setOffset([0, 0]);
           return;
         }
         // равномерно по окружности; при 2 точках — слева и справа от истинной
         const angle = (2 * Math.PI * i) / n + (n === 2 ? Math.PI / 2 : Math.PI / 6);
         const dxPx = Math.cos(angle) * (SPREAD_PX / 2);
         const dyPx = Math.sin(angle) * (SPREAD_PX / 2);
-        const dLng = dxPx / pxPerDegLng;
-        const dLat = (dyPx / pxPerDegLng) * Math.cos((base.lat * Math.PI) / 180);
-        marker.setLngLat([base.lng + dLng, base.lat + dLat]);
+        marker.setOffset([dxPx, dyPx]);
       });
     }
   }, []);
@@ -885,9 +887,10 @@ function OrdersMap({
       }
     }
 
-    // (e) раскладываем совпадающие точки (spiderfy, 44px). Пересчёт при движении —
-    // на 'moveend' в эффекте кластеров ниже (IMP-23-MAP-04: дешевле, без дрожания);
-    // там же точки, попавшие в кластеры на текущем зуме, скрываются (IMP-23-MAP-02)
+    // (e) раскладываем совпадающие точки (spiderfy, 44px) — пиксельные offsets,
+    // зумонезависимы: пересчёт нужен ТОЛЬКО при смене набора маркеров/групп.
+    // Скрытие точек, попавших в кластеры на текущем зуме, — на 'moveend' в
+    // эффекте кластеров ниже (IMP-23-MAP-02)
     spreadMarkers();
     // зависимость — сериализованный список видимых маркеров (БЕЗ selectedId)
   }, [ready, visibleKey, onSelect, spreadMarkers]);
@@ -999,12 +1002,13 @@ function OrdersMap({
     clusterIndexRef.current = clusterIndex;
   }, [clusterIndex]);
 
-  // IMP-23-MAP-04: spiderfy-пересчёт перенесён с 'move' на 'moveend' (дешевле,
-  // без дрожания); здесь же — перерисовка кластеров после пан/зум/перелётов
+  // Перерисовка кластеров после пан/зум/перелётов. Spiderfy-пересчёт здесь НЕ нужен:
+  // раскладка на пиксельных offsets зумонезависима (см. spreadMarkers), а маркеры
+  // сами едут вместе с картой. IMP-23-MAP-04 (пересчёт на 'moveend' вместо 'move')
+  // устарел вместе с гео-подходом — offsets не пересчитываются вовсе.
   const handleMapMoveEnd = useCallback(() => {
-    spreadMarkers();
     renderClusters();
-  }, [spreadMarkers, renderClusters]);
+  }, [renderClusters]);
 
   useEffect(() => {
     const map = mapRef.current;
