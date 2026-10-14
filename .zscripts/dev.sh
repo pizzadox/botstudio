@@ -130,6 +130,13 @@ echo "[BUN] Setting up database..."
 bun run db:push
 log_step_end "bun run db:push"
 
+# db-empty-guard: платформенный снапшот периодически обнуляет db/custom.db
+# (прецеденты в worklog.md: инциденты №1-№4). Если users==0 — автогард
+# восстанавливает БД из свежайшего db/snapshots/*.db и выравнивает схему.
+log_step_start "db empty guard"
+bun .zscripts/db-empty-guard.ts
+log_step_end "db empty guard"
+
 log_step_start "Starting Next.js dev server"
 echo "[BUN] Starting development server..."
 bun run dev &
