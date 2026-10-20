@@ -64,3 +64,7 @@ download/backup-*
 # github token for push script
 .env.local
 tool-results/
+
+# github-token.bak содержит PAT — GitHub push protection запрещает коммит токена в репо.
+# Бэкап живёт ТОЛЬКО локально (защита от перезаписи .env.local в рамках контейнера).
+db/secrets/github-token.bak

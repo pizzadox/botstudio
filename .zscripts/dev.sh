@@ -130,6 +130,14 @@ echo "[BUN] Setting up database..."
 bun run db:push
 log_step_end "bun run db:push"
 
+# env-guard: платформенный снапшот периодически ПЕРЕЗАПИСЫВАЕТ .env.local
+# (прецедент op-map-mytko-secret: потерян APP_SECRET → пароль MyTKO нерасшифруем).
+# Восстанавливает APP_SECRET/GITHUB_TOKEN из git-трекаемых бэкапов db/secrets/,
+# при полном отсутствии — генерирует новый APP_SECRET (с громким предупреждением).
+log_step_start "env guard"
+bun .zscripts/env-guard.ts
+log_step_end "env guard"
+
 # db-empty-guard: платформенный снапшот периодически обнуляет db/custom.db
 # (прецеденты в worklog.md: инциденты №1-№4). Если users==0 — автогард
 # восстанавливает БД из свежайшего db/snapshots/*.db и выравнивает схему.
