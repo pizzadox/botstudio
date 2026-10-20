@@ -40,7 +40,10 @@ export default function NodePalette({
         const meta = NODE_META[type];
         const Icon = NODE_ICONS[type];
         return (
-          // IMP-28-FEB: стеклянный чип палитры + hover green-tint (гайд §5; min-h-11 сохранён)
+          // IMP-32-06: glass снят с чипа (backdrop-blur портит drag image и держит постоянный
+          // blur-слой) — border + bg-card/85 dark:bg-card/90, как узлы канваса (IMP-28-FEB,
+          // flow-node.tsx:115-118); glass-hover ОСТАВЛЕН (без blur — transform+shadow);
+          // min-h-11/фокус-ринг/cursor-grab не тронуты
           <button
             key={type}
             draggable
@@ -48,7 +51,7 @@ export default function NodePalette({
             onClick={() => onAdd(type)}
             title={`${meta.title} — ${meta.description}`}
             aria-label={`${meta.title}: ${meta.description}`}
-            className="group glass glass-hover flex min-h-11 w-full cursor-grab items-center gap-2.5 rounded-lg p-2 text-left hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:cursor-grabbing active:bg-primary/10 active:ring-1 active:ring-primary/30 dark:hover:bg-primary/15 dark:active:bg-primary/15"
+            className="group glass-hover border bg-card/85 dark:bg-card/90 flex min-h-11 w-full cursor-grab items-center gap-2.5 rounded-lg p-2 text-left hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:cursor-grabbing active:bg-primary/10 active:ring-1 active:ring-primary/30 dark:hover:bg-primary/15 dark:active:bg-primary/15"
           >
             <div
               className={cn(
@@ -87,14 +90,15 @@ export function NodePaletteStrip({ onAdd }: { onAdd: (type: FlowNodeType) => voi
         const meta = NODE_META[type];
         const Icon = NODE_ICONS[type];
         return (
-          // IMP-28-FEB: мобильный чип — тот же стеклянный паттерн, что на десктопе
+          // IMP-32-06: glass снят (тот же drag-фикс, что на десктопе) — border +
+          // bg-card/85 dark:bg-card/90; glass-hover оставлен; min-h-11 не тронут
           <button
             key={type}
             draggable
             onDragStart={(e) => handleDragStart(e, type)}
             onClick={() => onAdd(type)}
             aria-label={`Добавить блок «${meta.title}»`}
-            className="glass glass-hover flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:bg-primary/10 active:ring-1 active:ring-primary/30 dark:hover:bg-primary/15 dark:active:bg-primary/15"
+            className="glass-hover border bg-card/85 dark:bg-card/90 flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 active:bg-primary/10 active:ring-1 active:ring-primary/30 dark:hover:bg-primary/15 dark:active:bg-primary/15"
           >
             <Icon className={cn('h-3.5 w-3.5', meta.color, NODE_DARK[type].text)} aria-hidden />
             {meta.title}

@@ -15,6 +15,8 @@ import { haversineM, getAreasIndexed, type AreaIndexEntry } from '@/lib/area-mat
  * IMP-27-03: ?sort=address|lkCode (дефолт address), ?dir=asc|desc (дефолт asc) —
  * серверная сортировка list-режима; ответ эхирует применённые sort/dir
  * (near/bbox параметры игнорируют — их ранний return раньше парса).
+ * IMP-32-02: ?sort=updatedAt — сортировка по дате синка строки
+ * (updatedAt из кэша getAreasCached); null-дата всегда последняя.
  *
  * IMP-24-BE-06/07: режимы карты (q/city/page в них игнорируются):
  * ?bbox=minLng,minLat,maxLng,maxLat[&sort=dist] — точки в рамке (IMP-25-17:
@@ -47,7 +49,9 @@ const NEAR_MAX_LIMIT = 20;
 
 // IMP-27-03: серверная сортировка list-режима — белые списки ключа и направления
 // (невалидные значения query молча откатываются к дефолту — не 400)
-const SORT_KEYS = ['address', 'lkCode'] as const;
+// IMP-32-02: += 'updatedAt' — по дате синка строки (эхо отдаётся как есть —
+// 'updatedAt' не схлопывается в 'address', фронт ждёт именно его)
+const SORT_KEYS = ['address', 'lkCode', 'updatedAt'] as const;
 const SORT_DIRS = ['asc', 'desc'] as const;
 type SortKey = (typeof SORT_KEYS)[number];
 type SortDir = (typeof SORT_DIRS)[number];
@@ -249,9 +253,22 @@ export async function GET(req: NextRequest, { params }: Params) {
   // null-address последними в ОБЕИХ направлениях (позиция null не инвертируется),
   // тайбрейк byLk всегда asc — одинаковые ключи идут в одном порядке при asc
   // и desc, «Показать ещё» на фронте детерминировано
+  // IMP-32-02: ключ updatedAt — сравнение по getTime(); строки без даты —
+  // ВСЕГДА последними в обеих dir (как null-address), тайбрейк byLk asc
   const byLk = (a: { lkCode: string }, b: { lkCode: string }) =>
     a.lkCode < b.lkCode ? -1 : a.lkCode > b.lkCode ? 1 : 0;
   list = [...list].sort((a, b) => {
+    if (sort === 'updatedAt') {
+      const ta = a.updatedAt instanceof Date ? a.updatedAt.getTime() : null;
+      const tb = b.updatedAt instanceof Date ? b.updatedAt.getTime() : null;
+      if (ta === null || tb === null) {
+        if (ta === null && tb === null) return byLk(a, b);
+        return ta === null ? 1 : -1; // позиция null не инвертируется в desc
+      }
+      const c = ta - tb; // asc: старые → новые; desc: свежие синкнутые первыми
+      if (c !== 0) return dir === 'desc' ? -c : c;
+      return byLk(a, b);
+    }
     if (sort === 'address' && (!a.address || !b.address)) {
       if (!a.address && !b.address) return byLk(a, b);
       return !a.address ? 1 : -1;
@@ -271,6 +288,8 @@ export async function GET(req: NextRequest, { params }: Params) {
     address: a.address,
     lat: a.lat,
     lng: a.lng,
+    // IMP-32-02: дата синка строки (ISO-строка; null — если в БД вдруг null)
+    updatedAt: a.updatedAt instanceof Date ? a.updatedAt.toISOString() : null,
   }));
 
   const res = noStore({

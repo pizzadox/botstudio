@@ -54,8 +54,10 @@ const RENDER_CAP = 500;
 const ALL_CITIES = '__all__';
 
 // IMP-27-03: серверная сортировка реестра — белые списки 27-BE2; невалидные значения
-// бэк молча заменяет дефолтом (address/asc), фронт шлёт только валидные
-type SortKey = 'address' | 'lkCode';
+// бэк молча заменяет дефолтом (address/asc), фронт шлёт только валидные.
+// IMP-32-05: ключ 'updatedAt' (дата синка строки) — бэкенд 32-B1 принимает sort=updatedAt
+// и эхоит его честно; union объявлен локально (SortKey здесь и был локальным типом).
+type SortKey = 'address' | 'lkCode' | 'updatedAt';
 type SortDir = 'asc' | 'desc';
 
 /** Метаданные реестра из AreasResponse (items накапливаются отдельным state) */
@@ -78,6 +80,14 @@ function fmtDateTime(iso: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+/** IMP-32-05: дата синка строки КП («Обновлено») через fmtDateTime (ru-RU);
+ *  null/пустая/невалидная дата → null (ячейка показывает «—») */
+function fmtUpdatedAt(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  if (Number.isNaN(new Date(iso).getTime())) return null;
+  return fmtDateTime(iso);
 }
 
 /** Координаты текстом: «58.52260, 31.27000» */
@@ -149,11 +159,15 @@ function SortableTh({
   active,
   dir,
   onSort,
+  title,
 }: {
   label: string;
   active: boolean;
   dir: SortDir;
   onSort: () => void;
+  /** IMP-32-05: замена тултипа по умолчанию — семантика данных колонки
+   *  (для «Обновлено»: дата = момент синхронизации, не правка юзера) */
+  title?: string;
 }) {
   const Icon = !active ? ArrowUpDown : dir === 'asc' ? ArrowUp : ArrowDown;
   const hint = dir === 'asc' ? 'по возрастанию' : 'по убыванию';
@@ -170,7 +184,7 @@ function SortableTh({
         type="button"
         onClick={onSort}
         aria-label={active ? `Отсортировано по «${label}» ${hint}, нажмите для сортировки ${nextHint}` : `Сортировать по «${label}» — ${nextHint}`}
-        title={`Сортировать: ${label} (${hint})`}
+        title={title ?? `Сортировать: ${label} (${hint})`}
         className={`-mx-4 -my-2.5 flex h-11 items-center gap-1 px-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
           active ? 'text-foreground' : 'hover:text-foreground'
         }`}
@@ -302,9 +316,11 @@ export default function AreasView({
         });
         setTotal(d.total ?? d.items?.length ?? 0); // честный total из ответа API
         setMeta({ areasSyncedAt: d.areasSyncedAt, areasCount: d.areasCount });
-        // IMP-27-03: эхо применённой бэком сортировки (fallback 'address'/'asc' для старых
-        // ответов без полей); обычно совпадает с отправленным → setState без ререндера
-        setSortKey(d.sort === 'lkCode' ? 'lkCode' : 'address');
+        // IMP-27-03: эхо применённой бэком сортировки; обычно совпадает с отправленным →
+        // setState без ререндера. IMP-32-05: 'updatedAt' принимаем тоже (раньше неизвестное
+        // эхо схлопывалось в 'address' — сортировка сама откатилась бы за 1 fetch);
+        // неизвестные ключи/направления — fallback 'address'/'asc' (старые ответы без полей)
+        setSortKey(d.sort === 'lkCode' || d.sort === 'updatedAt' ? d.sort : 'address');
         setSortDir(d.dir === 'desc' ? 'desc' : 'asc');
         setError(false);
       } catch {
@@ -627,12 +643,12 @@ export default function AreasView({
               <div className="glass hidden overflow-x-auto rounded-2xl md:block">
                 <table className="w-full text-sm">
                   <caption className="sr-only">
-                    Контейнерные площадки MyTKO: код, адрес, координаты
+                    Контейнерные площадки MyTKO: код, адрес, координаты, обновлено
                   </caption>
                   <thead>
                     {/* IMP-28-FEC: шапка таблицы — полупрозрачный зелёный tint */}
                     <tr className="border-b bg-primary/10 text-left text-[11px] uppercase tracking-wide text-muted-foreground dark:bg-primary/15">
-                      {/* IMP-27-03: сортировка серверная — только lkCode и address */}
+                      {/* IMP-27-03/IMP-32-05: сортировка серверная — lkCode, address, updatedAt */}
                       <SortableTh
                         label="Код КП"
                         active={sortKey === 'lkCode'}
@@ -648,6 +664,15 @@ export default function AreasView({
                       <th scope="col" className="px-4 py-2.5 font-medium">
                         Координаты
                       </th>
+                      {/* IMP-32-05: «Обновлено» — дата последнего подтверждения строки в
+                          реестре MyTKO; title объясняет: это момент синхронизации */}
+                      <SortableTh
+                        label="Обновлено"
+                        active={sortKey === 'updatedAt'}
+                        dir={sortDir}
+                        onSort={() => onSortChange('updatedAt')}
+                        title="Дата последнего подтверждения в реестре MyTKO (обновляется при синхронизации)"
+                      />
                       <th scope="col" className="w-[84px] px-2 py-2.5">
                         <span className="sr-only">Показать на карте и ссылка OSM</span>
                       </th>
@@ -668,6 +693,12 @@ export default function AreasView({
                         </td>
                         <td className="px-4 py-2.5">
                           <CoordsCell area={a} />
+                        </td>
+                        {/* IMP-32-05: дата синка строки (null/невалидная — «—») */}
+                        <td className="whitespace-nowrap px-4 py-2.5 text-sm">
+                          {fmtUpdatedAt(a.updatedAt) ?? (
+                            <span className="text-muted-foreground">—</span>
+                          )}
                         </td>
                         <td className="px-2 py-2.5 text-right">
                           {/* IMP-26-08: фокус на карте заявок (без координат — disabled) + OSM */}
@@ -705,6 +736,10 @@ export default function AreasView({
                     <div className="mt-1.5">
                       <CoordsCell area={a} />
                     </div>
+                    {/* IMP-32-05: дата синка строки (null/невалидная — «—») */}
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      Обновлено: {fmtUpdatedAt(a.updatedAt) ?? '—'}
+                    </p>
                   </article>
                 ))}
               </div>

@@ -20,8 +20,31 @@ import { csvCell } from '@/lib/csv';
 
 type Params = { params: Promise<{ id: string }> };
 
-/** Колонки CSV — фикс. порядок (v1: код/адрес/координаты; updatedAt в select кэша нет) */
-const HEADERS = ['Код КП', 'Адрес', 'Широта', 'Долгота'] as const;
+/** Колонки CSV — фикс. порядок. IMP-32-03: «Обновлено» — последняя колонка
+ *  (дата синка строки из кэша; раньше её в select кэша не было). */
+const HEADERS = ['Код КП', 'Адрес', 'Широта', 'Долгота', 'Обновлено'] as const;
+
+// IMP-32-03: даты CSV — в Europe/Moscow (+3, без DST), а не в UTC сервера
+// (паттерн эталона orders/export); формат ru «dd.MM.yyyy HH:mm» —
+// Excel-дружелюбный и без запятой (csvCell не будет кавычить значение)
+const MSK_DATETIME = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Moscow',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** IMP-32-03: дата «Обновлено» — «05.02.2026 14:03» (Europe/Moscow);
+ *  null/не-Date → пустая строка (колонка пустая — дата в БД не проставлялась). */
+function fmtDateRu(d: Date | null | undefined): string {
+  if (!(d instanceof Date)) return '';
+  const parts = MSK_DATETIME.formatToParts(d);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${get('day')}.${get('month')}.${get('year')} ${get('hour')}:${get('minute')}`;
+}
 
 // Кап выгрузки: реестр ~11k — 12000 покрывает его с запасом; всё сверх — усечение
 const EXPORT_CAP = 12000;
@@ -97,7 +120,12 @@ async function areasExport(req: NextRequest, { params }: Params) {
 
   const rows: string[] = [HEADERS.map(csvCell).join(',')];
   for (const a of list) {
-    rows.push([a.lkCode, a.address, a.lat, a.lng].map(csvCell).join(','));
+    // IMP-32-03: «Обновлено» — последняя колонка (после «Долгота»);
+    // значение проходит общий csvCell (дата с точками без запятых — не кавычится,
+    // но экранирование применено единообразно на всякий случай)
+    rows.push(
+      [a.lkCode, a.address, a.lat, a.lng, fmtDateRu(a.updatedAt)].map(csvCell).join(',')
+    );
   }
 
   // BOM (\uFEFF) — чтобы Excel корректно открыл UTF-8 с кириллицей

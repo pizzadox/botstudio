@@ -402,6 +402,9 @@ export interface AreaItem {
   lng: number | null;
   /** IMP-24: расстояние в метрах (только в ответах ?near= / relative to точки) */
   distanceM?: number;
+  /** IMP-32-04: дата синка строки (ISO-строка; null — даты нет в БД).
+   *  Есть только в list-ответах (near/bbox-маппинги поле не отдают). */
+  updatedAt?: string | null;
 }
 
 export interface AreasResponse {

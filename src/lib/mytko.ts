@@ -429,13 +429,18 @@ export async function getAreasCached(botId: string): Promise<MytkoArea[]> {
   if (hit && hit.expiresAt > Date.now()) return hit.areas;
   const rows = await db.mytkoArea.findMany({
     where: { botId },
-    select: { lkCode: true, address: true, lat: true, lng: true },
+    // IMP-32-01: updatedAt в select — дата синка строки нужна фронту
+    // (сортировка по дате + колонка «Обновлено» в CSV-выгрузке)
+    select: { lkCode: true, address: true, lat: true, lng: true, updatedAt: true },
   });
   const areas: MytkoArea[] = rows.map((a) => ({
     lkCode: a.lkCode,
     address: a.address,
     lat: a.lat,
     lng: a.lng,
+    // IMP-32-01: дата синка строки (у GraphQL-выгрузки mytkoFetchAllAreas её нет —
+    // поле в типе optional)
+    updatedAt: a.updatedAt,
   }));
   cache.set(botId, { areas, expiresAt: Date.now() + AREA_CODES_TTL });
   return areas;
@@ -466,6 +471,9 @@ export interface MytkoArea {
   address: string | null;
   lat: number | null;
   lng: number | null;
+  /** IMP-32-01: дата синка строки (из БД). ОБЯЗАТЕЛЬНО optional —
+   *  mytkoFetchAllAreas строит MytkoArea из GraphQL-ответа, где дат нет. */
+  updatedAt?: Date;
 }
 
 const CONTAINER_AREAS_QUERY = `
