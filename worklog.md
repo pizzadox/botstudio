@@ -3284,3 +3284,22 @@ Work Log:
 Stage Summary:
 - Волна 30 закрыта: (1) 43 новых/обновлённых скилла доступны в skills/ и зарегистрированы в chat.md — отныне каждый запрос сверяется с реестром (ПАМЯТЬ+ОРКЕСТРАТОР+дизайн-скиллы всегда включены); (2) «шаблоны» переработаны: единственный defaultFlow → библиотека 5 шаблонов с выбором при создании бота (ТКО-шаблон с полной цепочкой заявки+жалобы+автоназначением экипажа), обратная совместимость полная.
 - Уроки: clawhub skills-sh:owner/repo/slug сломан в v0.23.3 (hash mismatch) — GitHub-fallback обязателен; reviewer-минусы Radix-диалогов: onOpenChange НЕ вызывается при программном закрытии — state сбрасывать при открытии.
+
+---
+Task ID: op-map-mytko-secret
+Agent: дежурный оператор (Z.ai Code)
+Task: починить пропавшую карту («пропала карта») + продолжение волны 30
+
+Work Log:
+- ДИАГНОЗ: GET /api/bots/[id]/orders = 500 — «Пароль MyTKO зашифрован (enc:v1), но APP_SECRET не задан». Причина: платформенное обнуление (4-й инцидент) восстановило .env.local только с GITHUB_TOKEN; APP_SECRET (сгенерирован в волне 21, хранился ТОЛЬКО в .env.local) утрачен безвозвратно. parseMytkoConfig бросал внутри Promise.all orders-роута → 500 → orders-view получал пустой orders + mytkoEnabled=false → карта без маркеров и без слоя КП («пропала карта»). Проверены/исключены: сеть до OpenFreeMap (200/200), worker public/maplibre-gl-worker.mjs (на месте), /proc/*/environ живых процессов (секрета нет — сервер стартовал уже после потери).
+- ВОССТАНОВЛЕНИЕ ОРИГИНАЛА невозможно (openssl rand, вне git/БД/истории). Решение: (1) новый APP_SECRET в .env.local (openssl rand -hex 32, GITHUB_TOKEN сохранён); (2) нефатальная деградация чтения.
+- БЭКЕНД: mytko.ts + tryParseMytkoConfig(raw) → { cfg: MytkoConfig, authError: string|null } — при ошибке расшифровки console.error + конфиг со ВСЕМИ несекретными полями (enabled как в БД, token — он не шифруется), password: ''. Снапшот db/snapshots/snapshot-2026-10-20-pre-mytko-fix.db до работ.
+- Роуты: orders GET — tryParse + mytkoAuthError в ответе (карта/список живут); mytko GET — tryParse (настройки ОТКРЫВАЮТСЯ, hasPassword=false, authError в ответе); mytko POST — tryParse вместо parseCfgOr500 (parseCfgOr500 удалён) + гард-400 «введите пароль заново» для login/test/reports/sync-areas при authError без нового пароля (login с новым паролем полностью исцеляет: пароль шифруется НОВЫМ ключом); orders/[orderId]/route + conversations/[id]/orders — tryParse для флага; orders/[orderId]/mytko — authError → понятная 400. areas GET уже был устойчив (try/catch → areasSyncedAt=null).
+- ФРОНТЕНД: orders-view — state mytkoAuthError + янтарный баннер с инструкцией «Каналы → MyTKO → введите пароль заново»; channels-view (MytkoCard) — cfg.authError + инлайн-плашка role=alert (стиль loadError-плашки), локальное снятие после успешного login.
+- ВЕРИФИКАЦИЯ (agent-browser, вход pizzadox через форму): orders API 200 (8 заявок, mytkoEnabled=true, authError с текстом); карта рендерится (тайлы, «На карте: 8», кластеры 7/8/6), тумблер «Показать КП» работает → «Скрыть КП»; диалог MyTKO показывает плашку authError + секцию Подключение с «Пароль: не задан»; консоль браузера чиста; мобайл 390px dark — баннер читаем, noHScroll=true; tsc=0, lint=0, dev.log без ⨯.
+- Тестовые сессии pizzadox удалены (3 шт), /tmp-токены вычищены.
+
+Stage Summary:
+- Карта восстановлена: заявки + кластеры + слой КП работают НЕЗАВИСИМО от состояния пароля MyTKO; интеграция честно просит перезадать пароль (баннер в «Заявках» + плашка в настройках MyTKO).
+- ДЕЙСТВИЕ ПОЛЬЗОВАТЕЛЯ: «Каналы» → Интеграция MyTKO → ввести пароль MyTKO → «Войти и получить токен» — вернутся слой КП с координатами реестра, отчёты водителей и синхронизация заявок. Слой КП «Список» уже работает (реестр 10 952 КП в локальной БД цел).
+- Урок: секреты, существующие ТОЛЬКО в .env.local, переживают обнуление БД-снапшотами, но не платформенные перезаписи .env.local — в следующей волне дублировать APP_SECRET в зашифрованном виде в БД (или в docs/восстановительной процедуре) + db-empty-guard-подобный env-гард в dev.sh.
