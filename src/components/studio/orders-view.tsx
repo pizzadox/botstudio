@@ -4352,7 +4352,7 @@ export default function OrdersView({
         >
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1">
-            {mytkoAuthError} Откройте «Каналы» → MyTKO и введите пароль заново — слой КП на карте вернётся после входа.
+            {mytkoAuthError} Слой КП и заявки уже работают (реестр в локальной базе). Откройте «Каналы» → MyTKO и введите пароль заново — вернутся отчёты водителей и синхронизация заявок с MyTKO.
           </span>
         </div>
       )}
