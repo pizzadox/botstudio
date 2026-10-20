@@ -533,3 +533,31 @@ P2-бэклог (IMP-28-XX): обёртки инспектора/тест-чат
 | IMP-29-15 | Пуш волн 26–28 (cf30cb2..94e8fc9) по токену пользователя | ✅ |
 
 Уроки волны: (1) колонка↔колонка через @updatedAt поле ненадёжна (мс-перекос записи) — сравнивать с бизнес-данными (последнее сообщение); (2) Radix ScrollArea display:table — для вертикальных truncate-списков нужен block-оверрайд; (3) data-[size] варианты shadcn выше plain h-* по специфичности; (4) agent-browser stale-refs между поллами имитируют «некликабельность» — перепроверять elementFromPoint.
+
+---
+
+# Волна 32 (2026-10-20) — бэклог-чистка: даты реестра КП, палитра без blur, закрытие «2 Issues»
+
+Запрос: «продолжай» → подъём бэклога волн 27–28. Конвейер: аудит (2 Explore) → 2 батча + Reviewer → интеграция → agent-browser верификация (десктоп+390px, light+dark) → коммит. Коммит: wave 32.
+
+## A. Аудит (32-A1/A2, research-only)
+| ID | Находка | Статус |
+|----|---------|--------|
+| AUD-32-1 | КП-цепочка: updatedAt в схеме/БД есть (волна синка — одна дата на все 10 952 строки), но не отдаётся в кэш/API/CSV; сортировка только address|lkCode; ловушка эхо-маппинга areas-view (:307 схлопывает неизвестный sort в address) | ✅ закрыта |
+| AUD-32-2 | «2 Issues» — НЕ React Flow: бейдж считают только console.error (исторический дубль web-каналов, закрыт волной 31); blur чипов палитры несёт utility glass (постоянный backdrop-filter), glass-hover чист (transform+shadow) | ✅ закрыта без диффа |
+
+## B. Батчи (32-B1 бэк / 32-B2 фронт) + Reviewer (32-REV: ГОТОВ, P0=0, P1=0)
+| ID | Улучшение | Статус |
+|----|-----------|--------|
+| IMP-32-01 | mytko.ts: MytkoArea.updatedAt?: Date (optional — GraphQL-путь без дат), getAreasCached: select/маппинг += updatedAt | ✅ |
+| IMP-32-02 | areas API: SORT_KEYS += 'updatedAt'; компаратор — nulls last в ОБЕИХ dir, тайбрейк lkCode asc; list-items += updatedAt ISO|null; near/bbox/sort=dist не тронуты | ✅ |
+| IMP-32-03 | CSV-экспорт КП: колонка «Обновлено» (последняя), fmtDateRu dd.MM.yyyy HH:mm Europe/Moscow, null → '', общий csvCell | ✅ |
+| IMP-32-04 | studio-types: AreaItem.updatedAt?: string \| null | ✅ |
+| IMP-32-05 | areas-view: SortKey += 'updatedAt', эхо-фикс (самооткат сортировки устранён), SortableTh «Обновлено» с title о семантике синка, fmtUpdatedAt null→«—», мобильные карточки «Обновлено: …» | ✅ |
+| IMP-32-06 | node-palette: glass снят у 9+9 drag-чипов → border bg-card/85 dark:bg-card/90 (прецедент узлов) — −18 постоянных blur-слоёв, предсказуемый drag image; glass-hover сохранён | ✅ |
+
+Верификация: реестр КП — колонка с датой синка, sort=updatedAt asc/desc (сеть 200, эхо не откатывается), CSV ?q=Батецкий 372 строки с колонкой; редактор — чипы backdropFilter:none/min-h-44/draggable, HTML5-драг 71→72 узла; мобайл 390px dark noHScroll=true; tsc=0, lint=0; скриншоты .verify/w32-*.png.
+
+Инцидент (закрыт): при E2E-проверке драга клик по «первому узлу Сообщение» удалил настоящий n_greet Экосити (автосейв успел записать). Восстановлено хирургически из снапшота 12:23 (дифф extra/lost → PUT через API → немедленный reload редактора) — 71/125, стабильно. Уроки: globalThis-кэш переживает HMR (рестарт после правок кэшей); при drag-тестах кликать только в созданный узел.
+
+⏭ Бэклог: aria-label семантики даты (P2-1 REV, осознанно отложено), reverse-prompting в планировании волн.
