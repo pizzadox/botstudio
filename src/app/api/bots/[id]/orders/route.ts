@@ -3,7 +3,7 @@ import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
 import { createOrder, geocodeAddress, geocodeOrderAddress } from '@/lib/orders'; // IMP-23-BE-06
 import { parseWishDate } from '@/lib/wish-date'; // IMP-24-BE-12: pickupAt из wishDate
-import { parseMytkoConfig } from '@/lib/mytko';
+import { tryParseMytkoConfig } from '@/lib/mytko'; // hotfix op-map-mytko-secret
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   const takeParam = Number(req.nextUrl.searchParams.get('take') ?? '');
   const take =
     Number.isFinite(takeParam) && takeParam > 0 ? Math.min(Math.floor(takeParam), MAX_TAKE) : 500;
-  const [ordersRaw, cfg, total] = await Promise.all([
+  const [ordersRaw, parsedMytko, total] = await Promise.all([
     db.order.findMany({
       where: { botId: id },
       select: {
@@ -68,7 +68,7 @@ export async function GET(req: NextRequest, { params }: Params) {
       orderBy: { createdAt: 'desc' },
       take,
     }),
-    Promise.resolve(parseMytkoConfig(bot.mytkoConfig)),
+    Promise.resolve(tryParseMytkoConfig(bot.mytkoConfig)),
     // IMP-25-04: общее число заявок бота (не зависит от take) — фронт покажет «показаны N из M»
     db.order.count({ where: { botId: id } }),
   ]);
@@ -76,7 +76,14 @@ export async function GET(req: NextRequest, { params }: Params) {
   // messagesCount — аддитивное поле для чипа «N сообщ.» в списке (форма _count сохранена)
   const orders = ordersRaw.map((o) => ({ ...o, messagesCount: o._count.messages }));
 
-  return NextResponse.json({ orders, mytkoEnabled: cfg.enabled, total });
+  return NextResponse.json({
+    orders,
+    mytkoEnabled: parsedMytko.cfg.enabled,
+    total,
+    // hotfix op-map-mytko-secret: пароль MyTKO не расшифровывается (потерян APP_SECRET) —
+    // список заявок и карта РАБОТАЮТ, фронт показывает баннер «введите пароль заново»
+    mytkoAuthError: parsedMytko.authError,
+  });
 }
 
 /** Создать заявку вручную (оператор из ЛК) */

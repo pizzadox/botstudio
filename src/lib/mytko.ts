@@ -179,6 +179,51 @@ export function parseMytkoConfig(raw: string | null | undefined): MytkoConfig {
 }
 
 /**
+ * Нефатальный разбор конфига (hotfix op-map-mytko-secret): если пароль зашифрован,
+ * а APP_SECRET потерян/не совпадает — parseMytkoConfig бросает исключение и раньше
+ * валил ЦЕЛИККОМ зависящие роуты (список заявок + карта). tryParseMytkoConfig
+ * возвращает конфиг с ВСЕМИ несекретными полями (apiUrl/username/enabled/токен —
+ * токен в БД не шифруется), password: '' и authError с понятным текстом —
+ * пользователь перезадаёт пароль в настройках интеграции.
+ */
+export function tryParseMytkoConfig(raw: string | null | undefined): { cfg: MytkoConfig; authError: string | null } {
+  try {
+    return { cfg: parseMytkoConfig(raw), authError: null };
+  } catch (e) {
+    const authError = e instanceof Error ? e.message : 'Ошибка конфигурации MyTKO';
+    console.error('[mytko] конфиг не расшифровывается:', authError);
+    // Сохраняем несекретные поля — интеграция видна в настройках, пароль пуст
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    } catch {
+      /* битый JSON — вернём пустой каркас */
+    }
+    const d = (parsed.directions ?? {}) as Record<string, unknown>;
+    return {
+      cfg: {
+        enabled: parsed.enabled === true,
+        apiUrl: typeof parsed.apiUrl === 'string' ? parsed.apiUrl : '',
+        username: typeof parsed.username === 'string' ? parsed.username : '',
+        password: '',
+        lkCodes: typeof parsed.lkCodes === 'string' ? parsed.lkCodes : '',
+        useAllAreas: parsed.useAllAreas === true,
+        directions: {
+          areas: d.areas !== false,
+          driverReports: d.driverReports !== false,
+          requests: d.requests === true,
+          sendRequests: d.sendRequests === true,
+        },
+        token: typeof parsed.token === 'string' ? parsed.token : '',
+        tokenIssuedAt: typeof parsed.tokenIssuedAt === 'string' ? parsed.tokenIssuedAt : '',
+        areasSyncedAt: typeof parsed.areasSyncedAt === 'string' ? parsed.areasSyncedAt : '',
+      },
+      authError,
+    };
+  }
+}
+
+/**
  * Нормализация адреса API: «ecovn.mytko.ru», «https://ecovn.mytko.ru/»,
  * «https://ecovn.mytko.ru/app» → «https://ecovn.mytko.ru».
  */

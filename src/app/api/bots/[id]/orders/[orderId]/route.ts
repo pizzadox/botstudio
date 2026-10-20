@@ -9,7 +9,7 @@ import {
 } from '@/lib/orders';
 import { composeAddress } from '@/lib/cities'; // IMP-23-BE-06: чистая сборка адреса
 import { parseWishDate, moscowNoonUTC } from '@/lib/wish-date'; // IMP-24-BE-12 / IMP-25-06
-import { parseMytkoConfig } from '@/lib/mytko';
+import { tryParseMytkoConfig } from '@/lib/mytko'; // hotfix op-map-mytko-secret
 import { checkStatusTransition } from '@/lib/order-status';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
@@ -76,7 +76,7 @@ export async function GET(req: NextRequest, { params }: Params) {
     order,
     clientOrders,
     messages,
-    mytkoEnabled: parseMytkoConfig(loaded.bot.mytkoConfig).enabled,
+    mytkoEnabled: tryParseMytkoConfig(loaded.bot.mytkoConfig).cfg.enabled, // hotfix op-map-mytko-secret: не падаем на потере APP_SECRET
   });
 }
 

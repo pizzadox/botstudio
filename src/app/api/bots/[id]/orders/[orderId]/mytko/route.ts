@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { mytkoSyncOrder, parseMytkoConfig, getFreshToken, getAreaCodesCached, serializeMytkoConfig } from '@/lib/mytko';
+import { tryParseMytkoConfig, mytkoSyncOrder, getFreshToken, getAreaCodesCached, serializeMytkoConfig } from '@/lib/mytko';
 
 type Params = { params: Promise<{ id: string; orderId: string }> };
 
@@ -36,7 +36,12 @@ async function mytkoSync(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Заявка не найдена' }, { status: 404 });
   }
 
-  const cfg = parseMytkoConfig(bot.mytkoConfig);
+  // hotfix op-map-mytko-secret: если пароль не расшифровывается (потерян APP_SECRET) —
+  // понятная 400 с текстом, а не молчаливый 500 синхронизации
+  const { cfg, authError } = tryParseMytkoConfig(bot.mytkoConfig);
+  if (authError) {
+    return NextResponse.json({ error: authError }, { status: 400 });
+  }
   if (!cfg.enabled) {
     return NextResponse.json({ error: 'Интеграция MyTKO выключена в разделе «Каналы»' }, { status: 400 });
   }

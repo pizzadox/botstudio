@@ -1045,6 +1045,7 @@ function MytkoCard({ botId }: { botId: string }) {
       sendRequests: false,
     } as MytkoDirectionsUi,
     hasPassword: false,
+    authError: null as string | null, // hotfix op-map-mytko-secret: пароль не расшифровывается (потерян APP_SECRET)
     tokenMasked: null as string | null,
     tokenIssuedAt: null as string | null,
     areasSyncedAt: null as string | null,
@@ -1114,6 +1115,7 @@ function MytkoCard({ botId }: { botId: string }) {
           tokenMasked: d.tokenMasked ?? null,
           tokenIssuedAt: d.tokenIssuedAt ?? null,
           hasPassword: true,
+          authError: null, // hotfix op-map-mytko-secret: новый пароль введён — плашка больше не нужна
         }));
         setPassword('');
         toast({ title: 'Токен MyTKO получен ✅', description: 'Сохранён в настройках интеграции' });
@@ -1300,6 +1302,19 @@ function MytkoCard({ botId }: { botId: string }) {
               >
                 Повторить
               </button>
+            </div>
+          )}
+          {cfg.authError && (
+            /* hotfix op-map-mytko-secret: пароль не расшифровывается — просим перезадать */
+            <div
+              role="alert"
+              className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
+            >
+              <AlertTriangle
+                className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+                aria-hidden="true"
+              />
+              <span className="min-w-0 flex-1">{cfg.authError}</span>
             </div>
           )}
           {/* Секции настроек — только когда конфиг реально загружен */}

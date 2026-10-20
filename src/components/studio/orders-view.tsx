@@ -15,6 +15,7 @@ import type { Map as MlMap, Marker as MlMarker } from 'maplibre-gl';
 import Supercluster from 'supercluster'; // IMP-23-MAP-02: кластеризация видимых точек
 import {
   Archive,
+  AlertTriangle, // hotfix op-map-mytko-secret: баннер нерасшифрованного пароля MyTKO
   CalendarDays,
   Check,
   ChevronDown,
@@ -3813,6 +3814,9 @@ export default function OrdersView({
   // IMP-F15: свежесть данных и индикация потери связи
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
   const [connLost, setConnLost] = useState(false);
+  // hotfix op-map-mytko-secret: пароль MyTKO не расшифровывается (потерян APP_SECRET) —
+  // заявки/карта работают, но интеграция требует перезадать пароль
+  const [mytkoAuthError, setMytkoAuthError] = useState<string | null>(null);
   const failStreakRef = useRef(0);
   const [nowTs, setNowTs] = useState(() => Date.now());
   // IMP-24-FE1-02: справочник экипажей (общий для карточки заявки и диалога управления)
@@ -3843,10 +3847,12 @@ export default function OrdersView({
       const d = await api<{
         orders: OrderDto[];
         mytkoEnabled?: boolean;
+        mytkoAuthError?: string | null; // hotfix op-map-mytko-secret
         total?: number; // IMP-25-21: все заявки бота (список может быть обрезан take)
       }>(`/api/bots/${bot.id}/orders`);
       setOrders(d.orders);
       setMytkoEnabled(!!d.mytkoEnabled);
+      setMytkoAuthError(d.mytkoAuthError ?? null);
       // IMP-25-21: если бэк ещё не отдаёт total — считаем по списку (баннер скрыт)
       setOrdersTotal(typeof d.total === 'number' ? d.total : d.orders.length);
       setLastSyncAt(Date.now());
@@ -4334,6 +4340,20 @@ export default function OrdersView({
         >
           <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden />
           Нет связи с сервером — повторяем попытку обновления…
+        </div>
+      )}
+
+      {/* hotfix op-map-mytko-secret: пароль MyTKO не расшифровывается —
+          заявки и карта работают, слой КП и синхронизация ждут перезадания пароля */}
+      {mytkoAuthError && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 border-b border-amber-300/70 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 sm:px-4"
+        >
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1">
+            {mytkoAuthError} Откройте «Каналы» → MyTKO и введите пароль заново — слой КП на карте вернётся после входа.
+          </span>
         </div>
       )}
 

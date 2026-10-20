@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { parseMytkoConfig } from '@/lib/mytko';
+import { tryParseMytkoConfig } from '@/lib/mytko'; // hotfix op-map-mytko-secret
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -60,6 +60,6 @@ async function conversationOrders(req: NextRequest, { params }: Params) {
 
   return NextResponse.json({
     orders,
-    mytkoEnabled: parseMytkoConfig(bot.mytkoConfig).enabled,
+    mytkoEnabled: tryParseMytkoConfig(bot.mytkoConfig).cfg.enabled, // hotfix op-map-mytko-secret: не падаем на потере APP_SECRET
   });
 }

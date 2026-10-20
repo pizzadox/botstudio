@@ -11,6 +11,7 @@ import {
   mytkoWhoAmI,
   normalizeApiUrl,
   parseMytkoConfig,
+  tryParseMytkoConfig,
   serializeMytkoConfig,
   getFreshToken,
   getAreaCodesCached,
@@ -51,18 +52,11 @@ async function loadOwnedBot(req: NextRequest, botId: string) {
   return { user, bot };
 }
 
-/** Разбор конфига с понятной ошибкой, если пароль зашифрован, а APP_SECRET недоступен */
-function parseCfgOr500(raw: string): { cfg: ReturnType<typeof parseMytkoConfig> } | { error: NextResponse } {
-  try {
-    return { cfg: parseMytkoConfig(raw) };
-  } catch (e) {
-    return {
-      error: NextResponse.json(
-        { error: e instanceof Error ? e.message : 'Ошибка конфигурации MyTKO' },
-        { status: 500 }
-      ),
-    };
-  }
+/** hotfix op-map-mytko-secret: нефатальный разбор — настройки должны ОТКРЫВАТЬСЯ
+ *  даже когда пароль не расшифровывается, иначе пользователь не сможет его перезадать.
+ *  Возвращает cfg (password: '') + authError; экшенам с живым паролем — своя проверка. */
+function parseCfgOrSoft(raw: string): { cfg: ReturnType<typeof parseMytkoConfig>; authError: string | null } {
+  return tryParseMytkoConfig(raw);
 }
 
 /** Коды КП, по которым сверяем отчёты: реестр (все возможные) или ручной список.
@@ -105,21 +99,23 @@ export async function GET(req: NextRequest, { params }: Params) {
       { status: loaded.error === 'unauthorized' ? 401 : 404 }
     );
   }
-  const cfgOrError = parseCfgOr500(loaded.bot.mytkoConfig);
-  if ('error' in cfgOrError) return cfgOrError.error;
+  const cfgSoft = parseCfgOrSoft(loaded.bot.mytkoConfig);
   const areasCount = await db.mytkoArea.count({ where: { botId: loaded.bot.id } });
   return NextResponse.json({
     config: {
-      enabled: cfgOrError.cfg.enabled,
-      apiUrl: cfgOrError.cfg.apiUrl,
-      username: cfgOrError.cfg.username,
-      lkCodes: cfgOrError.cfg.lkCodes,
-      useAllAreas: cfgOrError.cfg.useAllAreas === true,
-      directions: cfgOrError.cfg.directions,
-      hasPassword: !!cfgOrError.cfg.password,
-      tokenMasked: maskToken(cfgOrError.cfg.token),
-      tokenIssuedAt: cfgOrError.cfg.tokenIssuedAt || null,
-      areasSyncedAt: cfgOrError.cfg.areasSyncedAt || null,
+      enabled: cfgSoft.cfg.enabled,
+      apiUrl: cfgSoft.cfg.apiUrl,
+      username: cfgSoft.cfg.username,
+      lkCodes: cfgSoft.cfg.lkCodes,
+      useAllAreas: cfgSoft.cfg.useAllAreas === true,
+      directions: cfgSoft.cfg.directions,
+      // Пароль не расшифровывается (потерян APP_SECRET) → password: '' → hasPassword:false —
+      // фронт просит ввести пароль заново; причина — в authError
+      hasPassword: !!cfgSoft.cfg.password,
+      authError: cfgSoft.authError,
+      tokenMasked: maskToken(cfgSoft.cfg.token),
+      tokenIssuedAt: cfgSoft.cfg.tokenIssuedAt || null,
+      areasSyncedAt: cfgSoft.cfg.areasSyncedAt || null,
       areasCount,
     },
   });
@@ -136,9 +132,9 @@ export async function POST(req: NextRequest, { params }: Params) {
     );
   }
   const { bot } = loaded;
-  const cfgOrError = parseCfgOr500(bot.mytkoConfig);
-  if ('error' in cfgOrError) return cfgOrError.error;
-  const cfg = cfgOrError.cfg;
+  // hotfix op-map-mytko-secret: нефатальный разбор — save/login должны работать,
+  // даже когда старый пароль не расшифровывается (иначе перезадать его нельзя)
+  const { cfg, authError } = parseCfgOrSoft(bot.mytkoConfig);
 
   try {
     const body = (await req.json()) as {
@@ -180,6 +176,11 @@ export async function POST(req: NextRequest, { params }: Params) {
       if (typeof body.apiUrl === 'string') cfg.apiUrl = normalizeApiUrl(body.apiUrl);
       if (typeof body.username === 'string') cfg.username = body.username.trim();
       if (typeof body.password === 'string' && body.password.trim()) cfg.password = body.password.trim();
+      // Старый пароль не расшифровывается и нового не ввели — честная 400 вместо
+      // попытки аутентификации с пустым паролем
+      if (!cfg.password && authError) {
+        return NextResponse.json({ ok: false, error: authError }, { status: 400 });
+      }
 
       const res = await mytkoAuthenticate(cfg, { force: true });
       if (!res.ok) {
@@ -199,6 +200,9 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     if (body.action === 'test') {
       if (!cfg.enabled) return NextResponse.json({ ok: false, error: 'Интеграция выключена' }, { status: 400 });
+      if (authError && !cfg.password) {
+        return NextResponse.json({ ok: false, error: authError }, { status: 400 });
+      }
       try {
         const res = await mytkoWhoAmI(cfg);
         if (res.ok) {
@@ -219,6 +223,9 @@ export async function POST(req: NextRequest, { params }: Params) {
 
     if (body.action === 'reports') {
       if (!cfg.enabled) return NextResponse.json({ ok: false, error: 'Интеграция выключена' }, { status: 400 });
+      if (authError && !cfg.password) {
+        return NextResponse.json({ ok: false, error: authError }, { status: 400 });
+      }
       try {
         // Город для префильтра КП (IMP-BE21-08б): явный city из запроса,
         // иначе — город последней заявки бота (отдельного «города бота» нет —
@@ -253,6 +260,9 @@ export async function POST(req: NextRequest, { params }: Params) {
     /** Загрузить реестр всех КП проекта («все возможные КОДЫ КП») в локальный кэш */
     if (body.action === 'sync-areas') {
       if (!cfg.enabled) return NextResponse.json({ ok: false, error: 'Интеграция выключена' }, { status: 400 });
+      if (authError && !cfg.password) {
+        return NextResponse.json({ ok: false, error: authError }, { status: 400 });
+      }
       // Защита от параллельного запуска: синхронизация ~45 с, повторный клик
       // по кнопке не должен запускать вторую копию
       const syncLocks = (syncLockGlobals.__mytkoAreaSync ??= new Map<string, boolean>());
