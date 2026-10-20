@@ -5,6 +5,8 @@ import { db } from '@/lib/db';
 import { createOrder, geocodeAddress, geocodeOrderAddress, geocodeVerify } from '@/lib/orders';
 import { parseWishDate } from '@/lib/wish-date';
 import { inc } from '@/lib/metrics';
+// IMP-30-01: дефолтный сценарий нового бота собирается фабрикой шаблонов
+import { buildTemplateFlow } from '@/lib/flow-templates';
 import type {
   ConditionOp,
   EngineMessage,
@@ -1050,89 +1052,11 @@ export async function runEngine(
 }
 
 // ─── Шаблон сценария по умолчанию для нового бота ────────────────────────────
+// IMP-30-01: шаблоны переехали в flow-templates.ts (волна 30) — там реестр
+// FLOW_TEMPLATES и фабрики universal/tko/booking/faq/empty. Экспорт defaultFlow
+// сохранён для обратной совместимости: контент прежнего defaultFlow живёт в
+// шаблоне 'universal' без изменений.
 
 export function defaultFlow(): Flow {
-  const nodes: FlowNode[] = [
-    {
-      id: 'n_start',
-      type: 'start',
-      position: { x: 420, y: 0 },
-      data: { label: 'Старт' },
-    },
-    {
-      id: 'n_greet',
-      type: 'message',
-      position: { x: 380, y: 110 },
-      data: { label: 'Приветствие', text: 'Здравствуйте! 👋 Я бот техподдержки. Чем могу помочь?' },
-    },
-    {
-      id: 'n_menu',
-      type: 'buttons',
-      position: { x: 380, y: 240 },
-      data: {
-        label: 'Главное меню',
-        text: 'Выберите, что вас интересует:',
-        buttons: [
-          { id: 'b1', text: '❓ Частый вопрос' },
-          { id: 'b2', text: '👤 Оператор' },
-        ],
-      },
-    },
-    {
-      id: 'n_ai',
-      type: 'ai',
-      position: { x: 120, y: 400 },
-      data: {
-        label: 'ИИ-поддержка',
-        prompt:
-          'Ты — дружелюбный бот техподдержки компании. Отвечай кратко, вежливо и по делу. Если вопрос выходит за рамки базы знаний — предложи связаться с оператором.',
-        knowledge:
-          'Часы работы поддержки: пн–пт, 9:00–18:00 МСК.\nВозврат средств — в течение 14 дней с момента покупки.\nСрок доставки — 2–5 рабочих дней.\nEmail поддержки: support@example.com',
-        useMemory: true,
-      },
-    },
-    {
-      id: 'n_more',
-      type: 'buttons',
-      position: { x: 120, y: 560 },
-      data: {
-        label: 'Ещё помощь?',
-        text: 'Могу ли я ещё чем-то помочь?',
-        buttons: [
-          { id: 'b1', text: 'Да, ещё вопрос' },
-          { id: 'b2', text: 'Нет, спасибо' },
-        ],
-      },
-    },
-    {
-      id: 'n_bye',
-      type: 'message',
-      position: { x: 420, y: 720 },
-      data: { label: 'Прощание', text: 'Спасибо за обращение! Хорошего дня 😊' },
-    },
-    {
-      id: 'n_handoff',
-      type: 'handoff',
-      position: { x: 680, y: 400 },
-      data: { label: 'Передача оператору', text: 'Передаю диалог живому оператору…' },
-    },
-    {
-      id: 'n_end',
-      type: 'end',
-      position: { x: 420, y: 840 },
-      data: { label: 'Конец' },
-    },
-  ];
-  const edges = [
-    { id: 'e1', source: 'n_start', target: 'n_greet' },
-    { id: 'e2', source: 'n_greet', target: 'n_menu' },
-    { id: 'e3', source: 'n_menu', target: 'n_ai', sourceHandle: 'b1' },
-    { id: 'e4', source: 'n_menu', target: 'n_handoff', sourceHandle: 'b2' },
-    { id: 'e5', source: 'n_ai', target: 'n_more' },
-    { id: 'e6', source: 'n_more', target: 'n_menu', sourceHandle: 'b1' },
-    { id: 'e7', source: 'n_more', target: 'n_bye', sourceHandle: 'b2' },
-    { id: 'e8', source: 'n_handoff', target: 'n_end' },
-    { id: 'e9', source: 'n_bye', target: 'n_end' },
-  ];
-  return { nodes, edges };
+  return buildTemplateFlow('universal');
 }

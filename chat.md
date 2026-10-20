@@ -1,39 +1,106 @@
 # chat.md — постоянный рабочий протокол проекта BotStudio
 
 > **ПРАВИЛО №1:** этот файл читается ПЕРЕД выполнением КАЖДОГО запроса пользователя.
-> **ПРАВИЛО №2:** по запросу определяются применимые скиллы из таблицы ниже, их `SKILL.md`
+> **ПРАВИЛО №2:** по запросу определяются применимые скиллы из реестра ниже, их `SKILL.md`
 > читается полностью, инструкции применяются. Если скилл не применим — это фиксируется в ответе.
+> **ВСЕГДА включать:** ПАМЯТЬ (self-improving/ontology) · ОРКЕСТРАТОР · агентов (декомпозиция +
+> параллельные батчи + Reviewer) · UI UX Pro Max / Taste / Hallmark — при любой UI-задаче ·
+> find-skills — если нужного скилла нет в реестре.
 > **ПРАВИЛО №3:** любая нетривиальная работа идёт через ОРКЕСТРАТОРА (декомпозиция → параллельные
 > агенты → Reviewer-агент ВСЕГДА параллельно имплементации → верификация → коммит).
 
-## 1. Скиллы проекта (`/home/z/my-project/skills/`) — когда какой применять
+## 1. Реестр скиллов (`/home/z/my-project/skills/`) — когда какой применять
+
+Установка: `clawhub install <slug>` (нативные `@owner/slug`) или GitHub-fallback: клон → копия
+каталога со SKILL.md в `skills/<name>/` (registry-баг v0.23.3 «skills-sh: hash mismatch» —
+прецедент и карта установки: worklog, секция 30-A1). Поиск новых: `clawhub search "<q>"`.
+
+### 1a. Ядро — ПАМЯТЬ, ОРКЕСТРАТОР, АГЕНТЫ (всегда включать)
 
 | Скилл | Путь (SKILL.md) | Когда применять |
 |---|---|---|
 | **Agent Team Orchestration** (ОРКЕСТРАТОР) | `skills/@zuoyunlai/agent-team-orchestration/` | Любая задача из >3 шагов: роли, декомпозиция, параллельные агенты, handoff, ревью-воркфлоу |
-| **Code Review** (Reviewer-агент) | `skills/@carolz1/code-review/` | ВСЕГДА запускать reviewer-агента параллельно с имплементацией (требование пользователя) |
-| **Systematic Debugging** | `skills/superpowers-systematic-debugging/` | Любой баг/ошибка: root cause ДО фикса, фазы воспроизведения→гипотезы→проверки |
-| **React Best Practices** | `skills/react-best-practices/` | Любая правка React/Next.js компонентов, состояние, эффекты, рендер |
-| **UI/UX Pro Max** | `skills/ui-ux-pro-max/` | Любая UI-задача: layout, цвет, типографика, responsive, мобильная адаптация |
-| **Visual Design Foundations** | `skills/visual-design-foundations/` | Дизайн-ревью вёрстки, визуальная целостность, шрифты/сетка/контраст |
-| **Fullstack Dev** | `skills/fullstack-dev/` | Новые фичи «фронт+бэк+БД»: порядок «сначала фронт», API-роуты, Prisma |
-| **Proactive Agent Lite** | `skills/proactive-agent-lite/` | Память между сессиями, проактивные уточнения, самовосстановление |
+| **Agent Team Orchestration v2** | `skills/@arminnaimi/agent-team-orchestration/` | Дубль основной версии: сверять lifecycle (inbox→spec→build→review→done) и quality gates при спорах |
+| **Subagent-Driven Development** | `skills/subagent-driven-development/` | Большие волны: работа ТОЛЬКО сабагентами с зонами, интегратор не пишет код |
+| **Code Review** (Reviewer-агент, carolz1) | `skills/@carolz1/code-review/` | ВСЕГДА запускать reviewer-агента параллельно имплементации (требование пользователя) |
+| **Code Review** (mattpocock) | `skills/code-review/` | Альтернативная методология ревью (двухосевое Standards/Spec) — можно объединять |
+| **Self-Improving** (ПАМЯТЬ) | `skills/@ivangdavila/self-improving/` | После значимой работы/ошибки: само-рефлексия, урок в `~/self-improving/memory.md`. В конце волны — обязательно |
+| **Ontology** (ПАМЯТЬ, граф знаний) | `skills/@oswalpalash/ontology/` | «Запомни, что…», связи Продукт↔КП↔Экипаж↔Заявка, «что я знаю о X» |
+| **Proactive Agent Lite** (bestrocky) | `skills/@bestrocky/proactive-agent-lite/` | Перед планированием волны: reverse prompting, самовосстановление, alignment |
 | **Persistent Memory Engine** | `skills/persistent-memory-engine-free/` | Долговременная память решений/контекста проекта |
-| **Multi-Agent Dev (free)** | `skills/multi-agent-dev-free/` | Разделение работы между несколькими агентами, непересекающиеся зоны |
-| **Self-Improving** (self-improving) | `skills/@ivangdavila/self-improving/` | Само-рефлексия и само-критика: после значимой работы/ошибки/исправления пользователем — оценить результат, извлечь урок, записать в память (`~/self-improving/memory.md`). Применять в конце волны и при любом фейле |
-| **Ontology** (онтология-память) | `skills/@oswalpalash/ontology/` | Типизированный граф знаний (Entity/Relation): «запомни, что…», связи Продукт↔КП↔Экипаж↔Заявка, кросс-скилловое состояние, «что я знаю о X». Для долгоживущих сущностей предметной области |
-| **Capability Evolver** (evolver) | `skills/@autogame-17/evolver/` | Само-эволюция протоколов по истории запусков. ⚠️ Требует `A2A_NODE_ID` + сеть EvoMap Hub — применять ТОЛЬКО по явной просьбе пользователя, иначе зафиксировать «скилл не применим: нет окружения» |
-| **Elite Longterm Memory** | `skills/@nextfrontierbuilds/elite-longterm-memory/` | WAL-протокол + векторный поиск + git-notes для долговременной памяти. ⚠️ Требует `OPENAI_API_KEY` + плагин memory-lancedb — без них не применим (фиксировать отказ); WAL-паттерн (flush перед compaction) можно применять как практику |
-| **Proactive Agent Lite** (v2, bestrocky) | `skills/@bestrocky/proactive-agent-lite/` | Проактивный партнёр вместо исполнителя: reverse prompting (поверхностные вопросы до старта), самовосстановление, alignment. Дубль существующего `skills/proactive-agent-lite/` — использовать для освежения практик перед планированием волны |
-| **Agent Team Orchestration** (v2, arminnaimi) | `skills/@arminnaimi/agent-team-orchestration/` | Оркестрация команды 2+ агентов: роли, lifecycle (inbox→spec→build→review→done), handoff-протоколы, quality gates. Дубль `@zuoyunlai`-версии (основной ОРКЕСТРАТОР выше) — сверять handoff/ревью-воркфлоу при спорах |
-| **Productivity** (продуктивность) | `skills/@ivangdavila/productivity/` | Диагностика личной продуктивности (прокрастинация, WIP-лимиты, еженедельное ревью) — для запросов пользователя о его собственных рабочих процессах; к коду проекта напрямую не применяется |
-| **Web Search / Web Reader** (встроенные) | Skill tool: `web-search`, `web-reader` | Свежая документация библиотек, проверка внешних API (Nominatim, MAX, Telegram) |
-| **Charts / PDF / DOCX / XLSX / PPTX** (встроенные) | Skill tool | Отчёты, выгрузки, документы по запросу пользователя |
-| **Geocode / Location** (встроенные) | Skill tool: `geocode`, `location-service` | Проверка координат, обратное геокодирование, дистанции |
-| **Image Generation / Edit** (встроенные) | Skill tool | Иконки, иллюстрации, OG-изображения по запросу |
-| **Skill Finder** | `skills/skill-finder-cn/` + `clawhub search "<q>"` | Найти/доустановить скилл: `clawhub install @owner/skill` |
+| **Elite Longterm Memory** | `skills/@nextfrontierbuilds/elite-longterm-memory/` | ⚠️ Нужен OPENAI_API_KEY + memory-lancedb — без них фиксировать отказ; WAL-паттерн применять |
+| **Capability Evolver** | `skills/@autogame-17/evolver/` | ⚠️ Нужен A2A_NODE_ID — только по явной просьбе пользователя |
+| **Productivity** | `skills/@ivangdavila/productivity/` | Диагностика рабочих процессов пользователя; к коду не применяется |
 
-Полный список установленных: `ls /home/z/my-project/skills/`.
+### 1b. Дизайн / UI / UX (любая UI-задача)
+
+| Скилл | Путь (SKILL.md) | Когда применять |
+|---|---|---|
+| **UI/UX Pro Max** | `skills/ui-ux-pro-max/` (v2.15.0) | ЛЮБАЯ UI-задача: layout, цвет, типографика, responsive, мобильная адаптация, тач-таргеты |
+| **Frontend Design** (anthropics) | `skills/frontend-design/` | Компоненты/страницы с нуля, визуальный полиш, дизайн-системы |
+| **Web Design Guidelines** (vercel-labs) | `skills/web-design-guidelines/` | Чек-листы качества вёрстки: доступность, консистентность, интеракции |
+| **Design Taste Frontend** (Taste) | `skills/design-taste-frontend/` | Вкус: ритм, иерархия, детализация — полиш готовых экранов |
+| **Hallmark** | `skills/hallmark/` | Анти-«AI-slop»: убрать безвкусицу, сгенерировать характерный дизайн (v1.1.0) |
+| **Impeccable** | `skills/impeccable/` | Крафтовое качество UI: детали, микро-анимации, состояния |
+| **Brandkit** | `skills/brandkit/` | Бренд-кит: палитра, логотип-пластика, фирменные элементы |
+| **Image-to-Code** | `skills/image-to-code/` | Верстка по макету/скриншоту |
+| **Theme Factory** (anthropics) | `skills/theme-factory/` | Темы/токены: светлая-тёмная пара, переменные |
+| **Visual Design Foundations** | `skills/visual-design-foundations/` | Дизайн-ревью вёрстки, шрифты/сетка/контраст |
+| **Prototype** | `skills/prototype/` | Быстрый прототип фичи до имплементации |
+| **Shadcn UI** | `skills/shadcn-ui/` | Паттерны shadcn-компонентов (⚠️ MCP-инструменты `shadcn*` опциональны) |
+| **FEC UI Design** | `skills/fec-ui-design/` (v2.9.0) | Доп. паттерны фронтенд-дизайна |
+
+### 1c. Процессы разработки (планирование → имплементация → верификация)
+
+| Скилл | Путь (SKILL.md) | Когда применять |
+|---|---|---|
+| **Brainstorming** (obra) | `skills/brainstorming/` | Расплывчатая идея от пользователя → проработка ДО кода |
+| **Writing Plans** (obra) | `skills/writing-plans/` (v7.0.0) | План волны: декомпозиция на батчи с зонами |
+| **Executing Plans** (obra) | `skills/executing-plans/` | Исполнение плана по шагам с контрольными точками |
+| **Implement** (mattpocock) | `skills/implement/` | Имплементация фичи по спеке |
+| **To-Spec** (mattpocock) | `skills/to-spec/` | Требования → формальная спека перед кодом |
+| **To-Tickets** (mattpocock) | `skills/to-tickets/` | Спека → тикеты/батчи для агентов |
+| **Domain Modeling** (mattpocock) | `skills/domain-modeling/` | Новые сущности предметной области (заявки, экипажи, КП) |
+| **Codebase Design** (mattpocock) | `skills/codebase-design/` | Структурные изменения, границы модулей |
+| **Improve Codebase Architecture** | `skills/improve-codebase-architecture/` | Рефакторинг-волны |
+| **TDD** (mattpocock) | `skills/tdd/` | По явному запросу тестов (в проекте тесты не пишем по умолчанию) |
+| **Verification-before-Completion** (obra) | `skills/verification-before-completion/` | ПЕРЕД словом «готово»: свежие доказательства (tsc/lint/браузер), не память |
+| **Webapp Testing** (anthropics) | `skills/webapp-testing/` | E2E-прогон через Playwright/agent-browser (золотой путь) |
+| **Handoff** (mattpocock) | `skills/handoff/` | Передача работы между агентами/сессиями (⚠️ redact secrets) |
+| **Wayfinder** (mattpocock) | `skills/wayfinder/` | Ориентация в незнакомой части кодовой базы |
+| **Find-Skills** (vercel-labs) | `skills/find-skills/` | Найти скилл под задачу: реестр → `clawhub search` → install |
+| **Skill Creator** (anthropics) | `skills/skill-creator/` | Создание/тюнинг собственных скиллов, evals |
+| **Teach** (mattpocock) | `skills/teach/` | Объяснения пользователю (onboarding, how-to) |
+
+### 1d. Отладка / диагностика
+
+| Скилл | Путь (SKILL.md) | Когда применять |
+|---|---|---|
+| **Systematic Debugging** (obra) | `skills/superpowers-systematic-debugging/` (v7.0.0) | ЛЮБОЙ баг: root cause ДО фикса, фазы воспроизведение→гипотезы→проверка |
+| **Diagnosing Bugs** (mattpocock) | `skills/diagnosing-bugs/` | Компаньон: гипотезы по симтомам, дифф-диагностика |
+| **Resolving Merge Conflicts** | — | ⚠️ Скилл удалён из upstream (mattpocock, «no longer needed») — конфликтуем по стандартному git-процессу |
+
+### 1e. Документы, контент, маркетинг, прочее
+
+| Скилл | Путь (SKILL.md) | Когда применять |
+|---|---|---|
+| **PDF / DOCX / XLSX / PPTX** | `skills/pdf/`, `docx/`, `xlsx/`, `pptx/` | Документы/отчёты/выгрузки (платформенные версии с доработками — НЕ перезаписывать anthropics-версиями) |
+| **Doc Coauthoring** (anthropics) | `skills/doc-coauthoring/` | Совместное редактирование документов с пользователем |
+| **MCP Builder** (anthropics) | `skills/mcp-builder/` | Создание MCP-серверов |
+| **Web Artifacts Builder** (anthropics) | `skills/web-artifacts-builder/` | Самодостаточные HTML-артефакты |
+| **SEO Audit** | `skills/seo-audit/` | Аудит SEO публичных страниц |
+| **Copywriting** | `skills/copywriting/` | Тексты интерфейса, письма, лендинги |
+| **Grill-Me / Grill-With-Docs** | `skills/grill-me/`, `grill-with-docs/` | Жёсткое интервью по решению ДО кода (защита от слабых планов) |
+| **Triage** (mattpocock) | `skills/triage/` | Разбор потока багов/запросов в приоритеты |
+| **Research** (mattpocock) | `skills/research/` | Исследование технологии/библиотеки перед выбором |
+| **Supabase Postgres Best Practices** | `skills/supabase-postgres-best-practices/` | ⚠️ Для Postgres/Supabase; у нас SQLite+Prisma — применять только по аналогии |
+| **Browser-Use** | `skills/browser-use/` | Альтернативная браузерная автоматизация (Python; основной инструмент — agent-browser) |
+| **Ponytail** | `skills/ponytail/` | Код-ревью дизайн-долгов (серия ponytail-review/audit вне установки — ставить по необходимости) |
+| **Web Search / Web Reader** (встроенные) | Skill tool | Свежая документация, проверка внешних API (Nominatim, MAX, Telegram) |
+| **Charts / Geocode / Image Gen** (встроенные) | Skill tool | Отчёты, координаты, иллюстрации |
+| **Graphify / Public APIs** | — | ⚠️ Не скиллы (библиотека/справочник без SKILL.md) — фиксировать отказ, подключать как пакеты при необходимости |
+
+Полный список установленных (118 каталогов): `ls /home/z/my-project/skills/`.
 
 ## 2. ОРКЕСТРАТОР — стандартный конвейер работы
 

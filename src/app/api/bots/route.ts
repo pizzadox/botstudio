@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionUser } from '@/lib/auth';
-import { defaultFlow } from '@/lib/flow-engine';
+// IMP-30-02: шаблоны сценариев вместо жёсткого defaultFlow()
+import { buildTemplateFlow, isFlowTemplateId } from '@/lib/flow-templates';
 
 export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
@@ -86,13 +87,16 @@ export async function POST(req: NextRequest) {
     const name = (String(body.name ?? '').trim() || '').slice(0, 120);
     if (!name) return NextResponse.json({ error: 'Укажите название бота' }, { status: 400 });
     const description = String(body.description ?? '').trim().slice(0, 500) || null;
+    // IMP-30-02: template — необязательная строка; неизвестное/неверное значение
+    // тихо откатывается к 'universal' (устойчивость вместо 400)
+    const template = isFlowTemplateId(body.template) ? body.template : 'universal';
 
     const bot = await db.bot.create({
       data: {
         userId: user.id,
         name,
         description,
-        flow: JSON.stringify(defaultFlow()),
+        flow: JSON.stringify(buildTemplateFlow(template)),
       },
     });
     return NextResponse.json({ bot: { id: bot.id, name: bot.name } });

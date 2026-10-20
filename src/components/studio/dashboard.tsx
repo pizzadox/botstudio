@@ -16,6 +16,8 @@ import {
   Workflow,
 } from 'lucide-react';
 import { api } from '@/lib/client-api';
+// IMP-30-03: выбор шаблона сценария при создании бота
+import { FLOW_TEMPLATES, type FlowTemplateId } from '@/lib/flow-templates';
 import { SOURCE_LABELS } from '@/lib/studio-types';
 import type { BotListItem, Stats, ViewKey } from '@/lib/studio-types';
 import { Badge } from '@/components/ui/badge';
@@ -86,6 +88,8 @@ export default function Dashboard({
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  // IMP-30-03: выбранный шаблон сценария (сброс в 'universal' при закрытии/после создания)
+  const [template, setTemplate] = useState<FlowTemplateId>('universal');
   const [busy, setBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<BotListItem | null>(null);
   const [renameName, setRenameName] = useState('');
@@ -119,12 +123,14 @@ export default function Dashboard({
     try {
       const d = await api<{ bot: { id: string; name: string } }>('/api/bots', {
         method: 'POST',
-        body: JSON.stringify({ name: botName, description }),
+        body: JSON.stringify({ name: botName, description, template }),
       });
+      const tplName = FLOW_TEMPLATES.find((t) => t.id === template)?.name ?? 'Универсальная поддержка';
       setCreateOpen(false);
       setName('');
       setDescription('');
-      toast({ title: 'Бот создан', description: 'Сценарий-шаблон уже готов к настройке' });
+      setTemplate('universal');
+      toast({ title: 'Бот создан', description: `Шаблон «${tplName}» готов к настройке` });
       onOpenBot(
         {
           id: d.bot.id,
@@ -194,7 +200,16 @@ export default function Dashboard({
             Управляйте ботами и подключайте мессенджеры
           </p>
         </div>
-        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <Dialog
+          open={createOpen}
+          onOpenChange={(open) => {
+            setCreateOpen(open);
+            // IMP-30-REV-MIN1: сброс при ОТКРЫТИИ — «Отмена» закрывает диалог
+            // программно (минуя onOpenChange(false)), иначе прошлый выбор жил бы
+            // до следующего закрытия через ESC/оверлей
+            if (open) setTemplate('universal');
+          }}
+        >
           <DialogTrigger asChild>
             <Button>
               <Plus className="h-4 w-4" /> Создать бота
@@ -204,7 +219,7 @@ export default function Dashboard({
             <DialogHeader>
               <DialogTitle>Новый бот</DialogTitle>
               <DialogDescription>
-                Мы сразу создадим готовый сценарий-шаблон: приветствие, меню, ИИ-ответы и передачу оператору.
+                Выберите готовый сценарий — потом всё можно изменить в конструкторе.
               </DialogDescription>
             </DialogHeader>
             {/* IMP-FE21-10: Enter отправляет форму, preventDefault обязателен */}
@@ -235,6 +250,46 @@ export default function Dashboard({
                     onChange={(e) => setDescription(e.target.value)}
                     rows={2}
                   />
+                </div>
+                {/* IMP-30-03: выбор шаблона — карточки с aria-pressed (спец. 30-B1);
+                    IMP-30-REV-MIN2: role="group", не radiogroup — дочерние кнопки
+                    используют aria-pressed (toggle-паттерн), а не radio/aria-checked */}
+                <div className="space-y-2">
+                  <div className="text-sm font-medium leading-none">Шаблон сценария</div>
+                  <div
+                    role="group"
+                    aria-label="Шаблон сценария"
+                    className="grid max-h-60 gap-2 overflow-y-auto pr-1 sm:grid-cols-2"
+                  >
+                    {FLOW_TEMPLATES.map((t) => {
+                      const active = template === t.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => setTemplate(t.id)}
+                          className={cn(
+                            'glass glass-hover flex min-h-11 items-start gap-3 rounded-xl p-3 text-left transition',
+                            active && 'ring-2 ring-ring border-transparent'
+                          )}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-base text-primary"
+                          >
+                            {t.emoji}
+                          </span>
+                          <span className="min-w-0 space-y-0.5">
+                            <span className="block text-sm font-medium">{t.name}</span>
+                            <span className="block line-clamp-2 text-xs text-muted-foreground">
+                              {t.description}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
               <DialogFooter>
